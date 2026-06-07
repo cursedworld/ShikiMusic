@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:audio_service/audio_service.dart';
 import 'package:flutter_discord_rpc/flutter_discord_rpc.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import 'globals.dart';
-import 'audio_handler.dart';
 import 'screens/home_screen.dart';
 import 'screens/settings_screen.dart';
 
@@ -51,24 +49,8 @@ void main() async {
       debugPrint('Discord RPC init failed: $e');
     }
   } else {
-    try {
-      audioHandler = await AudioService.init(
-        builder: () => AudioPlayerHandler(),
-        config: AudioServiceConfig(
-          androidNotificationChannelId: 'com.shiki.music.channel.audio',
-          androidNotificationChannelName: 'ShikiMusic Playback',
-          androidNotificationOngoing: true,
-          androidStopForegroundOnPause: false,
-          androidNotificationIcon: 'mipmap/ic_launcher',
-          preloadArtwork: true,
-          androidNotificationClickStartsActivity: true,
-          androidResumeOnClick: true,
-        ),
-      );
-      isAudioServiceActive = true;
-    } catch (e) {
-      debugPrint('AudioService init failed: $e');
-    }
+    // Disabled audio_service on Android to prevent conflicts with flutter_media_session
+    isAudioServiceActive = false;
   }
 
   runApp(const MyApp());

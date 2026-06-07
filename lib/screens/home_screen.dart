@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -11,6 +11,9 @@ import 'package:flutter_discord_rpc/flutter_discord_rpc.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_media_session/flutter_media_session.dart' as fms;
+import 'package:image/image.dart' as img;
 
 import '../globals.dart';
 import '../localization.dart';
@@ -53,6 +56,111 @@ class MainAppScreen extends StatefulWidget {
 class MainAppScreenState extends State<MainAppScreen>
     with TickerProviderStateMixin {
   late final AudioPlayer audioPlayer;
+
+  // ── flutter_media_session for Media3 notification ────────────────────────
+  fms.FlutterMediaSession? _mediaSession;
+  bool _mediaSessionActive = false;
+
+  /// Request notification permission on Android 13+ so background audio notification works.
+  Future<void> _requestNotificationPermission() async {
+    if (isDesktop) return;
+    try {
+      final status = await Permission.notification.status;
+      if (status.isDenied) {
+        await Permission.notification.request();
+      }
+    } catch (e) {
+      debugPrint('Error requesting notification permission: $e');
+    }
+  }
+
+  /// Initialize Media3 MediaSession for lock screen + notification.
+  Future<void> _initMediaSession() async {
+    if (isDesktop) return;
+    try {
+      _mediaSession = fms.FlutterMediaSession();
+      await _mediaSession!.activate();
+      _mediaSessionActive = true;
+
+      // Handle notification button presses
+      _mediaSession!.setActionHandler(
+        onPlay: () { if (!isPlaying) pauseTrack(); },
+        onPause: () { if (isPlaying) pauseTrack(); },
+        onSkipToNext: () { nextTrack(); },
+        onSkipToPrevious: () { prevTrack(); },
+        onStop: () { if (isPlaying) pauseTrack(); },
+        onSeekTo: (pos) { seekTo(pos); },
+      );
+    } catch (e) {
+      debugPrint('FlutterMediaSession init failed: $e');
+      _mediaSessionActive = false;
+    }
+  }
+
+  /// Sync current track metadata to Media3 notification.
+  void _syncMediaSessionMetadata() {
+    if (!_mediaSessionActive || _mediaSession == null) return;
+    if (playingQueue.isEmpty) return;
+    final track = playingQueue[playingIndex];
+    final dur = trackDurations[track['id']];
+    _mediaSession!.updateMetadata(fms.MediaMetadata(
+      title: track['title']?.toString() ?? 'Unknown',
+      artist: track['album']?['artist']?['name']?.toString() ?? 'Unknown',
+      album: track['album']?['title']?.toString(),
+      artworkUri: getArtUri(track).toString(),
+      duration: dur != null ? Duration(seconds: dur) : Duration.zero,
+    ));
+  }
+
+  /// Sync playback state (playing/paused, position) to Media3.
+  void _syncMediaSessionPlayback() {
+    if (!_mediaSessionActive || _mediaSession == null) return;
+    _mediaSession!.updatePlaybackState(fms.PlaybackState(
+      status: isPlaying ? fms.PlaybackStatus.playing : fms.PlaybackStatus.paused,
+      position: currentPositionNotifier.value,
+      speed: 1.0,
+    ));
+  }
+
+  /// Download and crop cover to a perfect square to prevent system widget distortion
+  Future<bool> _downloadAndCropCover(String url, File file) async {
+    try {
+      final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 5));
+      if (res.statusCode == 200) {
+        final bytes = res.bodyBytes;
+        final image = img.decodeImage(bytes);
+        if (image != null) {
+          final size = min(image.width, image.height);
+          final x = (image.width - size) ~/ 2;
+          final y = (image.height - size) ~/ 2;
+          final cropped = img.copyCrop(image, x: x, y: y, width: size, height: size);
+          final resized = img.copyResize(cropped, width: 600, height: 600);
+          final jpegBytes = img.encodeJpg(resized);
+          await file.writeAsBytes(jpegBytes);
+          return true;
+        } else {
+          await file.writeAsBytes(bytes);
+          return true;
+        }
+      }
+    } catch (e) {
+      debugPrint('Error downloading or cropping cover: $e');
+    }
+    return false;
+  }
+
+  /// Asynchronously download cover art to local storage for the lock screen widget
+  Future<void> _ensureCoverDownloaded(dynamic track) async {
+    if (isDesktop || localPath.isEmpty) return;
+    final id = track['id'];
+    final coverFile = File('$localPath/cover_$id.jpg');
+    if (await coverFile.exists()) return;
+
+    final success = await _downloadAndCropCover(track['album']['cover'].toString(), coverFile);
+    if (success) {
+      _syncMediaSessionMetadata();
+    }
+  }
 
   // ── Player state ─────────────────────────────────────────────────────────
   int dummyVar = 0;
@@ -146,6 +254,12 @@ class MainAppScreenState extends State<MainAppScreen>
 
     startData();
 
+    // Request notification permission for background media controls on Android 13+
+    _requestNotificationPermission();
+
+    // Initialize Media3 session for notification/lock screen
+    _initMediaSession();
+
     HardwareKeyboard.instance.addHandler(_handleGlobalKeys);
 
     if (isDesktop) {
@@ -181,6 +295,7 @@ class MainAppScreenState extends State<MainAppScreen>
       if (playingQueue.isNotEmpty && playingIndex < playingQueue.length) {
         trackDurations[playingQueue[playingIndex]['id'] as int] = d.inSeconds;
       }
+      _syncMediaSessionMetadata();
     });
     audioPlayer.onPositionChanged.listen((p) {
       if (mounted) currentPositionNotifier.value = p;
@@ -219,6 +334,9 @@ class MainAppScreenState extends State<MainAppScreen>
     searchFocusNode.dispose();
     backgroundPollingTimer?.cancel();
     rpcThrottleTimer?.cancel();
+    if (_mediaSessionActive) {
+      _mediaSession?.deactivate();
+    }
     fullDurationNotifier.dispose();
     currentPositionNotifier.dispose();
     _vinylController.dispose();
@@ -600,10 +718,7 @@ class MainAppScreenState extends State<MainAppScreen>
         await audioFile.writeAsBytes(audioStream.bodyBytes);
       }
       if (!await coverFile.exists()) {
-        final coverStream = await http.get(
-          Uri.parse(mediaObj['album']['cover']),
-        );
-        await coverFile.writeAsBytes(coverStream.bodyBytes);
+        await _downloadAndCropCover(mediaObj['album']['cover'].toString(), coverFile);
       }
       if (!await lrcFile.exists() &&
           mediaObj['lyrics'] != null &&
@@ -703,6 +818,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
     final targetTrack = playingQueue[playingIndex];
     activeTrackNotifier.value = targetTrack;
+    _ensureCoverDownloaded(targetTrack);
 
     if (isAudioServiceActive) {
       final dur = trackDurations[targetTrack['id']];
@@ -728,6 +844,8 @@ class MainAppScreenState extends State<MainAppScreen>
 
     discordStart = DateTime.now().millisecondsSinceEpoch;
     fetchLyrics(targetTrack);
+    _syncMediaSessionMetadata();
+    _syncMediaSessionPlayback();
     _saveState();
   }
 
@@ -745,8 +863,8 @@ class MainAppScreenState extends State<MainAppScreen>
           currentPositionNotifier.value.inMilliseconds;
       updateRPC(force: true);
     }
-    _saveState();
-  }
+    _syncMediaSessionPlayback();
+    _saveState();  }
 
   void nextTrack() {
     if (playingQueue.isEmpty) return;
@@ -796,6 +914,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
     final targetTrack = playingQueue[playingIndex];
     activeTrackNotifier.value = targetTrack;
+    _ensureCoverDownloaded(targetTrack);
 
     if (isAudioServiceActive) {
       final dur = trackDurations[targetTrack['id']];
@@ -821,6 +940,8 @@ class MainAppScreenState extends State<MainAppScreen>
 
     discordStart = DateTime.now().millisecondsSinceEpoch;
     fetchLyrics(targetTrack);
+    _syncMediaSessionMetadata();
+    _syncMediaSessionPlayback();
     _saveState();
   }
 
@@ -881,6 +1002,7 @@ class MainAppScreenState extends State<MainAppScreen>
     currentPositionNotifier.value = pos;
     discordStart = DateTime.now().millisecondsSinceEpoch - pos.inMilliseconds;
     checkLyrics(pos);
+    _syncMediaSessionPlayback();
   }
 
   Future<void> fetchLyrics(dynamic trackObj) async {
