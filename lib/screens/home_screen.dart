@@ -122,6 +122,19 @@ class MainAppScreenState extends State<MainAppScreen>
     ));
   }
 
+  /// Checks if the local cover file exists, is not empty, and is a valid square image.
+  Future<bool> _isCoverValidAndSquare(File file) async {
+    if (!await file.exists()) return false;
+    try {
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) return false;
+      final image = img.decodeImage(bytes);
+      return image != null && image.width == image.height;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Download and crop cover to a perfect square to prevent system widget distortion
   Future<bool> _downloadAndCropCover(String url, File file) async {
     try {
@@ -138,14 +151,17 @@ class MainAppScreenState extends State<MainAppScreen>
           final jpegBytes = img.encodeJpg(resized);
           await file.writeAsBytes(jpegBytes);
           return true;
-        } else {
-          await file.writeAsBytes(bytes);
-          return true;
         }
       }
     } catch (e) {
       debugPrint('Error downloading or cropping cover: $e');
     }
+    // Clean up if it failed or was not a valid cropped image
+    try {
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {}
     return false;
   }
 
@@ -154,7 +170,15 @@ class MainAppScreenState extends State<MainAppScreen>
     if (isDesktop || localPath.isEmpty) return;
     final id = track['id'];
     final coverFile = File('$localPath/cover_$id.jpg');
-    if (await coverFile.exists()) return;
+    
+    if (await _isCoverValidAndSquare(coverFile)) return;
+
+    // Delete invalid/uncropped file before re-downloading
+    try {
+      if (await coverFile.exists()) {
+        await coverFile.delete();
+      }
+    } catch (_) {}
 
     final success = await _downloadAndCropCover(track['album']['cover'].toString(), coverFile);
     if (success) {
@@ -717,7 +741,12 @@ class MainAppScreenState extends State<MainAppScreen>
         final audioStream = await http.get(Uri.parse(mediaObj['audio_file']));
         await audioFile.writeAsBytes(audioStream.bodyBytes);
       }
-      if (!await coverFile.exists()) {
+      if (!await _isCoverValidAndSquare(coverFile)) {
+        try {
+          if (await coverFile.exists()) {
+            await coverFile.delete();
+          }
+        } catch (_) {}
         await _downloadAndCropCover(mediaObj['album']['cover'].toString(), coverFile);
       }
       if (!await lrcFile.exists() &&
