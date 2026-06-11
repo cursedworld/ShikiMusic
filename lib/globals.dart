@@ -63,7 +63,7 @@ ImageProvider getPictureProvider(dynamic currentObject) {
     final localImage = File(
       '$globalLocalPath/cover_${currentObject['id']}.jpg',
     );
-    if (localImage.existsSync()) {
+    if (localImage.existsSync() && localImage.lengthSync() > 0) {
       provider = FileImage(localImage);
     } else {
       provider = NetworkImage(currentObject['album']['cover']);
@@ -86,7 +86,7 @@ ImageProvider getPictureProvider(dynamic currentObject) {
 Uri getArtUri(dynamic track) {
   if (globalLocalPath.isNotEmpty) {
     final localCover = File('$globalLocalPath/cover_${track['id']}.jpg');
-    if (localCover.existsSync()) return Uri.file(localCover.path);
+    if (localCover.existsSync() && localCover.lengthSync() > 0) return Uri.file(localCover.path);
   }
   return Uri.parse(track['album']['cover'].toString());
 }
