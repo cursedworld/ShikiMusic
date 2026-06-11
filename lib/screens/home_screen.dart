@@ -84,12 +84,24 @@ class MainAppScreenState extends State<MainAppScreen>
 
       // Handle notification button presses
       _mediaSession!.setActionHandler(
-        onPlay: () { if (!isPlaying) pauseTrack(); },
-        onPause: () { if (isPlaying) pauseTrack(); },
-        onSkipToNext: () { nextTrack(); },
-        onSkipToPrevious: () { prevTrack(); },
-        onStop: () { if (isPlaying) pauseTrack(); },
-        onSeekTo: (pos) { seekTo(pos); },
+        onPlay: () {
+          if (!isPlaying) pauseTrack();
+        },
+        onPause: () {
+          if (isPlaying) pauseTrack();
+        },
+        onSkipToNext: () {
+          nextTrack();
+        },
+        onSkipToPrevious: () {
+          prevTrack();
+        },
+        onStop: () {
+          if (isPlaying) pauseTrack();
+        },
+        onSeekTo: (pos) {
+          seekTo(pos);
+        },
       );
     } catch (e) {
       debugPrint('FlutterMediaSession init failed: $e');
@@ -103,23 +115,29 @@ class MainAppScreenState extends State<MainAppScreen>
     if (playingQueue.isEmpty) return;
     final track = playingQueue[playingIndex];
     final dur = trackDurations[track['id']];
-    _mediaSession!.updateMetadata(fms.MediaMetadata(
-      title: track['title']?.toString() ?? 'Unknown',
-      artist: track['album']?['artist']?['name']?.toString() ?? 'Unknown',
-      album: track['album']?['title']?.toString(),
-      artworkUri: getArtUri(track).toString(),
-      duration: dur != null ? Duration(seconds: dur) : Duration.zero,
-    ));
+    _mediaSession!.updateMetadata(
+      fms.MediaMetadata(
+        title: track['title']?.toString() ?? 'Unknown',
+        artist: track['album']?['artist']?['name']?.toString() ?? 'Unknown',
+        album: track['album']?['title']?.toString(),
+        artworkUri: getArtUri(track).toString(),
+        duration: dur != null ? Duration(seconds: dur) : Duration.zero,
+      ),
+    );
   }
 
   /// Sync playback state (playing/paused, position) to Media3.
   void _syncMediaSessionPlayback() {
     if (!_mediaSessionActive || _mediaSession == null) return;
-    _mediaSession!.updatePlaybackState(fms.PlaybackState(
-      status: isPlaying ? fms.PlaybackStatus.playing : fms.PlaybackStatus.paused,
-      position: currentPositionNotifier.value,
-      speed: 1.0,
-    ));
+    _mediaSession!.updatePlaybackState(
+      fms.PlaybackState(
+        status: isPlaying
+            ? fms.PlaybackStatus.playing
+            : fms.PlaybackStatus.paused,
+        position: currentPositionNotifier.value,
+        speed: 1.0,
+      ),
+    );
   }
 
   /// Checks if the local cover file exists, is not empty, and is a valid square image.
@@ -138,7 +156,9 @@ class MainAppScreenState extends State<MainAppScreen>
   /// Download and crop cover to a perfect square to prevent system widget distortion
   Future<bool> _downloadAndCropCover(String url, File file) async {
     try {
-      final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 5));
+      final res = await http
+          .get(Uri.parse(url))
+          .timeout(const Duration(seconds: 5));
       if (res.statusCode == 200) {
         final bytes = res.bodyBytes;
         final image = img.decodeImage(bytes);
@@ -146,7 +166,13 @@ class MainAppScreenState extends State<MainAppScreen>
           final size = min(image.width, image.height);
           final x = (image.width - size) ~/ 2;
           final y = (image.height - size) ~/ 2;
-          final cropped = img.copyCrop(image, x: x, y: y, width: size, height: size);
+          final cropped = img.copyCrop(
+            image,
+            x: x,
+            y: y,
+            width: size,
+            height: size,
+          );
           final resized = img.copyResize(cropped, width: 600, height: 600);
           final jpegBytes = img.encodeJpg(resized);
           await file.writeAsBytes(jpegBytes);
@@ -170,7 +196,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (isDesktop || localPath.isEmpty) return;
     final id = track['id'];
     final coverFile = File('$localPath/cover_$id.jpg');
-    
+
     if (await _isCoverValidAndSquare(coverFile)) return;
 
     // Delete invalid/uncropped file before re-downloading
@@ -180,7 +206,10 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     } catch (_) {}
 
-    final success = await _downloadAndCropCover(track['album']['cover'].toString(), coverFile);
+    final success = await _downloadAndCropCover(
+      track['album']['cover'].toString(),
+      coverFile,
+    );
     if (success) {
       _syncMediaSessionMetadata();
     }
@@ -747,7 +776,10 @@ class MainAppScreenState extends State<MainAppScreen>
             await coverFile.delete();
           }
         } catch (_) {}
-        await _downloadAndCropCover(mediaObj['album']['cover'].toString(), coverFile);
+        await _downloadAndCropCover(
+          mediaObj['album']['cover'].toString(),
+          coverFile,
+        );
       }
       if (!await lrcFile.exists() &&
           mediaObj['lyrics'] != null &&
@@ -893,7 +925,8 @@ class MainAppScreenState extends State<MainAppScreen>
       updateRPC(force: true);
     }
     _syncMediaSessionPlayback();
-    _saveState();  }
+    _saveState();
+  }
 
   void nextTrack() {
     if (playingQueue.isEmpty) return;
@@ -1122,14 +1155,274 @@ class MainAppScreenState extends State<MainAppScreen>
   //  Discord RPC
   // ═══════════════════════════════════════════════════════════════════════════
 
+  final Map<int, String> _publicCoverCache = {};
+
+  String _transliterate(String input) {
+    const rus = [
+      'а',
+      'б',
+      'в',
+      'г',
+      'д',
+      'е',
+      'ё',
+      'ж',
+      'з',
+      'и',
+      'й',
+      'к',
+      'л',
+      'м',
+      'н',
+      'о',
+      'п',
+      'р',
+      'с',
+      'т',
+      'у',
+      'ф',
+      'х',
+      'ц',
+      'ч',
+      'ш',
+      'щ',
+      'ъ',
+      'ы',
+      'ь',
+      'э',
+      'ю',
+      'я',
+    ];
+    const eng = [
+      'a',
+      'b',
+      'v',
+      'g',
+      'd',
+      'e',
+      'e',
+      'zh',
+      'z',
+      'i',
+      'y',
+      'k',
+      'l',
+      'm',
+      'n',
+      'o',
+      'p',
+      'r',
+      's',
+      't',
+      'u',
+      'f',
+      'h',
+      'ts',
+      'ch',
+      'sh',
+      'sh',
+      '',
+      'y',
+      '',
+      'e',
+      'yu',
+      'ya',
+    ];
+
+    String result = input.toLowerCase();
+    for (int i = 0; i < rus.length; i++) {
+      result = result.replaceAll(rus[i], eng[i]);
+    }
+    return result;
+  }
+
+  bool _isArtistMatch(String originalArtist, String resultArtist) {
+    final cleanOriginal = originalArtist.toLowerCase().replaceAll(
+      RegExp(r'[^a-z0-9а-яё]'),
+      '',
+    );
+    final cleanResult = resultArtist.toLowerCase().replaceAll(
+      RegExp(r'[^a-z0-9а-яё]'),
+      '',
+    );
+
+    if (cleanOriginal.isEmpty || cleanResult.isEmpty) return false;
+
+    if (cleanOriginal.contains(cleanResult) ||
+        cleanResult.contains(cleanOriginal)) {
+      return true;
+    }
+
+    final translitOriginal = _transliterate(cleanOriginal);
+    final translitResult = _transliterate(cleanResult);
+    if (translitOriginal.contains(translitResult) ||
+        translitResult.contains(translitOriginal)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  Future<String?> _getPublicCoverUrl(dynamic trackData) async {
+    final id = trackData['id'] as int;
+    if (_publicCoverCache.containsKey(id)) {
+      return _publicCoverCache[id];
+    }
+
+    final title = trackData['title']?.toString() ?? '';
+    final artist = trackData['album']?['artist']?['name']?.toString() ?? '';
+    if (title.isEmpty) return null;
+
+    // 1. Try iTunes Search API (extremely fast, clean square covers)
+    try {
+      final itunesUrl = 'https://itunes.apple.com/search?term=${Uri.encodeComponent('$artist $title')}&entity=song&limit=1';
+      final res = await http.get(Uri.parse(itunesUrl)).timeout(const Duration(seconds: 3));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        final results = data['results'] as List<dynamic>?;
+        if (results != null && results.isNotEmpty) {
+          final first = results[0];
+          final resArtist = first['artistName']?.toString() ?? '';
+          if (_isArtistMatch(artist, resArtist)) {
+            String? cover = first['artworkUrl100']?.toString();
+            if (cover != null && cover.isNotEmpty) {
+              // Convert to higher resolution
+              cover = cover.replaceAll('100x100bb.jpg', '600x600bb.jpg');
+              _publicCoverCache[id] = cover;
+              return cover;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error in iTunes search: $e');
+    }
+
+    // 2. Try Last.fm track.getInfo to get exact album cover
+    try {
+      final infoRes = await http
+          .get(
+            Uri.parse(
+              'http://ws.audioscrobbler.com/2.0/?method=track.getInfo&artist=${Uri.encodeComponent(artist)}&track=${Uri.encodeComponent(title)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json',
+            ),
+          )
+          .timeout(const Duration(seconds: 3));
+
+      if (infoRes.statusCode == 200) {
+        final data = json.decode(infoRes.body);
+        final track = data['track'];
+        if (track != null) {
+          final album = track['album'];
+          if (album != null) {
+            final images = album['image'] as List<dynamic>?;
+            if (images != null && images.isNotEmpty) {
+              String? coverUrl;
+              for (var img in images) {
+                if (img['size'] == 'extralarge') {
+                  coverUrl = img['#text']?.toString();
+                }
+              }
+              coverUrl ??= images.last['#text']?.toString();
+              if (coverUrl != null &&
+                  coverUrl.isNotEmpty &&
+                  !coverUrl.contains('2a96cbd8b46e442fc41c2b86b821562f') &&
+                  !coverUrl.contains('182879f0815c4de88b3f2f24c0843114') &&
+                  !coverUrl.contains('noimage')) {
+                _publicCoverCache[id] = coverUrl;
+                return coverUrl;
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error in track.getInfo: $e');
+    }
+
+    // 3. Try Last.fm track.search as a fallback
+    try {
+      final searchRes = await http
+          .get(
+            Uri.parse(
+              'http://ws.audioscrobbler.com/2.0/?method=track.search&artist=${Uri.encodeComponent(artist)}&track=${Uri.encodeComponent(title)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json',
+            ),
+          )
+          .timeout(const Duration(seconds: 3));
+
+      if (searchRes.statusCode == 200) {
+        final data = json.decode(searchRes.body);
+        final results = data['results'];
+        if (results != null) {
+          final trackmatches = results['trackmatches'];
+          if (trackmatches != null) {
+            final trackList = trackmatches['track'] as List<dynamic>;
+            if (trackList.isNotEmpty) {
+              final firstTrack = trackList[0];
+              final resultArtist = firstTrack['artist']?.toString() ?? '';
+
+              if (_isArtistMatch(artist, resultArtist)) {
+                final images = firstTrack['image'] as List<dynamic>;
+                if (images.isNotEmpty) {
+                  String? coverUrl;
+                  for (var img in images) {
+                    if (img['size'] == 'extralarge') {
+                      coverUrl = img['#text']?.toString();
+                    }
+                  }
+                  coverUrl ??= images.last['#text']?.toString();
+                  if (coverUrl != null &&
+                      coverUrl.isNotEmpty &&
+                      !coverUrl.contains('2a96cbd8b46e442fc41c2b86b821562f') &&
+                      !coverUrl.contains('182879f0815c4de88b3f2f24c0843114') &&
+                      !coverUrl.contains('noimage')) {
+                    _publicCoverCache[id] = coverUrl;
+                    return coverUrl;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching public cover from Last.fm: $e');
+    }
+
+    return null;
+  }
+
   void updateRPC({bool force = false}) {
     if (!isDesktop || playingQueue.isEmpty) return;
 
-    void sendToDiscord() {
+    Future<void> sendToDiscord() async {
       lastRpcTime = DateTime.now();
       final trackData = playingQueue[playingIndex];
+      final trackId = trackData['id'] as int;
       final title = trackData['title'];
       final art = trackData['album']['artist']['name'];
+
+      String coverUrl = trackData['album']?['cover']?.toString() ?? '';
+      if (coverUrl.contains('192.168.') ||
+          coverUrl.contains('localhost') ||
+          coverUrl.contains('127.0.0.1')) {
+        final publicUrl = await _getPublicCoverUrl(trackData);
+        if (playingQueue.isEmpty ||
+            playingIndex >= playingQueue.length ||
+            playingQueue[playingIndex]['id'] != trackId) {
+          return;
+        }
+        if (publicUrl != null) {
+          coverUrl = publicUrl;
+        }
+      }
+
+      final largeImg =
+          (coverUrl.startsWith('http') &&
+              !coverUrl.contains('192.168.') &&
+              !coverUrl.contains('localhost') &&
+              !coverUrl.contains('127.0.0.1'))
+          ? coverUrl
+          : 'https://cdn.discordapp.com/app-icons/1480246072042590219/36573ffd3ca304580ed8968517090b0e.png';
 
       if (isPlaying) {
         String p1 = '🎵 $title — $art';
@@ -1147,10 +1440,7 @@ class MainAppScreenState extends State<MainAppScreen>
           activity: RPCActivity(
             details: p1,
             state: p2,
-            assets: const RPCAssets(
-              largeImage: 'icon',
-              largeText: "ShikiMusic",
-            ),
+            assets: RPCAssets(largeImage: largeImg, largeText: "ShikiMusic"),
             timestamps: discordStart != null
                 ? RPCTimestamps(start: discordStart)
                 : null,
@@ -1161,10 +1451,7 @@ class MainAppScreenState extends State<MainAppScreen>
           activity: RPCActivity(
             details: '⏸ На паузе',
             state: '$title — $art',
-            assets: const RPCAssets(
-              largeImage: 'icon',
-              largeText: "ShikiMusic",
-            ),
+            assets: RPCAssets(largeImage: largeImg, largeText: "ShikiMusic"),
           ),
         );
       }
