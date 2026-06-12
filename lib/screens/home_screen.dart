@@ -1440,10 +1440,17 @@ class MainAppScreenState extends State<MainAppScreen>
           activity: RPCActivity(
             details: p1,
             state: p2,
-            assets: RPCAssets(largeImage: largeImg, largeText: "ShikiMusic"),
+            activityType: ActivityType.listening,
+            assets: RPCAssets(largeImage: largeImg),
             timestamps: discordStart != null
                 ? RPCTimestamps(start: discordStart)
                 : null,
+            buttons: [
+              const RPCButton(
+                label: "GitHub",
+                url: "https://github.com/cursedworld/ShikiMusic",
+              ),
+            ],
           ),
         );
       } else {
@@ -1451,7 +1458,14 @@ class MainAppScreenState extends State<MainAppScreen>
           activity: RPCActivity(
             details: '⏸ На паузе',
             state: '$title — $art',
-            assets: RPCAssets(largeImage: largeImg, largeText: "ShikiMusic"),
+            activityType: ActivityType.listening,
+            assets: RPCAssets(largeImage: largeImg),
+            buttons: [
+              const RPCButton(
+                label: "GitHub",
+                url: "https://github.com/cursedworld/ShikiMusic",
+              ),
+            ],
           ),
         );
       }
