@@ -1493,6 +1493,12 @@ class MainAppScreenState extends State<MainAppScreen>
         }
       }
 
+      final dur = trackData['duration'];
+      int? durationMs;
+      if (dur != null && dur is num && dur.toInt() > 0) {
+        durationMs = dur.toInt() * 1000;
+      }
+
       final largeImg =
           (coverUrl.startsWith('http') &&
               !coverUrl.contains('192.168.') &&
@@ -1520,7 +1526,10 @@ class MainAppScreenState extends State<MainAppScreen>
             activityType: ActivityType.listening,
             assets: RPCAssets(largeImage: largeImg),
             timestamps: discordStart != null
-                ? RPCTimestamps(start: discordStart)
+                ? RPCTimestamps(
+                    start: discordStart!,
+                    end: durationMs != null ? (discordStart! + durationMs) : null,
+                  )
                 : null,
             buttons: [
               const RPCButton(
