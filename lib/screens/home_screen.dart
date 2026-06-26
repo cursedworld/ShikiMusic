@@ -539,7 +539,42 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> startData() async {
     final docsDir = await getApplicationDocumentsDirectory();
-    localPath = docsDir.path;
+    final appDir = Directory('${docsDir.path}/ShikiMusic');
+    if (!appDir.existsSync()) {
+      appDir.createSync(recursive: true);
+    }
+
+    // Migrate existing tracks, covers, and config files from root Documents directory
+    try {
+      final entities = docsDir.listSync();
+      for (final entity in entities) {
+        if (entity is File) {
+          final name = entity.path.split(Platform.pathSeparator).last;
+          if (name.startsWith('track_') ||
+              name.startsWith('cover_') ||
+              name == 'liked_tracks.json' ||
+              name == 'my_playlists.json' ||
+              name == 'offline_tracks.json' ||
+              name == 'app_state.json' ||
+              name == 'shiki_settings.json') {
+            final newPath = '${appDir.path}/$name';
+            try {
+              await entity.rename(newPath);
+              debugPrint('Migrated: $name -> $newPath');
+            } catch (e) {
+              // Fallback to copy & delete if rename fails across different partitions
+              await entity.copy(newPath);
+              await entity.delete();
+              debugPrint('Migrated via copy/delete: $name -> $newPath');
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Migration failed: $e');
+    }
+
+    localPath = appDir.path;
     globalLocalPath = localPath;
     await readFavorites();
     await readPlaylists();
