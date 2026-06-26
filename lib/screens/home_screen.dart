@@ -1165,7 +1165,7 @@ class MainAppScreenState extends State<MainAppScreen>
       final parsedUrl = Uri.parse(
         'https://lrclib.net/api/get?artist_name=${Uri.encodeComponent(artistName)}&track_name=${Uri.encodeComponent(trackTitle)}',
       );
-      final res = await http.get(parsedUrl);
+      final res = await http.get(parsedUrl).timeout(const Duration(seconds: 4));
       if (res.statusCode == 200) {
         final jsonData = json.decode(utf8.decode(res.bodyBytes));
         final syncedText = jsonData['syncedLyrics'];
