@@ -8,11 +8,22 @@ import 'globals.dart';
 import 'screens/home_screen.dart';
 import 'screens/settings_screen.dart';
 
-/// Load saved settings (accent color + language) before UI renders.
 Future<void> _loadSavedSettings() async {
   try {
     final dir = await getApplicationDocumentsDirectory();
-    final file = File('${dir.path}/shiki_settings.json');
+    final appDir = Directory('${dir.path}/ShikiMusic');
+    if (!appDir.existsSync()) {
+      appDir.createSync(recursive: true);
+    }
+
+    final file = File('${appDir.path}/shiki_settings.json');
+    final oldFile = File('${dir.path}/shiki_settings.json');
+    if (!file.existsSync() && oldFile.existsSync()) {
+      try {
+        await oldFile.rename(file.path);
+      } catch (_) {}
+    }
+
     if (await file.exists()) {
       final data = jsonDecode(await file.readAsString());
 

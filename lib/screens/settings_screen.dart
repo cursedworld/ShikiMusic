@@ -47,7 +47,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadSettings() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/shiki_settings.json');
+      final file = File('${dir.path}/ShikiMusic/shiki_settings.json');
       if (await file.exists()) {
         final data = jsonDecode(await file.readAsString());
         setState(() {
@@ -67,7 +67,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveSettings() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/shiki_settings.json');
+      final appDir = Directory('${dir.path}/ShikiMusic');
+      if (!appDir.existsSync()) {
+        appDir.createSync(recursive: true);
+      }
+      final file = File('${appDir.path}/shiki_settings.json');
       await file.writeAsString(jsonEncode({
         'themeColor': _selectedColorKey,
         'language': _selectedLang,
