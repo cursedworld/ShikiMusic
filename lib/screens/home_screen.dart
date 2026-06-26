@@ -1155,6 +1155,9 @@ class MainAppScreenState extends State<MainAppScreen>
       final dbLyrics = trackObj['lyrics'].toString();
       parseLrcString(dbLyrics);
       if (globalLyrics.isEmpty) noLrcData = dbLyrics;
+      try {
+        await localLrc.writeAsString(dbLyrics);
+      } catch (_) {}
       lrcLoading = false;
       uiSignal.value++;
       updateRPC(force: true);
@@ -1165,7 +1168,7 @@ class MainAppScreenState extends State<MainAppScreen>
       final parsedUrl = Uri.parse(
         'https://lrclib.net/api/get?artist_name=${Uri.encodeComponent(artistName)}&track_name=${Uri.encodeComponent(trackTitle)}',
       );
-      final res = await http.get(parsedUrl).timeout(const Duration(seconds: 4));
+      final res = await http.get(parsedUrl).timeout(const Duration(seconds: 15));
       if (res.statusCode == 200) {
         final jsonData = json.decode(utf8.decode(res.bodyBytes));
         final syncedText = jsonData['syncedLyrics'];
@@ -1173,8 +1176,16 @@ class MainAppScreenState extends State<MainAppScreen>
 
         if (syncedText != null && syncedText.toString().isNotEmpty) {
           parseLrcString(syncedText);
+          try {
+            await localLrc.writeAsString(syncedText.toString());
+          } catch (_) {}
+          _saveLyricsToServer(trackId, syncedText.toString());
         } else if (plainText != null) {
           noLrcData = plainText;
+          try {
+            await localLrc.writeAsString(plainText.toString());
+          } catch (_) {}
+          _saveLyricsToServer(trackId, plainText.toString());
         }
       }
     } catch (e) {
@@ -1184,6 +1195,37 @@ class MainAppScreenState extends State<MainAppScreen>
     lrcLoading = false;
     uiSignal.value++;
     updateRPC(force: true);
+  }
+
+  Future<void> _saveLyricsToServer(int trackId, String lyricsText) async {
+    try {
+      final url = Uri.parse('http://192.168.31.13:8000/api/tracks/$trackId/update_lyrics/');
+      final res = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'lyrics': lyricsText}),
+      );
+      if (res.statusCode == 200) {
+        debugPrint('Lyrics updated on server for track $trackId');
+        
+        // Update local cachedTracks in memory
+        for (var track in cachedTracks) {
+          if (track['id'] == trackId) {
+            track['lyrics'] = lyricsText;
+            break;
+          }
+        }
+        // Also update offline_tracks.json
+        final offlineJsonFile = File('$localPath/offline_tracks.json');
+        if (await offlineJsonFile.exists()) {
+          await offlineJsonFile.writeAsString(json.encode(cachedTracks));
+        }
+      } else {
+        debugPrint('Failed to update lyrics on server: ${res.body}');
+      }
+    } catch (e) {
+      debugPrint('Error updating lyrics on server: $e');
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
