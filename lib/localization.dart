@@ -78,6 +78,26 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Settings',
     'ja': '設定',
   },
+  'custom_bg_title': {
+    'ru': 'Пользовательский фон',
+    'en': 'Custom Background',
+    'ja': 'カスタム背景',
+  },
+  'custom_bg_active': {
+    'ru': 'Пользовательский фон (Активен)',
+    'en': 'Custom Background (Active)',
+    'ja': 'カスタム背景 (有効)',
+  },
+  'upload_bg': {
+    'ru': 'Загрузить свой фон',
+    'en': 'Upload Background Image',
+    'ja': '背景画像をアップロード',
+  },
+  'select_image': {
+    'ru': 'Выбрать картинку',
+    'en': 'Select Image',
+    'ja': '画像を選択',
+  },
   'color_theme': {
     'ru': 'Цветовая тема',
     'en': 'Color Theme',

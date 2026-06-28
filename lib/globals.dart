@@ -34,6 +34,7 @@ ValueNotifier<LoopMode> loopModeNotifier = ValueNotifier(LoopMode.off);
 ValueNotifier<Color> accentColorNotifier = ValueNotifier(const Color(0xFFFF5252));
 ValueNotifier<String> languageNotifier = ValueNotifier('ru');
 ValueNotifier<bool> vinylRotationNotifier = ValueNotifier(true);
+ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
 
 // ── Track duration cache (populated as songs are played) ──────────────────
 
