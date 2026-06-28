@@ -114,9 +114,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final gradColors = _gradientFromAccent(accent);
 
     return Scaffold(
-      backgroundColor: gradColors.last,
+      extendBodyBehindAppBar: true,
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
-        backgroundColor: gradColors.first,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
         title: Text(tr('settings_title')),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
@@ -150,7 +152,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 constraints: const BoxConstraints(maxWidth: 600),
                 child: ListView(
                   physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.all(20),
+                  padding: EdgeInsets.fromLTRB(
+                    20,
+                    20 + MediaQuery.of(context).padding.top + kToolbarHeight,
+                    20,
+                    20,
+                  ),
                   children: [
             // ── Theme Color ──
             _buildSectionHeader(Icons.palette, tr('color_theme')),
@@ -529,9 +536,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           processedImage = img.copyResize(image, width: newWidth, height: newHeight);
         }
 
-        // Extract dominant color from processed image
-        final dominantColor = _extractColorFromDecodedImage(processedImage);
-
         // Delete existing background files
         _deleteCustomBgFiles();
 
@@ -542,12 +546,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final jpegBytes = img.encodeJpg(processedImage, quality: 85);
         await File(newPath).writeAsBytes(jpegBytes);
 
-        setState(() {
-          _selectedColorKey = 'custom';
-        });
-
         customBackgroundNotifier.value = newFileName;
-        accentColorNotifier.value = dominantColor;
 
         _saveSettings();
       }
@@ -592,55 +591,4 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (_) {}
   }
 
-  Color _extractColorFromDecodedImage(img.Image image) {
-    try {
-      final small = img.copyResize(image, width: 16, height: 16);
-
-      int rSum = 0, gSum = 0, bSum = 0, count = 0;
-      for (int y = 0; y < small.height; y++) {
-        for (int x = 0; x < small.width; x++) {
-          final pixel = small.getPixel(x, y);
-          final r = pixel.r.toInt();
-          final g = pixel.g.toInt();
-          final b = pixel.b.toInt();
-
-          final brightness = (r * 299 + g * 587 + b * 114) / 1000;
-          if (brightness > 20 && brightness < 235) {
-            rSum += r;
-            gSum += g;
-            bSum += b;
-            count++;
-          }
-        }
-      }
-
-      if (count == 0) {
-        for (int y = 0; y < small.height; y++) {
-          for (int x = 0; x < small.width; x++) {
-            final pixel = small.getPixel(x, y);
-            rSum += pixel.r.toInt();
-            gSum += pixel.g.toInt();
-            bSum += pixel.b.toInt();
-            count++;
-          }
-        }
-      }
-
-      if (count == 0) return const Color(0xFFFF5252);
-
-      final avgR = rSum ~/ count;
-      final avgG = gSum ~/ count;
-      final avgB = bSum ~/ count;
-
-      final color = Color.fromARGB(255, avgR, avgG, avgB);
-      final hsl = HSLColor.fromColor(color);
-
-      final lightness = hsl.lightness.clamp(0.4, 0.7);
-      final saturation = hsl.saturation.clamp(0.4, 0.95);
-
-      return hsl.withLightness(lightness).withSaturation(saturation).toColor();
-    } catch (_) {
-      return const Color(0xFFFF5252);
-    }
-  }
 }
