@@ -15,6 +15,7 @@ Future<void> _loadSavedSettings() async {
     if (!appDir.existsSync()) {
       appDir.createSync(recursive: true);
     }
+    globalLocalPath = appDir.path;
 
     final file = File('${appDir.path}/shiki_settings.json');
     final oldFile = File('${dir.path}/shiki_settings.json');
@@ -29,9 +30,14 @@ Future<void> _loadSavedSettings() async {
 
       // Restore accent color
       final colorKey = data['themeColor'] ?? 'color_red';
-      if (themeColors.containsKey(colorKey)) {
+      if (colorKey == 'custom' && data['accentColor'] != null) {
+        accentColorNotifier.value = Color(data['accentColor'] as int);
+      } else if (themeColors.containsKey(colorKey)) {
         accentColorNotifier.value = themeColors[colorKey]!;
       }
+
+      // Restore custom background
+      customBackgroundNotifier.value = data['customBackground'];
 
       // Restore language
       languageNotifier.value = data['language'] ?? 'ru';

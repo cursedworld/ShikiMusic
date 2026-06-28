@@ -2937,28 +2937,44 @@ class MainAppScreenState extends State<MainAppScreen>
                 child: SafeArea(child: buildSidebar(isMobile: true)),
               )
             : null,
-        body: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: _gradientFromAccent(accentColorNotifier.value),
-            ),
-          ),
-          child: isMobile
-              ? Column(
-                  children: [
-                    mainContent,
-                    if (playingQueue.isNotEmpty) buildMobileMiniPlayer(),
-                  ],
-                )
-              : Row(
-                  children: [
-                    buildSidebar(),
-                    mainContent,
-                    if (playingQueue.isNotEmpty) buildDesktopPlayer(),
-                  ],
-                ),
+        body: ValueListenableBuilder<String?>(
+          valueListenable: customBackgroundNotifier,
+          builder: (context, customBg, _) {
+            return Container(
+              decoration: customBg != null && globalLocalPath.isNotEmpty
+                  ? BoxDecoration(
+                      image: DecorationImage(
+                        image: FileImage(File('$globalLocalPath/$customBg')),
+                        fit: BoxFit.cover,
+                        colorFilter: ColorFilter.mode(
+                          Colors.black.withValues(alpha: 0.65),
+                          BlendMode.srcOver,
+                        ),
+                      ),
+                    )
+                  : BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: _gradientFromAccent(accentColorNotifier.value),
+                      ),
+                    ),
+              child: isMobile
+                  ? Column(
+                      children: [
+                        mainContent,
+                        if (playingQueue.isNotEmpty) buildMobileMiniPlayer(),
+                      ],
+                    )
+                  : Row(
+                      children: [
+                        buildSidebar(),
+                        mainContent,
+                        if (playingQueue.isNotEmpty) buildDesktopPlayer(),
+                      ],
+                    ),
+            );
+          },
         ),
       ),
     );

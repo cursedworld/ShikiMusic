@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:image/image.dart' as img;
 
 import '../globals.dart';
 import '../localization.dart';
@@ -55,9 +57,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _selectedLang = data['language'] ?? 'ru';
           _vinylRotation = data['vinylRotation'] ?? true;
         });
-        if (themeColors.containsKey(_selectedColorKey)) {
+
+        customBackgroundNotifier.value = data['customBackground'];
+
+        if (_selectedColorKey == 'custom' && data['accentColor'] != null) {
+          accentColorNotifier.value = Color(data['accentColor'] as int);
+        } else if (themeColors.containsKey(_selectedColorKey)) {
           accentColorNotifier.value = themeColors[_selectedColorKey]!;
         }
+
         languageNotifier.value = _selectedLang;
         vinylRotationNotifier.value = _vinylRotation;
       }
@@ -76,6 +84,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'themeColor': _selectedColorKey,
         'language': _selectedLang,
         'vinylRotation': _vinylRotation,
+        'customBackground': customBackgroundNotifier.value,
+        'accentColor': _selectedColorKey == 'custom'
+            ? accentColorNotifier.value.toARGB32()
+            : null,
       }));
     } catch (_) {}
   }
@@ -111,18 +123,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
           onPressed: () => Navigator.pop(context),
         ),
       ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: gradColors,
-          ),
-        ),
-        child: ListView(
-          physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.all(20),
-          children: [
+      body: ValueListenableBuilder<String?>(
+        valueListenable: customBackgroundNotifier,
+        builder: (context, customBg, _) {
+          return Container(
+            decoration: customBg != null && globalLocalPath.isNotEmpty
+                ? BoxDecoration(
+                    image: DecorationImage(
+                      image: FileImage(File('$globalLocalPath/$customBg')),
+                      fit: BoxFit.cover,
+                      colorFilter: ColorFilter.mode(
+                        Colors.black.withValues(alpha: 0.65),
+                        BlendMode.srcOver,
+                      ),
+                    ),
+                  )
+                : BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: gradColors,
+                    ),
+                  ),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 600),
+                child: ListView(
+                  physics: const BouncingScrollPhysics(),
+                  padding: const EdgeInsets.all(20),
+                  children: [
             // ── Theme Color ──
             _buildSectionHeader(Icons.palette, tr('color_theme')),
             const SizedBox(height: 12),
@@ -133,7 +162,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 final isSelected = entry.key == _selectedColorKey;
                 return GestureDetector(
                   onTap: () {
-                    setState(() => _selectedColorKey = entry.key);
+                    setState(() {
+                      _selectedColorKey = entry.key;
+                    });
                     accentColorNotifier.value = entry.value;
                     _saveSettings();
                   },
@@ -188,6 +219,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 );
               }).toList(),
             ),
+
+            const SizedBox(height: 16),
+            _buildCustomBackgroundOption(accent),
 
             const SizedBox(height: 32),
 
@@ -365,8 +399,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+    },
+  ),
+);
+}
 
   Widget _buildSectionHeader(IconData icon, String title) {
     return Row(
@@ -384,5 +422,225 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ],
     );
+  }
+
+  Widget _buildCustomBackgroundOption(Color accent) {
+    final isCustomBg = customBackgroundNotifier.value != null;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isCustomBg ? accent : Colors.white12,
+          width: isCustomBg ? 2 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.image_outlined, color: isCustomBg ? accent : Colors.white54, size: 22),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  isCustomBg
+                      ? tr('custom_bg_active')
+                      : tr('custom_bg_title'),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              ElevatedButton.icon(
+                onPressed: _uploadCustomBackground,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: accent,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+                icon: const Icon(Icons.upload_file),
+                label: Text(tr('select_image')),
+              ),
+              if (isCustomBg) ...[
+                const SizedBox(width: 12),
+                IconButton(
+                  onPressed: _removeCustomBackground,
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.redAccent.withValues(alpha: 0.2),
+                    foregroundColor: Colors.redAccent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.all(12),
+                  ),
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _uploadCustomBackground() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+      );
+      if (result != null && result.files.single.path != null) {
+        final pickedPath = result.files.single.path!;
+        final dir = await getApplicationDocumentsDirectory();
+        final appDir = Directory('${dir.path}/ShikiMusic');
+        if (!appDir.existsSync()) {
+          appDir.createSync(recursive: true);
+        }
+
+        // Read and decode image from disk
+        final bytes = await File(pickedPath).readAsBytes();
+        final image = img.decodeImage(bytes);
+        if (image == null) return;
+
+        // Resize to maximum HD dimensions to save CPU/RAM
+        img.Image processedImage = image;
+        if (image.width > 1920 || image.height > 1080) {
+          double aspectRatio = image.width / image.height;
+          int newWidth, newHeight;
+          if (image.width > image.height) {
+            newWidth = 1920;
+            newHeight = (1920 / aspectRatio).round();
+          } else {
+            newHeight = 1080;
+            newWidth = (1080 * aspectRatio).round();
+          }
+          processedImage = img.copyResize(image, width: newWidth, height: newHeight);
+        }
+
+        // Extract dominant color from processed image
+        final dominantColor = _extractColorFromDecodedImage(processedImage);
+
+        // Delete existing background files
+        _deleteCustomBgFiles();
+
+        // Save as optimized JPEG
+        final ext = 'jpg';
+        final newFileName = 'custom_bg_${DateTime.now().millisecondsSinceEpoch}.$ext';
+        final newPath = '${appDir.path}/$newFileName';
+        final jpegBytes = img.encodeJpg(processedImage, quality: 85);
+        await File(newPath).writeAsBytes(jpegBytes);
+
+        setState(() {
+          _selectedColorKey = 'custom';
+        });
+
+        customBackgroundNotifier.value = newFileName;
+        accentColorNotifier.value = dominantColor;
+
+        _saveSettings();
+      }
+    } catch (e) {
+      debugPrint('Error uploading custom background: $e');
+    }
+  }
+
+  void _removeCustomBackground() async {
+    try {
+      _deleteCustomBgFiles();
+
+      setState(() {
+        if (_selectedColorKey == 'custom') {
+          _selectedColorKey = 'color_red';
+          accentColorNotifier.value = themeColors['color_red']!;
+        }
+      });
+
+      customBackgroundNotifier.value = null;
+
+      _saveSettings();
+    } catch (e) {
+      debugPrint('Error removing custom background: $e');
+    }
+  }
+
+  void _deleteCustomBgFiles() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final appDir = Directory('${dir.path}/ShikiMusic');
+      if (appDir.existsSync()) {
+        final entities = appDir.listSync();
+        for (var entity in entities) {
+          if (entity is File && entity.path.contains('custom_bg_')) {
+            try {
+              entity.deleteSync();
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  Color _extractColorFromDecodedImage(img.Image image) {
+    try {
+      final small = img.copyResize(image, width: 16, height: 16);
+
+      int rSum = 0, gSum = 0, bSum = 0, count = 0;
+      for (int y = 0; y < small.height; y++) {
+        for (int x = 0; x < small.width; x++) {
+          final pixel = small.getPixel(x, y);
+          final r = pixel.r.toInt();
+          final g = pixel.g.toInt();
+          final b = pixel.b.toInt();
+
+          final brightness = (r * 299 + g * 587 + b * 114) / 1000;
+          if (brightness > 20 && brightness < 235) {
+            rSum += r;
+            gSum += g;
+            bSum += b;
+            count++;
+          }
+        }
+      }
+
+      if (count == 0) {
+        for (int y = 0; y < small.height; y++) {
+          for (int x = 0; x < small.width; x++) {
+            final pixel = small.getPixel(x, y);
+            rSum += pixel.r.toInt();
+            gSum += pixel.g.toInt();
+            bSum += pixel.b.toInt();
+            count++;
+          }
+        }
+      }
+
+      if (count == 0) return const Color(0xFFFF5252);
+
+      final avgR = rSum ~/ count;
+      final avgG = gSum ~/ count;
+      final avgB = bSum ~/ count;
+
+      final color = Color.fromARGB(255, avgR, avgG, avgB);
+      final hsl = HSLColor.fromColor(color);
+
+      final lightness = hsl.lightness.clamp(0.4, 0.7);
+      final saturation = hsl.saturation.clamp(0.4, 0.95);
+
+      return hsl.withLightness(lightness).withSaturation(saturation).toColor();
+    } catch (_) {
+      return const Color(0xFFFF5252);
+    }
   }
 }
