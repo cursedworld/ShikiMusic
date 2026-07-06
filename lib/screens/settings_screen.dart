@@ -39,6 +39,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _selectedColorKey = 'color_red';
   String _selectedLang = 'ru';
   bool _vinylRotation = true;
+  bool _playVideoClip = false;
 
   @override
   void initState() {
@@ -56,6 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _selectedColorKey = data['themeColor'] ?? 'color_red';
           _selectedLang = data['language'] ?? 'ru';
           _vinylRotation = data['vinylRotation'] ?? true;
+          _playVideoClip = data['playVideoClip'] ?? false;
         });
 
         customBackgroundNotifier.value = data['customBackground'];
@@ -68,6 +70,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
         languageNotifier.value = _selectedLang;
         vinylRotationNotifier.value = _vinylRotation;
+        playVideoClipNotifier.value = _playVideoClip;
       }
     } catch (_) {}
   }
@@ -84,6 +87,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'themeColor': _selectedColorKey,
         'language': _selectedLang,
         'vinylRotation': _vinylRotation,
+        'playVideoClip': _playVideoClip,
         'customBackground': customBackgroundNotifier.value,
         'accentColor': _selectedColorKey == 'custom'
             ? accentColorNotifier.value.toARGB32()
@@ -301,6 +305,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             const SizedBox(height: 32),
 
+            // ── Play Video Clip ──
+            _buildSectionHeader(Icons.smart_display_outlined, tr('play_video_clip')),
+            const SizedBox(height: 12),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: SwitchListTile(
+                title: Text(
+                  tr('play_video_clip_desc'),
+                  style: const TextStyle(color: Colors.white),
+                ),
+                subtitle: Text(
+                  tr('play_video_clip_hint'),
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+                value: _playVideoClip,
+                activeThumbColor: accent,
+                activeTrackColor: accent.withValues(alpha: 0.3),
+                onChanged: (val) {
+                  setState(() => _playVideoClip = val);
+                  playVideoClipNotifier.value = val;
+                  _saveSettings();
+                },
+              ),
+            ),
+
+            const SizedBox(height: 32),
+
             // ── Clear Cache ──
             _buildSectionHeader(Icons.cleaning_services, tr('storage')),
             const SizedBox(height: 12),
@@ -452,9 +486,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  isCustomBg
-                      ? tr('custom_bg_active')
-                      : tr('custom_bg_title'),
+                  tr('custom_bg_title'),
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 14,

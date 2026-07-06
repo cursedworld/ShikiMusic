@@ -35,6 +35,7 @@ ValueNotifier<Color> accentColorNotifier = ValueNotifier(const Color(0xFFFF5252)
 ValueNotifier<String> languageNotifier = ValueNotifier('ru');
 ValueNotifier<bool> vinylRotationNotifier = ValueNotifier(true);
 ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
+ValueNotifier<bool> playVideoClipNotifier = ValueNotifier(false);
 
 // ── Track duration cache (populated as songs are played) ──────────────────
 
@@ -50,19 +51,35 @@ bool isAudioServiceActive = false;
 bool get isDesktop =>
     Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
-final Map<int, ImageProvider> _coverCache = {};
+final Map<String, ImageProvider> _coverCache = {};
+
+String getCoverFileName(dynamic currentObject) {
+  if (currentObject == null || currentObject['album'] == null || currentObject['album']['cover'] == null) {
+    return 'default.jpg';
+  }
+  final coverUrl = currentObject['album']['cover'].toString();
+  try {
+    final uri = Uri.parse(coverUrl);
+    if (uri.pathSegments.isNotEmpty) {
+      return uri.pathSegments.last;
+    }
+  } catch (_) {}
+  return 'default.jpg';
+}
 
 /// Returns [FileImage] if a local cover exists, otherwise [NetworkImage].
 /// Results are cached to avoid rebuilding the provider on every frame.
 ImageProvider getPictureProvider(dynamic currentObject) {
   final id = currentObject['id'] as int;
-  final cached = _coverCache[id];
+  final coverFileName = getCoverFileName(currentObject);
+  final cacheKey = '$id-$coverFileName';
+  final cached = _coverCache[cacheKey];
   if (cached != null) return cached;
 
   ImageProvider provider;
   if (globalLocalPath.isNotEmpty) {
     final localImage = File(
-      '$globalLocalPath/cover_${currentObject['id']}.jpg',
+      '$globalLocalPath/cover_${id}_$coverFileName',
     );
     if (localImage.existsSync() && localImage.lengthSync() > 0) {
       provider = FileImage(localImage);
@@ -77,7 +94,7 @@ ImageProvider getPictureProvider(dynamic currentObject) {
   if (_coverCache.length > 150) {
     _coverCache.remove(_coverCache.keys.first);
   }
-  _coverCache[id] = provider;
+  _coverCache[cacheKey] = provider;
   return provider;
 }
 
@@ -85,8 +102,10 @@ ImageProvider getPictureProvider(dynamic currentObject) {
 /// otherwise falls back to the network URL.
 /// Used for Android notification artwork.
 Uri getArtUri(dynamic track) {
+  final id = track['id'] as int;
+  final coverFileName = getCoverFileName(track);
   if (globalLocalPath.isNotEmpty) {
-    final localCover = File('$globalLocalPath/cover_${track['id']}.jpg');
+    final localCover = File('$globalLocalPath/cover_${id}_$coverFileName');
     if (localCover.existsSync() && localCover.lengthSync() > 0) return Uri.file(localCover.path);
   }
   return Uri.parse(track['album']['cover'].toString());

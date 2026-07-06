@@ -14,6 +14,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_media_session/flutter_media_session.dart' as fms;
 import 'package:image/image.dart' as img;
+import 'package:video_player/video_player.dart';
 
 import '../globals.dart';
 import '../localization.dart';
@@ -241,6 +242,13 @@ class MainAppScreenState extends State<MainAppScreen>
   // ignore: unused_field
   int _syncTicks = 0;
 
+  // ── Vinyl rotation animation (desktop) ───────────────────────────────────
+  late AnimationController _vinylController;
+  bool _vinylUserStopped = false;
+
+  VideoPlayerController? _videoController;
+  bool _isVideoInitialized = false;
+
   final ValueNotifier<Duration> fullDurationNotifier = ValueNotifier(
     Duration.zero,
   );
@@ -259,10 +267,6 @@ class MainAppScreenState extends State<MainAppScreen>
   String searchQuery = "";
   bool isSearchLoading = false;
 
-  // ── Vinyl rotation animation (desktop) ───────────────────────────────────
-  late AnimationController _vinylController;
-  bool _vinylUserStopped = false;
-
   // ═══════════════════════════════════════════════════════════════════════════
   //  Lifecycle
   // ═══════════════════════════════════════════════════════════════════════════
@@ -273,6 +277,12 @@ class MainAppScreenState extends State<MainAppScreen>
 
     // React to vinyl rotation toggle changes from Settings
     vinylRotationNotifier.addListener(_onVinylRotationChanged);
+
+    // Synchronize video player actions
+    activeTrackNotifier.addListener(_onActiveTrackChanged);
+    isPlayingNotifier.addListener(_syncVideoPlayState);
+    playVideoClipNotifier.addListener(_onVideoSettingChanged);
+    uiSignal.addListener(_syncVideoDrift);
 
     // Create a single AudioPlayer and share it with AudioPlayerHandler
     audioPlayer = AudioPlayer();
@@ -382,6 +392,11 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void dispose() {
     vinylRotationNotifier.removeListener(_onVinylRotationChanged);
+    activeTrackNotifier.removeListener(_onActiveTrackChanged);
+    isPlayingNotifier.removeListener(_syncVideoPlayState);
+    playVideoClipNotifier.removeListener(_onVideoSettingChanged);
+    uiSignal.removeListener(_syncVideoDrift);
+    _videoController?.dispose();
     HardwareKeyboard.instance.removeHandler(_handleGlobalKeys);
     searchInput.dispose();
     searchFocusNode.dispose();
@@ -412,6 +427,140 @@ class MainAppScreenState extends State<MainAppScreen>
   // ═══════════════════════════════════════════════════════════════════════════
   //  Helpers
   // ═══════════════════════════════════════════════════════════════════════════
+
+  void _onActiveTrackChanged() {
+    if (mounted) {
+      _initializeVideo(activeTrackNotifier.value);
+    }
+  }
+
+  void _syncVideoPlayState() {
+    if (_videoController == null || !_isVideoInitialized) return;
+    if (isPlayingNotifier.value) {
+      _videoController!.play();
+    } else {
+      _videoController!.pause();
+    }
+  }
+
+  void _onVideoSettingChanged() {
+    if (mounted) {
+      _initializeVideo(activeTrackNotifier.value);
+    }
+  }
+
+  String _resolveAbsoluteUrl(String url) {
+    if (url.startsWith('/')) {
+      return 'http://192.168.31.13:8000$url';
+    }
+    return url;
+  }
+
+  void _syncVideoDrift() {
+    if (_videoController == null || !_isVideoInitialized || !mounted) return;
+    final audioPos = currentPositionNotifier.value;
+    final videoPos = _videoController!.value.position;
+    final diff = (audioPos.inMilliseconds - videoPos.inMilliseconds).abs();
+    if (diff > 1200) {
+      _videoController!.seekTo(audioPos);
+    }
+  }
+
+  void _fetchAndDownloadClip(int trackId) async {
+    try {
+      final res = await http.post(
+        Uri.parse('http://192.168.31.13:8000/api/tracks/$trackId/download_clip/'),
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        var videoUrl = data['video_url']?.toString();
+        if (videoUrl != null && mounted) {
+          videoUrl = _resolveAbsoluteUrl(videoUrl);
+          // Update track in memory queue and cache
+          for (var i = 0; i < playingQueue.length; i++) {
+            if (playingQueue[i]['id'] == trackId) {
+              setState(() {
+                playingQueue[i]['video_file'] = videoUrl;
+              });
+            }
+          }
+          if (activeTrackNotifier.value != null && activeTrackNotifier.value['id'] == trackId) {
+            setState(() {
+              activeTrackNotifier.value['video_file'] = videoUrl;
+            });
+            _initializeVideo(activeTrackNotifier.value);
+          }
+
+          // If track is downloaded, download the clip in background for offline use
+          if (isTrackLocal(trackId)) {
+            final videoFile = File('$localPath/video_$trackId.mp4');
+            if (!await videoFile.exists()) {
+              final videoStream = await http.get(Uri.parse(videoUrl));
+              await videoFile.writeAsBytes(videoStream.bodyBytes);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching video clip background: $e');
+    }
+  }
+
+  void _initializeVideo(dynamic trackData) async {
+    if (_videoController != null) {
+      final oldController = _videoController!;
+      _videoController = null;
+      _isVideoInitialized = false;
+      if (mounted) setState(() {});
+      await oldController.dispose();
+    }
+
+    if (trackData == null || !playVideoClipNotifier.value) return;
+
+    final videoFileUrl = trackData['video_file'];
+    if (videoFileUrl == null || videoFileUrl.toString().isEmpty) {
+      final trackId = trackData['id'];
+      _fetchAndDownloadClip(trackId);
+      return;
+    }
+
+    try {
+      final trackId = trackData['id'];
+      final localVideoFile = File('$localPath/video_$trackId.mp4');
+      VideoPlayerController controller;
+
+      if (localVideoFile.existsSync()) {
+        controller = VideoPlayerController.file(localVideoFile);
+      } else {
+        final resolvedUrl = _resolveAbsoluteUrl(videoFileUrl.toString());
+        controller = VideoPlayerController.networkUrl(Uri.parse(resolvedUrl));
+      }
+
+      _videoController = controller;
+      await controller.initialize();
+
+      if (!mounted || _videoController != controller) {
+        await controller.dispose();
+        return;
+      }
+
+      setState(() {
+        _isVideoInitialized = true;
+      });
+
+      await controller.setVolume(0.0); // Muted background playback
+      await controller.setLooping(true);
+
+      if (isPlayingNotifier.value) {
+        await controller.play();
+      }
+
+      final currentPos = currentPositionNotifier.value;
+      await controller.seekTo(currentPos);
+    } catch (e) {
+      debugPrint('Error initializing circular video player: $e');
+    }
+  }
 
   /// Centralized setter for [isPlaying] that also drives the vinyl animation
   /// and syncs the global [isPlayingNotifier].
@@ -798,7 +947,7 @@ class MainAppScreenState extends State<MainAppScreen>
     setState(() => downloadQueue.add(trackId));
     try {
       final audioFile = File('$localPath/track_$trackId.mp3');
-      final coverFile = File('$localPath/cover_$trackId.jpg');
+      final coverFile = File('$localPath/cover_${trackId}_${getCoverFileName(mediaObj)}');
       final lrcFile = File('$localPath/track_$trackId.lrc');
 
       if (!await audioFile.exists()) {
@@ -820,6 +969,14 @@ class MainAppScreenState extends State<MainAppScreen>
           mediaObj['lyrics'] != null &&
           mediaObj['lyrics'].toString().trim().isNotEmpty) {
         await lrcFile.writeAsString(mediaObj['lyrics'].toString());
+      }
+      if (mediaObj['video_file'] != null &&
+          mediaObj['video_file'].toString().trim().isNotEmpty) {
+        final videoFile = File('$localPath/video_$trackId.mp4');
+        if (!await videoFile.exists()) {
+          final videoStream = await http.get(Uri.parse(mediaObj['video_file'].toString()));
+          await videoFile.writeAsBytes(videoStream.bodyBytes);
+        }
       }
     } catch (e) {
       debugPrint(e.toString());
@@ -2327,12 +2484,27 @@ class MainAppScreenState extends State<MainAppScreen>
                               ),
                             ],
                             border: Border.all(color: Colors.white12, width: 3),
-                            image: DecorationImage(
-                              image: getPictureProvider(
-                                playingQueue[playingIndex],
-                              ),
-                              fit: BoxFit.cover,
-                            ),
+                          ),
+                          child: ClipOval(
+                            child: _isVideoInitialized &&
+                                    _videoController != null &&
+                                    playVideoClipNotifier.value
+                                ? SizedBox.expand(
+                                    child: FittedBox(
+                                      fit: BoxFit.cover,
+                                      child: SizedBox(
+                                        width: _videoController!.value.size.width,
+                                        height: _videoController!.value.size.height,
+                                        child: VideoPlayer(_videoController!),
+                                      ),
+                                    ),
+                                  )
+                                : Image(
+                                    image: getPictureProvider(
+                                      playingQueue[playingIndex],
+                                    ),
+                                    fit: BoxFit.cover,
+                                  ),
                           ),
                         ),
                       ),
