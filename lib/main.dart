@@ -44,6 +44,9 @@ Future<void> _loadSavedSettings() async {
 
       // Restore vinyl rotation setting
       vinylRotationNotifier.value = data['vinylRotation'] ?? true;
+
+      // Restore video clip setting
+      playVideoClipNotifier.value = data['playVideoClip'] ?? false;
     }
   } catch (_) {}
 }

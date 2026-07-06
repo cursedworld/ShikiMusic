@@ -303,4 +303,19 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Lyrics not found',
     'ja': '歌詞が見つかりません',
   },
+  'play_video_clip': {
+    'ru': 'Воспроизводить клип',
+    'en': 'Play Video Clip',
+    'ja': 'ビデオクリップを再生',
+  },
+  'play_video_clip_desc': {
+    'ru': 'Фоновый клип',
+    'en': 'Background Clip',
+    'ja': '背景クリップ',
+  },
+  'play_video_clip_hint': {
+    'ru': 'Воспроизводит клип с YouTube на фоне плеера (без звука)',
+    'en': 'Plays YouTube music video in the background (muted)',
+    'ja': 'プレイヤーの背景でYouTubeクリップを再生します（消音）',
+  },
 };
