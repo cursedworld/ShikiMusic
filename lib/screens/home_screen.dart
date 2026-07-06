@@ -499,6 +499,15 @@ class MainAppScreenState extends State<MainAppScreen>
               await videoFile.writeAsBytes(videoStream.bodyBytes);
             }
           }
+
+          // Update cachedTracks local cache to avoid future searches
+          for (var i = 0; i < cachedTracks.length; i++) {
+            if (cachedTracks[i]['id'] == trackId) {
+              cachedTracks[i]['video_file'] = videoUrl;
+            }
+          }
+          final offlineJsonFile = File('$localPath/offline_tracks.json');
+          await offlineJsonFile.writeAsString(json.encode(cachedTracks));
         }
       }
     } catch (e) {
@@ -970,11 +979,42 @@ class MainAppScreenState extends State<MainAppScreen>
           mediaObj['lyrics'].toString().trim().isNotEmpty) {
         await lrcFile.writeAsString(mediaObj['lyrics'].toString());
       }
-      if (mediaObj['video_file'] != null &&
-          mediaObj['video_file'].toString().trim().isNotEmpty) {
+
+      // Check if clip exists or download it on the server first
+      var videoFileUrl = mediaObj['video_file']?.toString();
+      if (videoFileUrl == null || videoFileUrl.trim().isEmpty) {
+        try {
+          final res = await http.post(
+            Uri.parse('http://192.168.31.13:8000/api/tracks/$trackId/download_clip/'),
+          ).timeout(const Duration(seconds: 15));
+          if (res.statusCode == 200) {
+            final data = json.decode(res.body);
+            videoFileUrl = data['video_url']?.toString();
+            if (videoFileUrl != null) {
+              videoFileUrl = _resolveAbsoluteUrl(videoFileUrl);
+              // Save to memory lists
+              for (var i = 0; i < playingQueue.length; i++) {
+                if (playingQueue[i]['id'] == trackId) {
+                  playingQueue[i]['video_file'] = videoFileUrl;
+                }
+              }
+              for (var i = 0; i < cachedTracks.length; i++) {
+                if (cachedTracks[i]['id'] == trackId) {
+                  cachedTracks[i]['video_file'] = videoFileUrl;
+                }
+              }
+              final offlineJsonFile = File('$localPath/offline_tracks.json');
+              await offlineJsonFile.writeAsString(json.encode(cachedTracks));
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (videoFileUrl != null && videoFileUrl.trim().isNotEmpty) {
         final videoFile = File('$localPath/video_$trackId.mp4');
         if (!await videoFile.exists()) {
-          final videoStream = await http.get(Uri.parse(mediaObj['video_file'].toString()));
+          final resolvedUrl = _resolveAbsoluteUrl(videoFileUrl);
+          final videoStream = await http.get(Uri.parse(resolvedUrl));
           await videoFile.writeAsBytes(videoStream.bodyBytes);
         }
       }
@@ -1255,6 +1295,12 @@ class MainAppScreenState extends State<MainAppScreen>
     await audioPlayer.seek(pos);
     currentPositionNotifier.value = pos;
     discordStart = DateTime.now().millisecondsSinceEpoch - pos.inMilliseconds;
+    
+    // Immediately seek the video controller to match the audio seek
+    if (_videoController != null && _isVideoInitialized) {
+      await _videoController!.seekTo(pos);
+    }
+    
     checkLyrics(pos);
     _syncMediaSessionPlayback();
   }
