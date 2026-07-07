@@ -81,8 +81,13 @@ ImageProvider getPictureProvider(dynamic currentObject) {
     final localImage = File(
       '$globalLocalPath/cover_${id}_$coverFileName',
     );
+    final fallbackImage = File(
+      '$globalLocalPath/cover_$id.jpg',
+    );
     if (localImage.existsSync() && localImage.lengthSync() > 0) {
       provider = FileImage(localImage);
+    } else if (fallbackImage.existsSync() && fallbackImage.lengthSync() > 0) {
+      provider = FileImage(fallbackImage);
     } else {
       provider = NetworkImage(currentObject['album']['cover']);
     }
@@ -106,7 +111,13 @@ Uri getArtUri(dynamic track) {
   final coverFileName = getCoverFileName(track);
   if (globalLocalPath.isNotEmpty) {
     final localCover = File('$globalLocalPath/cover_${id}_$coverFileName');
-    if (localCover.existsSync() && localCover.lengthSync() > 0) return Uri.file(localCover.path);
+    if (localCover.existsSync() && localCover.lengthSync() > 0) {
+      return Uri.file(localCover.path);
+    }
+    final fallbackCover = File('$globalLocalPath/cover_$id.jpg');
+    if (fallbackCover.existsSync() && fallbackCover.lengthSync() > 0) {
+      return Uri.file(fallbackCover.path);
+    }
   }
   return Uri.parse(track['album']['cover'].toString());
 }
