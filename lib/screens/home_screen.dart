@@ -1162,19 +1162,15 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void nextTrack() {
     if (playingQueue.isEmpty) return;
-    if (loopMode == LoopMode.one) {
-      _playIndex(playingIndex);
+    if (playingIndex < playingQueue.length - 1) {
+      _playIndex(playingIndex + 1);
     } else {
-      if (playingIndex < playingQueue.length - 1) {
-        _playIndex(playingIndex + 1);
+      if (loopMode == LoopMode.list || loopMode == LoopMode.one) {
+        _playIndex(0);
       } else {
-        if (loopMode == LoopMode.list) {
-          _playIndex(0);
-        } else {
-          audioPlayer.stop();
-          _setPlaying(false);
-          updateRPC(force: true);
-        }
+        audioPlayer.stop();
+        _setPlaying(false);
+        updateRPC(force: true);
       }
     }
   }
@@ -1188,7 +1184,7 @@ class MainAppScreenState extends State<MainAppScreen>
       if (playingIndex > 0) {
         _playIndex(playingIndex - 1);
       } else {
-        if (loopMode == LoopMode.list) {
+        if (loopMode == LoopMode.list || loopMode == LoopMode.one) {
           _playIndex(playingQueue.length - 1);
         } else {
           audioPlayer.seek(Duration.zero);
