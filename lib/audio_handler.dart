@@ -19,13 +19,12 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   VoidCallback? onStopCustom;
 
   bool _isAttached = false;
+  Duration _lastPosition = Duration.zero;
+  DateTime? _lastPositionBroadcast;
 
   AudioPlayerHandler() {
     // Start with idle state so the notification system knows we exist
-    _broadcastState(
-      playing: false,
-      processingState: AudioProcessingState.idle,
-    );
+    _broadcastState(playing: false, processingState: AudioProcessingState.idle);
   }
 
   /// Attach the actual AudioPlayer instance used by the app.
@@ -45,6 +44,14 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     });
 
     _player!.onPositionChanged.listen((pos) {
+      _lastPosition = pos;
+      final now = DateTime.now();
+      final previous = _lastPositionBroadcast;
+      if (previous != null &&
+          now.difference(previous) < const Duration(seconds: 1)) {
+        return;
+      }
+      _lastPositionBroadcast = now;
       playbackState.add(playbackState.value.copyWith(updatePosition: pos));
     });
 
@@ -80,12 +87,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
         androidCompactActionIndices: const [0, 1, 2],
         processingState: processingState,
         playing: playing,
-        updatePosition: _isAttached
-            ? Duration(
-                milliseconds:
-                    playbackState.value.updatePosition.inMilliseconds,
-              )
-            : Duration.zero,
+        updatePosition: _isAttached ? _lastPosition : Duration.zero,
       ),
     );
   }
@@ -108,10 +110,9 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   Future<void> stop() async {
     if (!_isAttached) return;
     await _player!.stop();
-    _broadcastState(
-      playing: false,
-      processingState: AudioProcessingState.idle,
-    );
+    _lastPosition = Duration.zero;
+    _lastPositionBroadcast = null;
+    _broadcastState(playing: false, processingState: AudioProcessingState.idle);
     if (onStopCustom != null) onStopCustom!();
     await super.stop();
   }
@@ -120,6 +121,9 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   Future<void> seek(Duration position) async {
     if (!_isAttached) return;
     await _player!.seek(position);
+    _lastPosition = position;
+    _lastPositionBroadcast = DateTime.now();
+    playbackState.add(playbackState.value.copyWith(updatePosition: position));
   }
 
   @override

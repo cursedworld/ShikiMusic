@@ -2,27 +2,75 @@ import 'package:flutter/material.dart';
 import 'package:flutter_discord_rpc/flutter_discord_rpc.dart';
 import 'dart:convert';
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
 
+import 'app_paths.dart';
+import 'atomic_file_store.dart';
 import 'globals.dart';
+import 'perf/frame_metrics.dart';
 import 'screens/home_screen.dart';
 import 'screens/settings_screen.dart';
+import 'server_config.dart';
+
+void _assertPerformanceIsolation() {
+  final benchmarkLaunchRequested =
+      Platform.environment['SHIKI_PERF_RUN_ID']?.trim().isNotEmpty == true ||
+      Platform.environment['SHIKI_PERF_EXPECTED_DATA_DIR']?.trim().isNotEmpty ==
+          true ||
+      Platform.environment['SHIKI_PERF_EXPECTED_SERVER_URL']
+              ?.trim()
+              .isNotEmpty ==
+          true;
+  if (!PerformanceFrameMonitor.enabled) {
+    if (benchmarkLaunchRequested) {
+      throw StateError('Benchmark collector requires an instrumented build.');
+    }
+    return;
+  }
+
+  final expectedDataDirectory = Platform
+      .environment['SHIKI_PERF_EXPECTED_DATA_DIR']
+      ?.trim();
+  final expectedServerUrl = Platform
+      .environment['SHIKI_PERF_EXPECTED_SERVER_URL']
+      ?.trim();
+  if (expectedDataDirectory == null || expectedDataDirectory.isEmpty) {
+    throw StateError('Benchmark expected data directory is missing.');
+  }
+  if (expectedServerUrl != benchmarkServerBaseUrl ||
+      configuredServerBaseUrl != benchmarkServerBaseUrl) {
+    throw StateError('Benchmark server isolation configuration mismatch.');
+  }
+  if (!hasAppDataDirectoryOverride ||
+      !_sameAbsolutePath(appDataDirectoryOverride, expectedDataDirectory)) {
+    throw StateError('Benchmark data directory isolation mismatch.');
+  }
+}
+
+bool _sameAbsolutePath(String first, String second) {
+  String normalize(String value) {
+    final path = Directory(
+      value,
+    ).absolute.path.replaceAll('/', Platform.pathSeparator);
+    return Platform.isWindows ? path.toLowerCase() : path;
+  }
+
+  return normalize(first) == normalize(second);
+}
 
 Future<void> _loadSavedSettings() async {
   try {
-    final dir = await getApplicationDocumentsDirectory();
-    final appDir = Directory('${dir.path}/ShikiMusic');
-    if (!appDir.existsSync()) {
-      appDir.createSync(recursive: true);
-    }
+    final appDir = await getShikiDataDirectory();
     globalLocalPath = appDir.path;
 
     final file = File('${appDir.path}/shiki_settings.json');
-    final oldFile = File('${dir.path}/shiki_settings.json');
-    if (!file.existsSync() && oldFile.existsSync()) {
-      try {
-        await oldFile.rename(file.path);
-      } catch (_) {}
+    if (!hasAppDataDirectoryOverride) {
+      final documents = await getDocumentsRootDirectory();
+      final oldFile = File('${documents.path}/shiki_settings.json');
+      if (!file.existsSync() && oldFile.existsSync()) {
+        try {
+          await atomicFileStore.writeBytes(file, await oldFile.readAsBytes());
+        } catch (_) {}
+      }
     }
 
     if (await file.exists()) {
@@ -37,7 +85,15 @@ Future<void> _loadSavedSettings() async {
       }
 
       // Restore custom background
-      customBackgroundNotifier.value = data['customBackground'];
+      final savedBackground = data['customBackground'];
+      if (savedBackground is String && savedBackground.isNotEmpty) {
+        final backgroundFile = File('${appDir.path}/$savedBackground');
+        customBackgroundNotifier.value = await backgroundFile.exists()
+            ? savedBackground
+            : null;
+      } else {
+        customBackgroundNotifier.value = null;
+      }
 
       // Restore language
       languageNotifier.value = data['language'] ?? 'ru';
@@ -53,6 +109,7 @@ Future<void> _loadSavedSettings() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _assertPerformanceIsolation();
 
   // Limit image cache to reduce memory usage
   PaintingBinding.instance.imageCache.maximumSize = 50;
@@ -62,7 +119,13 @@ void main() async {
   // Load saved settings early so the first frame uses the right theme
   await _loadSavedSettings();
 
-  if (isDesktop) {
+  // Compiled out of normal builds. Benchmark builds opt in explicitly with
+  // --dart-define=SHIKI_PERF_METRICS=true.
+  if (PerformanceFrameMonitor.enabled) {
+    await PerformanceFrameMonitor.install();
+  }
+
+  if (isDesktop && !PerformanceFrameMonitor.enabled) {
     try {
       await FlutterDiscordRPC.initialize("1480246072042590219");
     } catch (e) {

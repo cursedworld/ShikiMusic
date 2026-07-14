@@ -33,8 +33,15 @@ migrate_working_dir/
 /build/
 /coverage/
 
-# Local Codex planning/performance artifacts
+# Local agent planning/performance artifacts
+.agents/
+.codex/
 .omx/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
 
 # Symbolication related
 app.*.symbols
