@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "measurement": {
+    "runKind": "baseline",
+    "warmupRuns": 1,
+    "warmupRunSeconds": 30,
+    "measuredRuns": 3,
+    "sampleIntervalMs": 500,
+    "frameBudgetMicros": 16667,
+    "processIsolation": "fresh-process-per-run",
+    "stateReset": "seed-copy-v1"
+  },
+  "scenarios": {
+    "cold-start-server-offline": {
+      "warmupSeconds": 0,
+      "durationSeconds": 30,
+      "expectedActions": 0,
+      "actionStartDelayMs": 0,
+      "actionCadenceMs": 0
+    },
+    "idle-home-five-minutes": {
+      "warmupSeconds": 10,
+      "durationSeconds": 300,
+      "expectedActions": 0,
+      "actionStartDelayMs": 0,
+      "actionCadenceMs": 0
+    },
+    "audio-only-ten-minutes": {
+      "warmupSeconds": 15,
+      "durationSeconds": 600,
+      "expectedActions": 1,
+      "actionStartDelayMs": 0,
+      "actionCadenceMs": 0
+    },
+    "local-video-30fps-ten-minutes": {
+      "warmupSeconds": 15,
+      "durationSeconds": 600,
+      "expectedActions": 1,
+      "actionStartDelayMs": 0,
+      "actionCadenceMs": 0
+    },
+    "local-video-60fps-ten-minutes": {
+      "warmupSeconds": 15,
+      "durationSeconds": 600,
+      "expectedActions": 1,
+      "actionStartDelayMs": 0,
+      "actionCadenceMs": 0
+    },
+    "minimize-video-five-minutes-restore": {
+      "warmupSeconds": 15,
+      "durationSeconds": 300,
+      "expectedActions": 2,
+      "actionStartDelayMs": 0,
+      "actionCadenceMs": 0
+    },
+    "large-mp3-mp4-download": {
+      "warmupSeconds": 15,
+      "durationSeconds": 600,
+      "expectedActions": 1,
+      "actionStartDelayMs": 1000,
+      "actionCadenceMs": 0
+    },
+    "rapid-track-switch-20": {
+      "warmupSeconds": 10,
+      "durationSeconds": 60,
+      "expectedActions": 20,
+      "actionStartDelayMs": 1000,
+      "actionCadenceMs": 250
+    },
+    "lyrics-blur-five-minutes": {
+      "warmupSeconds": 10,
+      "durationSeconds": 300,
+      "expectedActions": 2,
+      "actionStartDelayMs": 0,
+      "actionCadenceMs": 0
+    },
+    "video-enable-disable-30": {
+      "warmupSeconds": 10,
+      "durationSeconds": 120,
+      "expectedActions": 30,
+      "actionStartDelayMs": 1000,
+      "actionCadenceMs": 2000
+    }
+  },
+  "fixtures": {
+    "video30TrackId": 62030,
+    "video60TrackId": 62060,
+    "downloadTrackId": 62070,
+    "fixtureServerPort": 48765
+  }
+}

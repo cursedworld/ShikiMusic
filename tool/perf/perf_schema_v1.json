@@ -5,39 +5,76 @@
   "type": "object",
   "required": ["schemaVersion", "metadata", "measurement", "scenarios"],
   "properties": {
-    "schemaVersion": {
-      "const": 1
-    },
+    "schemaVersion": { "const": 1 },
     "metadata": {
       "type": "object",
-      "required": ["commit", "platform", "buildMode", "flutterVersion"],
+      "required": [
+        "commit",
+        "platform",
+        "buildMode",
+        "flutterVersion",
+        "os",
+        "device",
+        "cpu",
+        "gpu",
+        "driver",
+        "sourceTreeSha256",
+        "appExecutableSha256",
+        "appBundleSha256",
+        "contractSha256",
+        "collectorSha256",
+        "fixtureManifestSha256",
+        "seedDataSha256",
+        "frameInstrumentation",
+        "fixtureHashes"
+      ],
       "properties": {
         "commit": { "type": "string", "minLength": 1 },
         "platform": { "enum": ["windows", "linux", "android"] },
         "buildMode": { "enum": ["profile", "release"] },
         "flutterVersion": { "type": "string", "minLength": 1 },
-        "os": { "type": "string" },
-        "device": { "type": "string" },
-        "cpu": { "type": "string" },
-        "gpu": { "type": "string" },
-        "driver": { "type": "string" },
-        "videoBackend": { "type": "string" },
-        "decoder": { "type": "string" },
-        "decoderEvidence": { "type": "string" },
+        "os": { "type": "string", "minLength": 1 },
+        "device": { "type": "string", "minLength": 1 },
+        "cpu": { "type": "string", "minLength": 1 },
+        "gpu": { "type": "string", "minLength": 1 },
+        "driver": { "type": "string", "minLength": 1 },
+        "sourceTreeSha256": { "type": "string", "minLength": 1 },
+        "appExecutableSha256": { "type": "string", "minLength": 1 },
+        "appBundleSha256": { "type": "string", "minLength": 1 },
+        "contractSha256": { "type": "string", "minLength": 1 },
+        "collectorSha256": { "type": "string", "minLength": 1 },
+        "fixtureManifestSha256": { "type": "string", "minLength": 1 },
+        "seedDataSha256": { "type": "string", "minLength": 1 },
+        "frameInstrumentation": { "const": true },
         "fixtureHashes": {
           "type": "object",
-          "additionalProperties": { "type": "string" }
+          "minProperties": 16,
+          "additionalProperties": { "type": "string", "minLength": 1 }
         }
       },
       "additionalProperties": true
     },
     "measurement": {
       "type": "object",
-      "required": ["measuredRuns", "sampleIntervalMs"],
+      "required": [
+        "runKind",
+        "warmupRuns",
+        "warmupRunSeconds",
+        "measuredRuns",
+        "sampleIntervalMs",
+        "frameBudgetMicros",
+        "processIsolation",
+        "stateReset"
+      ],
       "properties": {
-        "warmupRuns": { "type": "integer", "minimum": 0 },
-        "measuredRuns": { "type": "integer", "minimum": 3 },
-        "sampleIntervalMs": { "type": "integer", "minimum": 1 }
+        "runKind": { "const": "baseline" },
+        "warmupRuns": { "const": 1 },
+        "warmupRunSeconds": { "const": 30 },
+        "measuredRuns": { "const": 3 },
+        "sampleIntervalMs": { "const": 500 },
+        "frameBudgetMicros": { "const": 16667 },
+        "processIsolation": { "const": "fresh-process-per-run" },
+        "stateReset": { "const": "seed-copy-v1" }
       },
       "additionalProperties": true
     },
@@ -46,9 +83,87 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "metrics"],
+        "required": [
+          "id",
+          "warmupSeconds",
+          "durationSeconds",
+          "actionStartDelayMs",
+          "actionCadenceMs",
+          "runs",
+          "scenarioEvidence",
+          "metrics"
+        ],
         "properties": {
           "id": { "type": "string", "minLength": 1 },
+          "warmupSeconds": { "type": "integer", "minimum": 0 },
+          "durationSeconds": { "type": "integer", "minimum": 1 },
+          "actionStartDelayMs": { "type": "integer", "minimum": 0 },
+          "actionCadenceMs": { "type": "integer", "minimum": 0 },
+          "runs": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "properties": {
+                "hiddenDecoderMaximumUtilizationPercent": {
+                  "anyOf": [
+                    { "type": "number", "minimum": 0, "maximum": 0.05 },
+                    { "type": "null" }
+                  ]
+                }
+              }
+            }
+          },
+          "scenarioEvidence": {
+            "type": "object",
+            "required": [
+              "ready",
+              "captureStarted",
+              "captureEnded",
+              "captureDurationMs",
+              "expectedActions",
+              "completedActions",
+              "actionCompleted",
+              "serverBaseUrl",
+              "videoProgressEvents",
+              "videoPositionAdvanceMs",
+              "videoPlayingSamples",
+              "videoBufferingSamples",
+              "videoControllerReleasedAfterHiddenMs",
+              "actionStartDelayMs",
+              "actionCadenceMs",
+              "actionElapsedMs"
+            ],
+            "properties": {
+              "ready": { "const": true },
+              "captureStarted": { "const": true },
+              "captureEnded": { "const": true },
+              "captureDurationMs": { "type": "number", "exclusiveMinimum": 0 },
+              "expectedActions": { "type": "integer", "minimum": 0 },
+              "completedActions": { "type": "integer", "minimum": 0 },
+              "actionCompleted": { "const": true },
+              "serverBaseUrl": { "const": "http://127.0.0.1:65534" },
+              "videoProgressEvents": { "type": "integer", "minimum": 0 },
+              "videoPositionAdvanceMs": { "type": "number", "minimum": 0 },
+              "videoPlayingSamples": { "type": "integer", "minimum": 0 },
+              "videoBufferingSamples": { "type": "integer", "minimum": 0 },
+              "videoControllerReleasedAfterHiddenMs": {
+                "anyOf": [
+                  { "type": "number", "minimum": 0 },
+                  { "type": "null" }
+                ]
+              },
+              "actionStartDelayMs": { "type": "integer", "minimum": 0 },
+              "actionCadenceMs": { "type": "integer", "minimum": 0 },
+              "actionElapsedMs": {
+                "type": "array",
+                "items": { "type": "number", "minimum": 0 }
+              },
+              "actionError": { "type": "string" },
+              "dataDirectory": { "type": "string", "minLength": 1 }
+            }
+          },
           "metrics": {
             "type": "object",
             "additionalProperties": {
@@ -56,6 +171,8 @@
               "properties": {
                 "samples": {
                   "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
                   "items": { "type": "number" }
                 },
                 "median": { "type": "number" },
@@ -63,6 +180,14 @@
                 "compareStat": { "enum": ["median", "p95"] },
                 "required": { "type": "boolean" },
                 "requiredEvidence": { "type": "boolean" },
+                "runtimeVerified": { "type": "boolean" },
+                "probeKind": { "type": "string" },
+                "positiveRunSamples": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": { "type": "number", "exclusiveMinimum": 0 }
+                },
                 "evidence": { "type": "string" },
                 "maxRegressionPercent": { "type": "number", "minimum": 0 },
                 "maxAbsolute": { "type": "number", "minimum": 0 },

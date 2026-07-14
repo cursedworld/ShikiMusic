@@ -6,7 +6,6 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:flutter_discord_rpc/flutter_discord_rpc.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:audio_service/audio_service.dart';
@@ -15,9 +14,17 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_media_session/flutter_media_session.dart' as fms;
 import 'package:image/image.dart' as img;
 import 'package:video_player/video_player.dart';
+import 'package:video_player_media_kit/video_player_media_kit.dart';
 
+import '../app_paths.dart';
+import '../async_task_limiter.dart';
+import '../atomic_file_store.dart';
 import '../globals.dart';
 import '../localization.dart';
+import '../media_file_downloader.dart';
+import '../perf/frame_metrics.dart';
+import '../safe_file_migration.dart';
+import '../server_config.dart';
 import 'lyrics_screen.dart';
 import 'settings_screen.dart';
 
@@ -43,6 +50,63 @@ class _SmoothScrollBehavior extends ScrollBehavior {
   }
 }
 
+class _VideoRequest {
+  const _VideoRequest({required this.trackId, required this.videoUrl});
+
+  factory _VideoRequest.from(dynamic trackData) {
+    if (trackData is! Map) {
+      return const _VideoRequest(trackId: null, videoUrl: null);
+    }
+    final rawTrackId = trackData['id'];
+    final trackId = rawTrackId is int
+        ? rawTrackId
+        : int.tryParse(rawTrackId?.toString() ?? '');
+    final rawVideoUrl = trackData['video_file']?.toString().trim();
+    return _VideoRequest(
+      trackId: trackId,
+      videoUrl: rawVideoUrl == null || rawVideoUrl.isEmpty ? null : rawVideoUrl,
+    );
+  }
+
+  final int? trackId;
+  final String? videoUrl;
+}
+
+class _VideoOperation {
+  final Completer<void> _cancellation = Completer<void>();
+
+  bool get isCanceled => _cancellation.isCompleted;
+  Future<void> get whenCanceled => _cancellation.future;
+
+  void cancel() {
+    if (!_cancellation.isCompleted) {
+      _cancellation.complete();
+    }
+  }
+}
+
+class _SharedClipGeneration {
+  _SharedClipGeneration({required this.transportOperation});
+
+  final _VideoOperation transportOperation;
+  late final Future<http.Response> response;
+  int subscribers = 0;
+  bool completed = false;
+  bool transportStarted = false;
+}
+
+class _ClipGenerationCancelledException implements Exception {
+  const _ClipGenerationCancelledException();
+}
+
+bool _linuxVideoBackendInitialized = false;
+
+void _ensureLinuxVideoBackendInitialized() {
+  if (!Platform.isLinux || _linuxVideoBackendInitialized) return;
+  VideoPlayerMediaKit.ensureInitialized(linux: true);
+  _linuxVideoBackendInitialized = true;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  MainAppScreen
 // ═══════════════════════════════════════════════════════════════════════════
@@ -55,7 +119,7 @@ class MainAppScreen extends StatefulWidget {
 }
 
 class MainAppScreenState extends State<MainAppScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late final AudioPlayer audioPlayer;
 
   // ── flutter_media_session for Media3 notification ────────────────────────
@@ -116,6 +180,8 @@ class MainAppScreenState extends State<MainAppScreen>
     if (playingQueue.isEmpty) return;
     final track = playingQueue[playingIndex];
     final dur = trackDurations[track['id']];
+    // flutter_media_session 2.x has no audioplayers adapter yet.
+    // ignore: deprecated_member_use
     _mediaSession!.updateMetadata(
       fms.MediaMetadata(
         title: track['title']?.toString() ?? 'Unknown',
@@ -130,6 +196,8 @@ class MainAppScreenState extends State<MainAppScreen>
   /// Sync playback state (playing/paused, position) to Media3.
   void _syncMediaSessionPlayback() {
     if (!_mediaSessionActive || _mediaSession == null) return;
+    // flutter_media_session 2.x has no audioplayers adapter yet.
+    // ignore: deprecated_member_use
     _mediaSession!.updatePlaybackState(
       fms.PlaybackState(
         status: isPlaying
@@ -156,6 +224,23 @@ class MainAppScreenState extends State<MainAppScreen>
 
   /// Download and crop cover to a perfect square to prevent system widget distortion
   Future<bool> _downloadAndCropCover(String url, File file) async {
+    final absolutePath = file.absolute.path;
+    final key = Platform.isWindows ? absolutePath.toLowerCase() : absolutePath;
+    final pending = _coverDownloads[key];
+    if (pending != null) return pending;
+
+    final operation = _downloadAndCropCoverOnce(url, file);
+    _coverDownloads[key] = operation;
+    try {
+      return await operation;
+    } finally {
+      if (identical(_coverDownloads[key], operation)) {
+        _coverDownloads.remove(key);
+      }
+    }
+  }
+
+  Future<bool> _downloadAndCropCoverOnce(String url, File file) async {
     try {
       final res = await http
           .get(Uri.parse(url))
@@ -176,19 +261,13 @@ class MainAppScreenState extends State<MainAppScreen>
           );
           final resized = img.copyResize(cropped, width: 600, height: 600);
           final jpegBytes = img.encodeJpg(resized);
-          await file.writeAsBytes(jpegBytes);
+          await atomicFileStore.writeBytes(file, jpegBytes);
           return true;
         }
       }
     } catch (e) {
       debugPrint('Error downloading or cropping cover: $e');
     }
-    // Clean up if it failed or was not a valid cropped image
-    try {
-      if (await file.exists()) {
-        await file.delete();
-      }
-    } catch (_) {}
     return false;
   }
 
@@ -199,13 +278,6 @@ class MainAppScreenState extends State<MainAppScreen>
     final coverFile = File('$localPath/cover_$id.jpg');
 
     if (await _isCoverValidAndSquare(coverFile)) return;
-
-    // Delete invalid/uncropped file before re-downloading
-    try {
-      if (await coverFile.exists()) {
-        await coverFile.delete();
-      }
-    } catch (_) {}
 
     final success = await _downloadAndCropCover(
       track['album']['cover'].toString(),
@@ -239,6 +311,7 @@ class MainAppScreenState extends State<MainAppScreen>
   Timer? backgroundPollingTimer;
   Timer? rpcThrottleTimer;
   DateTime? lastRpcTime;
+  bool _discordConnected = false;
   // ignore: unused_field
   int _syncTicks = 0;
 
@@ -247,7 +320,45 @@ class MainAppScreenState extends State<MainAppScreen>
   bool _vinylUserStopped = false;
 
   VideoPlayerController? _videoController;
+  VideoPlayerController? _initializingVideoController;
   bool _isVideoInitialized = false;
+  Duration? _lastBenchmarkVideoPosition;
+  final MediaFileDownloader _mediaFileDownloader = MediaFileDownloader();
+  MediaFileDownloader? _foregroundVideoDownloader;
+  final AsyncTaskLimiter _downloadTaskLimiter = AsyncTaskLimiter(2);
+  final AsyncTaskLimiter _clipTaskLimiter = AsyncTaskLimiter(1);
+  final AsyncTaskLimiter _foregroundClipTaskLimiter = AsyncTaskLimiter(1);
+  final AsyncTaskLimiter _clipTransportLimiter = AsyncTaskLimiter(2);
+  final Map<int, _SharedClipGeneration> _clipGenerationRequests =
+      <int, _SharedClipGeneration>{};
+  http.Client? _clipHttpClient;
+  Future<void> _audioWork = Future<void>.value();
+  Future<void> _videoWork = Future<void>.value();
+  Timer? _videoReleaseTimer;
+  Timer? _videoTrackSwitchTimer;
+  int _videoRevision = 0;
+  _VideoOperation? _videoOperation;
+  int? _videoTrackId;
+  bool _videoLifecycleVisible = true;
+  bool _videoSurfaceAvailable = false;
+  bool _stateDisposing = false;
+  int _trackRevision = 0;
+  int _transportRevision = 0;
+  int _seekRevision = 0;
+  int _databaseSyncRevision = 0;
+  int? _audioSourceTrackId;
+  int _settledTrackRevision = -1;
+  int _lyricsRevision = 0;
+  StreamSubscription<Duration>? _audioDurationSubscription;
+  StreamSubscription<Duration>? _audioPositionSubscription;
+  StreamSubscription<void>? _audioCompleteSubscription;
+  final Set<String> _downloadedVideoSources = <String>{};
+  final Set<String> _blockedVideoSources = <String>{};
+  static const Duration _clipFetchDebounce = Duration(milliseconds: 500);
+  static const Duration _videoTrackSwitchDebounce = Duration(milliseconds: 300);
+  static const Duration _clipGenerationTimeout = Duration(minutes: 10);
+  final Map<String, Future<bool>> _coverDownloads = <String, Future<bool>>{};
+  final Expando<bool> _disposedVideoControllers = Expando<bool>();
 
   final ValueNotifier<Duration> fullDurationNotifier = ValueNotifier(
     Duration.zero,
@@ -274,6 +385,10 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _videoLifecycleVisible = !_isVideoHiddenLifecycle(
+      WidgetsBinding.instance.lifecycleState,
+    );
 
     // React to vinyl rotation toggle changes from Settings
     vinylRotationNotifier.addListener(_onVinylRotationChanged);
@@ -315,7 +430,11 @@ class MainAppScreenState extends State<MainAppScreen>
       vsync: this,
     );
 
-    startData();
+    if (PerformanceFrameMonitor.enabled) {
+      unawaited(_runBenchmarkScenario(startData));
+    } else {
+      unawaited(_startDataSafely());
+    }
 
     // Request notification permission for background media controls on Android 13+
     _requestNotificationPermission();
@@ -325,12 +444,8 @@ class MainAppScreenState extends State<MainAppScreen>
 
     HardwareKeyboard.instance.addHandler(_handleGlobalKeys);
 
-    if (isDesktop) {
-      try {
-        FlutterDiscordRPC.instance.connect();
-      } catch (e) {
-        debugPrint('Discord RPC connect failed: $e');
-      }
+    if (isDesktop && !PerformanceFrameMonitor.enabled) {
+      unawaited(_connectDiscordRpc());
     }
 
     if (isAudioServiceActive) {
@@ -352,21 +467,33 @@ class MainAppScreenState extends State<MainAppScreen>
     }
 
     audioPlayer.setVolume(volume);
-    audioPlayer.onDurationChanged.listen((d) {
-      fullDurationNotifier.value = d;
+    _audioDurationSubscription = audioPlayer.onDurationChanged.listen((d) {
       // Cache track duration for playlist stats
-      if (playingQueue.isNotEmpty && playingIndex < playingQueue.length) {
-        trackDurations[playingQueue[playingIndex]['id'] as int] = d.inSeconds;
+      final sourceTrackId = _audioSourceTrackId;
+      if (sourceTrackId != null) {
+        trackDurations[sourceTrackId] = d.inSeconds;
       }
-      _syncMediaSessionMetadata();
+      if (_settledTrackRevision == _trackRevision &&
+          sourceTrackId == activeTrackNotifier.value?['id']) {
+        fullDurationNotifier.value = d;
+        _syncMediaSessionMetadata();
+      }
     });
-    audioPlayer.onPositionChanged.listen((p) {
-      if (mounted) currentPositionNotifier.value = p;
+    _audioPositionSubscription = audioPlayer.onPositionChanged.listen((p) {
+      if (mounted &&
+          _settledTrackRevision == _trackRevision &&
+          _audioSourceTrackId == activeTrackNotifier.value?['id']) {
+        currentPositionNotifier.value = p;
+      }
     });
 
-    audioPlayer.onPlayerComplete.listen((event) {
+    _audioCompleteSubscription = audioPlayer.onPlayerComplete.listen((event) {
+      if (_settledTrackRevision != _trackRevision ||
+          _audioSourceTrackId != activeTrackNotifier.value?['id']) {
+        return;
+      }
       if (loopMode == LoopMode.one) {
-        startPlayback(playingQueue, playingIndex);
+        _playIndex(playingIndex);
       } else {
         nextTrack();
       }
@@ -375,7 +502,12 @@ class MainAppScreenState extends State<MainAppScreen>
     backgroundPollingTimer = Timer.periodic(
       const Duration(milliseconds: 1000),
       (_) async {
-        if (!isPlaying || globalLyrics.isEmpty) return;
+        if (!isPlaying ||
+            globalLyrics.isEmpty ||
+            _settledTrackRevision != _trackRevision ||
+            _audioSourceTrackId != activeTrackNotifier.value?['id']) {
+          return;
+        }
         final pos = await audioPlayer.getCurrentPosition();
         if (pos != null) {
           checkLyrics(pos);
@@ -390,13 +522,60 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final surfaceAvailable = MediaQuery.sizeOf(context).width >= 800;
+    if (_videoSurfaceAvailable != surfaceAvailable) {
+      _videoSurfaceAvailable = surfaceAvailable;
+      _initializeVideo(activeTrackNotifier.value);
+    }
+  }
+
+  @override
   void dispose() {
+    _stateDisposing = true;
+    _trackRevision += 1;
+    _transportRevision += 1;
+    _seekRevision += 1;
+    _databaseSyncRevision += 1;
+    _videoRevision += 1;
+    _lyricsRevision += 1;
+    _videoOperation?.cancel();
+    _videoOperation = null;
+    _videoReleaseTimer?.cancel();
+    _videoTrackSwitchTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     vinylRotationNotifier.removeListener(_onVinylRotationChanged);
     activeTrackNotifier.removeListener(_onActiveTrackChanged);
     isPlayingNotifier.removeListener(_syncVideoPlayState);
     playVideoClipNotifier.removeListener(_onVideoSettingChanged);
     uiSignal.removeListener(_syncVideoDrift);
-    _videoController?.dispose();
+    final videoController = _videoController;
+    final initializingVideoController = _initializingVideoController;
+    _videoController = null;
+    _initializingVideoController = null;
+    _isVideoInitialized = false;
+    _videoTrackId = null;
+    if (videoController != null) {
+      unawaited(_disposeVideoController(videoController));
+    }
+    if (initializingVideoController != null) {
+      unawaited(_disposeVideoController(initializingVideoController));
+    }
+    _downloadTaskLimiter.close();
+    for (final request in _clipGenerationRequests.values.toSet()) {
+      request.transportOperation.cancel();
+    }
+    _clipGenerationRequests.clear();
+    _clipTaskLimiter.close();
+    _foregroundClipTaskLimiter.close();
+    _clipTransportLimiter.close();
+    _clipHttpClient?.close();
+    unawaited(_mediaFileDownloader.close());
+    unawaited(_foregroundVideoDownloader?.close());
+    unawaited(_audioDurationSubscription?.cancel());
+    unawaited(_audioPositionSubscription?.cancel());
+    unawaited(_audioCompleteSubscription?.cancel());
     HardwareKeyboard.instance.removeHandler(_handleGlobalKeys);
     searchInput.dispose();
     searchFocusNode.dispose();
@@ -410,12 +589,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _vinylController.dispose();
 
     if (isDesktop) {
-      try {
-        FlutterDiscordRPC.instance.disconnect();
-        FlutterDiscordRPC.instance.dispose();
-      } catch (e) {
-        debugPrint('Discord RPC dispose failed: $e');
-      }
+      unawaited(_disposeDiscordRpc());
     } else {
       WakelockPlus.disable();
     }
@@ -424,150 +598,757 @@ class MainAppScreenState extends State<MainAppScreen>
     super.dispose();
   }
 
+  bool _isVideoHiddenLifecycle(AppLifecycleState? state) =>
+      state == AppLifecycleState.hidden ||
+      state == AppLifecycleState.paused ||
+      state == AppLifecycleState.detached;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final restoredWithoutActivation =
+        isDesktop &&
+        state == AppLifecycleState.inactive &&
+        !_videoLifecycleVisible;
+    if (state == AppLifecycleState.resumed || restoredWithoutActivation) {
+      _videoLifecycleVisible = true;
+      _videoReleaseTimer?.cancel();
+      _videoReleaseTimer = null;
+      if (isPlaying && vinylRotationNotifier.value && !_vinylUserStopped) {
+        _vinylController.repeat();
+      }
+      _initializeVideo(activeTrackNotifier.value);
+      return;
+    }
+    if (state == AppLifecycleState.inactive) {
+      return;
+    }
+    if (!_isVideoHiddenLifecycle(state)) {
+      return;
+    }
+
+    final wasVisible = _videoLifecycleVisible;
+    _videoLifecycleVisible = false;
+    if (!wasVisible && state != AppLifecycleState.detached) {
+      return;
+    }
+    _vinylController.stop();
+    _videoTrackSwitchTimer?.cancel();
+    _videoRevision += 1;
+    _videoOperation?.cancel();
+    _videoOperation = null;
+    _videoReleaseTimer?.cancel();
+    final controller = _videoController;
+    final initializingController = _initializingVideoController;
+    if (controller != null) {
+      unawaited(_pauseVideoController(controller));
+    }
+    if (initializingController != null) {
+      _initializingVideoController = null;
+      unawaited(_disposeVideoController(initializingController));
+    }
+    _enqueueVideoWork(() async {
+      final current = _videoController;
+      if (!_videoLifecycleVisible && current != null) {
+        await _pauseVideoController(current);
+      }
+    });
+
+    if (state == AppLifecycleState.detached) {
+      _initializeVideo(activeTrackNotifier.value);
+      return;
+    }
+    _videoReleaseTimer = Timer(const Duration(milliseconds: 500), () {
+      if (!_stateDisposing && !_videoLifecycleVisible) {
+        _initializeVideo(activeTrackNotifier.value);
+      }
+    });
+  }
+
+  Future<void> _connectDiscordRpc() async {
+    try {
+      await FlutterDiscordRPC.instance.connect();
+      _discordConnected = true;
+      if (mounted && playingQueue.isNotEmpty) {
+        updateRPC(force: true);
+      }
+    } catch (error) {
+      _discordConnected = false;
+      debugPrint('Discord RPC connect failed: $error');
+    }
+  }
+
+  Future<void> _disposeDiscordRpc() async {
+    try {
+      if (_discordConnected) {
+        await FlutterDiscordRPC.instance.disconnect();
+      }
+      _discordConnected = false;
+      await FlutterDiscordRPC.instance.dispose();
+    } catch (error) {
+      debugPrint('Discord RPC dispose failed: $error');
+    }
+  }
+
+  Future<void> _setDiscordActivity(RPCActivity activity) async {
+    if (!_discordConnected) return;
+    try {
+      await FlutterDiscordRPC.instance.setActivity(activity: activity);
+    } catch (error) {
+      debugPrint('Discord RPC activity failed: $error');
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  Helpers
   // ═══════════════════════════════════════════════════════════════════════════
 
   void _onActiveTrackChanged() {
-    if (mounted) {
-      _initializeVideo(activeTrackNotifier.value);
+    if (!mounted) return;
+    _videoTrackSwitchTimer?.cancel();
+    _suspendVideoForTrackTransition();
+    final scheduledTrackId = activeTrackNotifier.value?['id'];
+    _videoTrackSwitchTimer = Timer(_videoTrackSwitchDebounce, () {
+      _videoTrackSwitchTimer = null;
+      if (mounted && activeTrackNotifier.value?['id'] == scheduledTrackId) {
+        _initializeVideo(activeTrackNotifier.value);
+      }
+    });
+  }
+
+  void _suspendVideoForTrackTransition() {
+    _videoOperation?.cancel();
+    _videoOperation = null;
+    _videoRevision += 1;
+    _lastBenchmarkVideoPosition = null;
+    final controller = _videoController;
+    if (_isVideoInitialized) {
+      _isVideoInitialized = false;
+      if (mounted) setState(() {});
+    }
+    if (controller != null) {
+      _enqueueVideoWork(() async {
+        if (identical(_videoController, controller) && !_isVideoInitialized) {
+          await _pauseVideoController(controller);
+        }
+      });
     }
   }
 
   void _syncVideoPlayState() {
-    if (_videoController == null || !_isVideoInitialized) return;
-    if (isPlayingNotifier.value) {
-      _videoController!.play();
-    } else {
-      _videoController!.pause();
-    }
+    _enqueueVideoWork(() async {
+      final controller = _videoController;
+      if (controller == null || !_isVideoInitialized) return;
+      await _applyVideoPlaybackState(controller);
+    });
   }
 
   void _onVideoSettingChanged() {
     if (mounted) {
+      _videoTrackSwitchTimer?.cancel();
+      _videoTrackSwitchTimer = null;
       _initializeVideo(activeTrackNotifier.value);
     }
   }
 
   String _resolveAbsoluteUrl(String url) {
-    if (url.startsWith('/')) {
-      return 'http://192.168.31.13:8000$url';
-    }
-    return url;
+    return resolveConfiguredMediaUrl(url);
   }
 
   void _syncVideoDrift() {
-    if (_videoController == null || !_isVideoInitialized || !mounted) return;
-    final audioPos = currentPositionNotifier.value;
-    final videoPos = _videoController!.value.position;
-    final diff = (audioPos.inMilliseconds - videoPos.inMilliseconds).abs();
-    if (diff > 1200) {
-      _videoController!.seekTo(audioPos);
-    }
+    _enqueueVideoWork(() async {
+      final controller = _videoController;
+      if (controller == null || !_isVideoInitialized || !mounted) return;
+      final audioPos = currentPositionNotifier.value;
+      final videoPos = controller.value.position;
+      final diff = (audioPos.inMilliseconds - videoPos.inMilliseconds).abs();
+      if (diff > 1200) {
+        await controller.seekTo(audioPos);
+      }
+    });
   }
 
-  void _fetchAndDownloadClip(int trackId) async {
-    try {
-      final res = await http.post(
-        Uri.parse('http://192.168.31.13:8000/api/tracks/$trackId/download_clip/'),
+  void _reportBenchmarkVideoFrame() {
+    final controller = _videoController;
+    if (controller == null || !controller.value.isInitialized) return;
+    final currentPosition = controller.value.position;
+    final previousPosition = _lastBenchmarkVideoPosition;
+    _lastBenchmarkVideoPosition = currentPosition;
+    if (previousPosition != null) {
+      PerformanceFrameMonitor.recordVideoProgress(
+        previousPosition: previousPosition,
+        position: currentPosition,
+        duration: controller.value.duration,
+        isPlaying: controller.value.isPlaying,
+        isBuffering: controller.value.isBuffering,
       );
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        var videoUrl = data['video_url']?.toString();
-        if (videoUrl != null && mounted) {
-          videoUrl = _resolveAbsoluteUrl(videoUrl);
-          // Update track in memory queue and cache
-          for (var i = 0; i < playingQueue.length; i++) {
-            if (playingQueue[i]['id'] == trackId) {
-              setState(() {
-                playingQueue[i]['video_file'] = videoUrl;
-              });
-            }
-          }
-          if (activeTrackNotifier.value != null && activeTrackNotifier.value['id'] == trackId) {
-            setState(() {
-              activeTrackNotifier.value['video_file'] = videoUrl;
-            });
-            _initializeVideo(activeTrackNotifier.value);
-          }
+    }
+    if (!PerformanceFrameMonitor.canAcceptVideoFrame ||
+        !controller.value.isPlaying ||
+        controller.value.isBuffering ||
+        previousPosition == null ||
+        (currentPosition - previousPosition).abs() <
+            const Duration(milliseconds: 10)) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (PerformanceFrameMonitor.canAcceptVideoFrame) {
+        PerformanceFrameMonitor.markVideoFramePresented();
+      }
+    });
+  }
 
-          // If track is downloaded, download the clip in background for offline use
-          if (isTrackLocal(trackId)) {
-            final videoFile = File('$localPath/video_$trackId.mp4');
-            if (!await videoFile.exists()) {
-              final videoStream = await http.get(Uri.parse(videoUrl));
-              await videoFile.writeAsBytes(videoStream.bodyBytes);
-            }
+  Future<void> _fetchAndDownloadClip(
+    int trackId,
+    int revision,
+    _VideoOperation operation,
+  ) async {
+    try {
+      await Future<void>.delayed(_clipFetchDebounce);
+      final res = await _foregroundClipTaskLimiter.run<http.Response?>(
+        () async {
+          final activeTrack = activeTrackNotifier.value;
+          if (!_isCurrentVideoOperation(revision, operation) ||
+              !_videoLifecycleVisible ||
+              !_videoSurfaceAvailable ||
+              !playVideoClipNotifier.value ||
+              activeTrack?['id'] != trackId) {
+            return null;
           }
+          return _requestClipGeneration(
+            trackId,
+            abortTrigger: operation.whenCanceled,
+          );
+        },
+      );
+      if (res == null) return;
+      if (res.statusCode != HttpStatus.ok) return;
 
-          // Update cachedTracks local cache to avoid future searches
-          for (var i = 0; i < cachedTracks.length; i++) {
-            if (cachedTracks[i]['id'] == trackId) {
-              cachedTracks[i]['video_file'] = videoUrl;
-            }
-          }
-          final offlineJsonFile = File('$localPath/offline_tracks.json');
-          await offlineJsonFile.writeAsString(json.encode(cachedTracks));
+      final data = json.decode(res.body);
+      final rawVideoUrl = data['video_url']?.toString().trim();
+      if (rawVideoUrl == null ||
+          rawVideoUrl.isEmpty ||
+          !_isCurrentVideoOperation(revision, operation)) {
+        return;
+      }
+      final videoUrl = _resolveAbsoluteUrl(rawVideoUrl);
+      final requestStillCurrent =
+          _isCurrentVideoOperation(revision, operation) &&
+          _videoLifecycleVisible &&
+          _videoSurfaceAvailable &&
+          playVideoClipNotifier.value &&
+          activeTrackNotifier.value?['id'] == trackId;
+      var changed = false;
+      for (var i = 0; i < playingQueue.length; i++) {
+        if (playingQueue[i]['id'] == trackId) {
+          playingQueue[i]['video_file'] = videoUrl;
+          changed = true;
         }
       }
+      final currentActiveTrack = activeTrackNotifier.value;
+      if (currentActiveTrack?['id'] == trackId) {
+        currentActiveTrack['video_file'] = videoUrl;
+        changed = true;
+      }
+      for (var i = 0; i < cachedTracks.length; i++) {
+        if (cachedTracks[i]['id'] == trackId) {
+          cachedTracks[i]['video_file'] = videoUrl;
+          changed = true;
+        }
+      }
+      if (changed && mounted && requestStillCurrent) setState(() {});
+
+      if (requestStillCurrent && currentActiveTrack?['id'] == trackId) {
+        _initializeVideo(currentActiveTrack);
+      }
+
+      await _persistOfflineTracks();
     } catch (e) {
-      debugPrint('Error fetching video clip background: $e');
+      if (!operation.isCanceled && !_stateDisposing) {
+        debugPrint('Error fetching video clip background: $e');
+      }
     }
   }
 
-  void _initializeVideo(dynamic trackData) async {
-    if (_videoController != null) {
-      final oldController = _videoController!;
-      _videoController = null;
-      _isVideoInitialized = false;
-      if (mounted) setState(() {});
-      await oldController.dispose();
+  Future<http.Response> _postClipGenerationRequest(
+    int trackId,
+    _VideoOperation operation,
+  ) async {
+    final request = http.AbortableRequest(
+      'POST',
+      configuredServerUri('/api/tracks/$trackId/download_clip/'),
+      abortTrigger: operation.whenCanceled,
+    );
+    try {
+      final streamedResponse = await (_clipHttpClient ??= http.Client())
+          .send(request)
+          .timeout(_clipGenerationTimeout);
+      return await http.Response.fromStream(
+        streamedResponse,
+      ).timeout(_clipGenerationTimeout);
+    } on TimeoutException {
+      operation.cancel();
+      rethrow;
+    }
+  }
+
+  Future<http.Response> _requestClipGeneration(
+    int trackId, {
+    Future<void>? abortTrigger,
+  }) async {
+    var shared = _clipGenerationRequests[trackId];
+    if (shared == null) {
+      final transportOperation = _VideoOperation();
+      final created = _SharedClipGeneration(
+        transportOperation: transportOperation,
+      );
+      created.response = _clipTransportLimiter.run(
+        () {
+          created.transportStarted = true;
+          return _postClipGenerationRequest(trackId, transportOperation);
+        },
+        abortTrigger: transportOperation.whenCanceled,
+        cancellationError: const _ClipGenerationCancelledException(),
+      );
+      shared = created;
+      _clipGenerationRequests[trackId] = shared;
+      unawaited(
+        created.response.then<void>(
+          (_) {
+            created.completed = true;
+            _releaseClipGenerationIfUnused(trackId, created);
+          },
+          onError: (Object _, StackTrace _) {
+            created.completed = true;
+            _releaseClipGenerationIfUnused(trackId, created);
+          },
+        ),
+      );
     }
 
-    if (trackData == null || !playVideoClipNotifier.value) return;
+    shared.subscribers += 1;
+    try {
+      if (abortTrigger == null) {
+        return await shared.response;
+      }
+      return await Future.any<http.Response>([
+        shared.response,
+        abortTrigger.then<http.Response>(
+          (_) => throw const _ClipGenerationCancelledException(),
+        ),
+      ]);
+    } finally {
+      shared.subscribers -= 1;
+      _releaseClipGenerationIfUnused(trackId, shared);
+    }
+  }
 
-    final videoFileUrl = trackData['video_file'];
-    if (videoFileUrl == null || videoFileUrl.toString().isEmpty) {
-      final trackId = trackData['id'];
-      _fetchAndDownloadClip(trackId);
+  void _releaseClipGenerationIfUnused(
+    int trackId,
+    _SharedClipGeneration request,
+  ) {
+    if (request.subscribers != 0) return;
+    if (request.completed &&
+        identical(_clipGenerationRequests[trackId], request)) {
+      _clipGenerationRequests.remove(trackId);
+    } else if (!request.transportStarted) {
+      request.transportOperation.cancel();
+      if (identical(_clipGenerationRequests[trackId], request)) {
+        _clipGenerationRequests.remove(trackId);
+      }
+    }
+  }
+
+  String? _knownVideoUrlForTrack(int trackId, dynamic primaryTrack) {
+    String? match(dynamic track) {
+      final request = _VideoRequest.from(track);
+      return request.trackId == trackId ? request.videoUrl : null;
+    }
+
+    final primaryUrl = match(primaryTrack);
+    if (primaryUrl != null) return primaryUrl;
+    final activeUrl = match(activeTrackNotifier.value);
+    if (activeUrl != null) return activeUrl;
+    for (final track in playingQueue) {
+      final url = match(track);
+      if (url != null) return url;
+    }
+    for (final track in cachedTracks) {
+      final url = match(track);
+      if (url != null) return url;
+    }
+    return null;
+  }
+
+  void _initializeVideo(dynamic trackData) {
+    final request = _VideoRequest.from(trackData);
+    _videoOperation?.cancel();
+    final operation = _VideoOperation();
+    _videoOperation = operation;
+    final revision = ++_videoRevision;
+    _enqueueVideoWork(() => _applyVideoRequest(request, revision, operation));
+  }
+
+  void _enqueueVideoWork(Future<void> Function() work) {
+    final previous = _videoWork;
+    _videoWork = _runVideoWork(previous, work);
+  }
+
+  Future<void> _enqueueAudioWork(Future<void> Function() work) {
+    final previous = _audioWork;
+    final scheduled = _runAudioWork(previous, work);
+    _audioWork = scheduled;
+    return scheduled;
+  }
+
+  Future<void> _runAudioWork(
+    Future<void> previous,
+    Future<void> Function() work,
+  ) async {
+    try {
+      await previous;
+    } catch (error) {
+      debugPrint('Previous audio operation failed: $error');
+    }
+    if (_stateDisposing) return;
+    try {
+      await work();
+    } catch (error, stackTrace) {
+      debugPrint('Audio operation failed: $error\n$stackTrace');
+    }
+  }
+
+  bool _isCurrentTrackRevision(int revision) {
+    return !_stateDisposing && revision == _trackRevision;
+  }
+
+  Future<void> _runVideoWork(
+    Future<void> previous,
+    Future<void> Function() work,
+  ) async {
+    try {
+      await previous;
+    } catch (error) {
+      debugPrint('Previous video operation failed: $error');
+    }
+    if (_stateDisposing) return;
+    try {
+      await work();
+    } catch (error, stackTrace) {
+      debugPrint('Video operation failed: $error\n$stackTrace');
+    }
+  }
+
+  bool _isCurrentVideoRequest(int revision) =>
+      !_stateDisposing && revision == _videoRevision;
+
+  bool _isCurrentVideoOperation(int revision, _VideoOperation operation) =>
+      _isCurrentVideoRequest(revision) &&
+      identical(_videoOperation, operation) &&
+      !operation.isCanceled;
+
+  bool _shouldRunVideo(_VideoRequest request) =>
+      _videoLifecycleVisible &&
+      _videoSurfaceAvailable &&
+      playVideoClipNotifier.value &&
+      request.trackId != null;
+
+  Future<void> _applyVideoRequest(
+    _VideoRequest request,
+    int revision,
+    _VideoOperation operation,
+  ) async {
+    if (!_isCurrentVideoOperation(revision, operation)) return;
+    final shouldRun = _shouldRunVideo(request);
+    final current = _videoController;
+    if (shouldRun &&
+        current != null &&
+        _videoTrackId == request.trackId &&
+        current.value.isInitialized) {
+      await _synchronizeVideoController(current);
+      if (!_isCurrentVideoOperation(revision, operation) ||
+          !_shouldRunVideo(request)) {
+        return;
+      }
+      _isVideoInitialized = true;
+      _lastBenchmarkVideoPosition = null;
+      if (mounted) setState(() {});
       return;
     }
 
-    try {
-      final trackId = trackData['id'];
-      final localVideoFile = File('$localPath/video_$trackId.mp4');
-      VideoPlayerController controller;
-
-      if (localVideoFile.existsSync()) {
-        controller = VideoPlayerController.file(localVideoFile);
-      } else {
-        final resolvedUrl = _resolveAbsoluteUrl(videoFileUrl.toString());
-        controller = VideoPlayerController.networkUrl(Uri.parse(resolvedUrl));
+    await _disposeCurrentVideo();
+    if (!_isCurrentVideoOperation(revision, operation)) return;
+    if (!shouldRun) {
+      if (_videoLifecycleVisible &&
+          _videoSurfaceAvailable &&
+          playVideoClipNotifier.value &&
+          request.trackId != null &&
+          request.videoUrl == null) {
+        unawaited(_fetchAndDownloadClip(request.trackId!, revision, operation));
       }
+      return;
+    }
 
-      _videoController = controller;
-      await controller.initialize();
+    final trackId = request.trackId!;
+    final localVideoFile = File('$localPath/video_$trackId.mp4');
+    final hasLocalVideo = await _hasNonEmptyFile(localVideoFile);
+    if (!_isCurrentVideoOperation(revision, operation)) return;
+    if (!hasLocalVideo) {
+      final videoFileUrl = request.videoUrl;
+      if (videoFileUrl == null) {
+        unawaited(_fetchAndDownloadClip(trackId, revision, operation));
+        return;
+      }
+      if (_blockedVideoSources.contains(_videoSourceKey(request))) return;
+      unawaited(
+        _downloadVideoForPlayback(
+          request: request,
+          revision: revision,
+          operation: operation,
+          destination: localVideoFile,
+        ),
+      );
+      return;
+    }
 
-      if (!mounted || _videoController != controller) {
-        await controller.dispose();
+    _ensureLinuxVideoBackendInitialized();
+    final controller = VideoPlayerController.file(localVideoFile);
+    _initializingVideoController = controller;
+    var installed = false;
+    var initializationCompleted = false;
+    try {
+      if (PerformanceFrameMonitor.enabled) {
+        controller.addListener(_reportBenchmarkVideoFrame);
+      }
+      await controller.initialize().timeout(const Duration(seconds: 3));
+      initializationCompleted = true;
+      if (!_isCurrentVideoOperation(revision, operation) ||
+          !_shouldRunVideo(request)) {
         return;
       }
 
-      setState(() {
-        _isVideoInitialized = true;
-      });
-
-      await controller.setVolume(0.0); // Muted background playback
+      await controller.setVolume(0.0);
       await controller.setLooping(true);
-
-      if (isPlayingNotifier.value) {
-        await controller.play();
+      await controller.seekTo(currentPositionNotifier.value);
+      if (!_isCurrentVideoOperation(revision, operation) ||
+          !_shouldRunVideo(request)) {
+        return;
+      }
+      await _applyVideoPlaybackState(controller);
+      if (!_isCurrentVideoOperation(revision, operation) ||
+          !_shouldRunVideo(request)) {
+        return;
       }
 
-      final currentPos = currentPositionNotifier.value;
-      await controller.seekTo(currentPos);
-    } catch (e) {
-      debugPrint('Error initializing circular video player: $e');
+      _videoController = controller;
+      if (identical(_initializingVideoController, controller)) {
+        _initializingVideoController = null;
+      }
+      _videoTrackId = trackId;
+      _isVideoInitialized = true;
+      _lastBenchmarkVideoPosition = null;
+      _blockedVideoSources.remove(_videoSourceKey(request));
+      installed = true;
+      if (mounted) setState(() {});
+    } catch (error) {
+      await _disposeVideoController(controller);
+      await _handleLocalVideoInitializationFailure(
+        request: request,
+        revision: revision,
+        operation: operation,
+        localVideoFile: localVideoFile,
+        error: error,
+        initializationCompleted: initializationCompleted,
+      );
+    } finally {
+      if (identical(_initializingVideoController, controller)) {
+        _initializingVideoController = null;
+      }
+      if (!installed) {
+        await _disposeVideoController(controller);
+      }
+    }
+  }
+
+  Future<bool> _hasNonEmptyFile(File file) async {
+    try {
+      return await file.exists() && await file.length() > 0;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  String _videoSourceKey(_VideoRequest request) {
+    final rawSource = request.videoUrl;
+    final source = rawSource == null
+        ? '<local-without-url>'
+        : _resolveAbsoluteUrl(rawSource);
+    return '${request.trackId}|$source';
+  }
+
+  Future<void> _handleLocalVideoInitializationFailure({
+    required _VideoRequest request,
+    required int revision,
+    required _VideoOperation operation,
+    required File localVideoFile,
+    required Object error,
+    required bool initializationCompleted,
+  }) async {
+    if (initializationCompleted || error is TimeoutException) {
+      if (!operation.isCanceled && !_stateDisposing) {
+        debugPrint('Local video initialization failed: $error');
+      }
+      return;
+    }
+    if (!_isCurrentVideoOperation(revision, operation) ||
+        !_shouldRunVideo(request)) {
+      return;
+    }
+
+    final sourceKey = _videoSourceKey(request);
+    final downloadedThisSession = _downloadedVideoSources.contains(sourceKey);
+    if (!await _quarantineInvalidVideo(localVideoFile)) return;
+    if (!_isCurrentVideoOperation(revision, operation)) return;
+
+    if (downloadedThisSession) {
+      _blockedVideoSources.add(sourceKey);
+      debugPrint(
+        'Downloaded video cannot be decoded; automatic retry blocked for '
+        'this source: $error',
+      );
+      return;
+    }
+
+    final source = request.videoUrl;
+    if (source == null) {
+      unawaited(_fetchAndDownloadClip(request.trackId!, revision, operation));
+      return;
+    }
+    unawaited(
+      _downloadVideoForPlayback(
+        request: request,
+        revision: revision,
+        operation: operation,
+        destination: localVideoFile,
+      ),
+    );
+  }
+
+  Future<bool> _quarantineInvalidVideo(File file) async {
+    try {
+      if (!await _hasNonEmptyFile(file)) return false;
+      final timestamp = DateTime.now().microsecondsSinceEpoch;
+      final quarantine = File('${file.path}.invalid.$timestamp');
+      await file.rename(quarantine.path);
+      return true;
+    } on FileSystemException catch (error) {
+      debugPrint(
+        'Invalid video could not be preserved for replacement: $error',
+      );
+      return false;
+    }
+  }
+
+  Future<void> _downloadVideoForPlayback({
+    required _VideoRequest request,
+    required int revision,
+    required _VideoOperation operation,
+    required File destination,
+  }) async {
+    final source = request.videoUrl;
+    if (source == null) return;
+    try {
+      if (!_isCurrentVideoOperation(revision, operation) ||
+          !_shouldRunVideo(request) ||
+          activeTrackNotifier.value?['id'] != request.trackId) {
+        return;
+      }
+      final downloader = _foregroundVideoDownloader ??= MediaFileDownloader(
+        maxConcurrent: 1,
+      );
+      await downloader.download(
+        source: Uri.parse(_resolveAbsoluteUrl(source)),
+        destination: destination,
+        abortTrigger: operation.whenCanceled,
+      );
+      if (!await _hasNonEmptyFile(destination)) {
+        throw FileSystemException(
+          'Downloaded video is empty.',
+          destination.path,
+        );
+      }
+      _downloadedVideoSources.add(_videoSourceKey(request));
+      if (_isCurrentVideoOperation(revision, operation) &&
+          activeTrackNotifier.value?['id'] == request.trackId) {
+        _initializeVideo(activeTrackNotifier.value);
+      }
+    } catch (error) {
+      if (!operation.isCanceled && !_stateDisposing) {
+        debugPrint('Local video download failed: $error');
+      }
+    }
+  }
+
+  Future<void> _synchronizeVideoController(
+    VideoPlayerController controller,
+  ) async {
+    final targetPosition = currentPositionNotifier.value;
+    final drift =
+        (targetPosition.inMilliseconds -
+                controller.value.position.inMilliseconds)
+            .abs();
+    if (drift > 1200) {
+      await controller.seekTo(targetPosition);
+    }
+    await _applyVideoPlaybackState(controller);
+  }
+
+  Future<void> _applyVideoPlaybackState(
+    VideoPlayerController controller,
+  ) async {
+    if (!_videoLifecycleVisible || !isPlayingNotifier.value) {
+      await controller.pause();
+    } else {
+      await controller.play();
+    }
+  }
+
+  Future<void> _pauseVideoController(VideoPlayerController controller) async {
+    try {
+      if (controller.value.isInitialized) {
+        await controller.pause();
+      }
+    } catch (error) {
+      debugPrint('Video pause failed: $error');
+    }
+  }
+
+  Future<void> _disposeCurrentVideo() async {
+    final controller = _videoController;
+    _videoController = null;
+    _videoTrackId = null;
+    _isVideoInitialized = false;
+    _lastBenchmarkVideoPosition = null;
+    if (controller == null) {
+      PerformanceFrameMonitor.markVideoControllerReleased();
+      return;
+    }
+    if (mounted && !_stateDisposing) setState(() {});
+    await _disposeVideoController(controller);
+    PerformanceFrameMonitor.markVideoControllerReleased();
+  }
+
+  Future<void> _disposeVideoController(VideoPlayerController controller) async {
+    if (_disposedVideoControllers[controller] == true) return;
+    _disposedVideoControllers[controller] = true;
+    if (PerformanceFrameMonitor.enabled) {
+      try {
+        controller.removeListener(_reportBenchmarkVideoFrame);
+      } catch (_) {}
+    }
+    try {
+      await controller.dispose();
+    } catch (error) {
+      debugPrint('Video dispose failed: $error');
     }
   }
 
@@ -580,7 +1361,7 @@ class MainAppScreenState extends State<MainAppScreen>
       _vinylController.stop();
       _vinylController.value = 0.0;
       _vinylUserStopped = true;
-    } else if (isPlaying && !_vinylUserStopped) {
+    } else if (isPlaying && !_vinylUserStopped && _videoLifecycleVisible) {
       _vinylController.repeat();
     }
   }
@@ -588,7 +1369,10 @@ class MainAppScreenState extends State<MainAppScreen>
   void _setPlaying(bool value) {
     if (mounted) setState(() => isPlaying = value);
     isPlayingNotifier.value = value;
-    if (value && !_vinylUserStopped && vinylRotationNotifier.value) {
+    if (value &&
+        !_vinylUserStopped &&
+        vinylRotationNotifier.value &&
+        _videoLifecycleVisible) {
       _vinylController.repeat();
     } else if (!value || !vinylRotationNotifier.value) {
       _vinylController.stop();
@@ -695,49 +1479,450 @@ class MainAppScreenState extends State<MainAppScreen>
   //  Data / persistence
   // ═══════════════════════════════════════════════════════════════════════════
 
-  Future<void> startData() async {
-    final docsDir = await getApplicationDocumentsDirectory();
-    final appDir = Directory('${docsDir.path}/ShikiMusic');
-    if (!appDir.existsSync()) {
-      appDir.createSync(recursive: true);
+  static const int _benchmarkVideo30TrackId = 62030;
+  static const int _benchmarkVideo60TrackId = 62060;
+  static const int _benchmarkDownloadTrackId = 62070;
+
+  Future<void> _runBenchmarkScenario(
+    Future<void> Function() startApplicationData,
+  ) async {
+    BenchmarkScenarioCommand? command;
+    try {
+      final commandFuture = PerformanceFrameMonitor.waitForScenarioCommand();
+      if (configuredServerBaseUrl != benchmarkServerBaseUrl) {
+        command = await commandFuture;
+        throw StateError('Benchmark server isolation configuration mismatch.');
+      }
+      final startup = startApplicationData();
+      command = await commandFuture;
+      await startup;
+      if (command == null) {
+        throw StateError('Benchmark control command was not received.');
+      }
+      _assertBenchmarkRunActive(command.runId);
+      if (!_sameBenchmarkPath(localPath, command.dataDirectory)) {
+        throw StateError(
+          'Benchmark data path mismatch: app=$localPath, '
+          'collector=${command.dataDirectory}.',
+        );
+      }
+
+      if (command.scenario == 'cold-start-server-offline' ||
+          command.scenario == 'idle-home-five-minutes') {
+        await PerformanceFrameMonitor.markScenarioReady(
+          command.runId,
+          0,
+          dataDirectory: localPath,
+          serverBaseUrl: configuredServerBaseUrl,
+        );
+      } else if (command.scenario == 'audio-only-ten-minutes') {
+        await _prepareBenchmarkAudio(command.runId, _benchmarkVideo30TrackId);
+        await _markBenchmarkReadyAndComplete(command);
+      } else if (command.scenario == 'local-video-30fps-ten-minutes') {
+        await _prepareBenchmarkVideo(command.runId, _benchmarkVideo30TrackId);
+        await _markBenchmarkReadyAndComplete(command);
+      } else if (command.scenario == 'local-video-60fps-ten-minutes') {
+        await _prepareBenchmarkVideo(command.runId, _benchmarkVideo60TrackId);
+        await _markBenchmarkReadyAndComplete(command);
+      } else if (command.scenario == 'minimize-video-five-minutes-restore') {
+        await _prepareBenchmarkVideo(command.runId, _benchmarkVideo60TrackId);
+        await PerformanceFrameMonitor.markScenarioReady(
+          command.runId,
+          command.expectedActions,
+          dataDirectory: localPath,
+          serverBaseUrl: configuredServerBaseUrl,
+        );
+      } else if (command.scenario == 'large-mp3-mp4-download') {
+        await _runBenchmarkDownload(command);
+      } else if (command.scenario == 'rapid-track-switch-20') {
+        await _runBenchmarkTrackSwitches(command);
+      } else if (command.scenario == 'lyrics-blur-five-minutes') {
+        await _runBenchmarkLyrics(command);
+      } else if (command.scenario == 'video-enable-disable-30') {
+        await _runBenchmarkVideoToggles(command);
+      } else {
+        throw StateError('Unknown benchmark scenario: ${command.scenario}.');
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Benchmark scenario failed: $error\n$stackTrace');
+      final runId = command?.runId;
+      if (runId != null &&
+          PerformanceFrameMonitor.isCurrentBenchmarkRun(runId)) {
+        await PerformanceFrameMonitor.markScenarioActionFailed(runId, error);
+      }
+    }
+  }
+
+  Future<void> _markBenchmarkReadyAndComplete(
+    BenchmarkScenarioCommand command,
+  ) async {
+    await PerformanceFrameMonitor.markScenarioReady(
+      command.runId,
+      command.expectedActions,
+      dataDirectory: localPath,
+      serverBaseUrl: configuredServerBaseUrl,
+    );
+    await PerformanceFrameMonitor.markScenarioActionComplete(
+      command.runId,
+      command.expectedActions,
+    );
+  }
+
+  Future<void> _runBenchmarkDownload(BenchmarkScenarioCommand command) async {
+    final track = _benchmarkTrack(_benchmarkDownloadTrackId);
+    final audioFile = File('$localPath/track_$_benchmarkDownloadTrackId.mp3');
+    final videoFile = File('$localPath/video_$_benchmarkDownloadTrackId.mp4');
+    if (await audioFile.exists() || await videoFile.exists()) {
+      throw StateError('Download fixture destination was not reset.');
+    }
+    await PerformanceFrameMonitor.markScenarioReady(
+      command.runId,
+      command.expectedActions,
+      dataDirectory: localPath,
+      serverBaseUrl: configuredServerBaseUrl,
+    );
+    await _waitForBenchmarkCapture(command);
+    PerformanceFrameMonitor.markScenarioActionPerformed(command.runId);
+    await downloadMediaFile(track);
+    _assertBenchmarkRunActive(command.runId);
+    if (!await audioFile.exists() ||
+        await audioFile.length() == 0 ||
+        !await videoFile.exists() ||
+        await videoFile.length() == 0) {
+      throw StateError('MP3/MP4 fixture download did not complete.');
+    }
+    await PerformanceFrameMonitor.markScenarioActionComplete(
+      command.runId,
+      command.expectedActions,
+    );
+  }
+
+  Future<void> _runBenchmarkTrackSwitches(
+    BenchmarkScenarioCommand command,
+  ) async {
+    final queue = await _prepareBenchmarkVideo(
+      command.runId,
+      _benchmarkVideo30TrackId,
+    );
+    await PerformanceFrameMonitor.markScenarioReady(
+      command.runId,
+      command.expectedActions,
+      dataDirectory: localPath,
+      serverBaseUrl: configuredServerBaseUrl,
+    );
+    await _waitForBenchmarkCapture(command);
+    final cadence = command.actionCadence;
+    if (cadence <= Duration.zero) {
+      throw StateError('Rapid-switch action cadence must be positive.');
+    }
+    final actionSchedule = Stopwatch()..start();
+    for (var action = 0; action < command.expectedActions; action += 1) {
+      await _waitForBenchmarkActionDeadline(
+        command.runId,
+        actionSchedule,
+        cadence * action,
+      );
+      _assertBenchmarkRunActive(command.runId);
+      _playIndex((action + 1) % queue.length);
+      PerformanceFrameMonitor.markScenarioActionPerformed(command.runId);
+    }
+    actionSchedule.stop();
+    await Future<void>.delayed(const Duration(seconds: 2));
+    await _waitForBenchmarkCondition(
+      command.runId,
+      'final rapid-switch state',
+      () =>
+          playingIndex == 0 &&
+          activeTrackNotifier.value?['id'] == _benchmarkVideo30TrackId &&
+          audioPlayer.state == PlayerState.playing &&
+          _isVideoInitialized &&
+          _videoController?.value.isPlaying == true &&
+          globalLyrics.isNotEmpty,
+      timeout: const Duration(seconds: 10),
+    );
+    await Future<void>.delayed(const Duration(seconds: 2));
+    _assertBenchmarkRunActive(command.runId);
+    if (playingIndex != 0 ||
+        activeTrackNotifier.value?['id'] != _benchmarkVideo30TrackId ||
+        audioPlayer.state != PlayerState.playing ||
+        !_isVideoInitialized ||
+        _videoController?.value.isPlaying != true ||
+        globalLyrics.isEmpty) {
+      throw StateError('Rapid-switch final state did not remain stable.');
+    }
+    await PerformanceFrameMonitor.markScenarioActionComplete(
+      command.runId,
+      command.expectedActions,
+    );
+  }
+
+  Future<void> _runBenchmarkLyrics(BenchmarkScenarioCommand command) async {
+    await _prepareBenchmarkAudio(command.runId, _benchmarkVideo30TrackId);
+    await _waitForBenchmarkCondition(
+      command.runId,
+      'local lyrics',
+      () => !lrcLoading && globalLyrics.isNotEmpty,
+    );
+    _assertBenchmarkRunActive(command.runId);
+    showLyricsScreen();
+    await WidgetsBinding.instance.endOfFrame;
+    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await _markBenchmarkReadyAndComplete(command);
+  }
+
+  Future<void> _runBenchmarkVideoToggles(
+    BenchmarkScenarioCommand command,
+  ) async {
+    await _prepareBenchmarkVideo(command.runId, _benchmarkVideo60TrackId);
+    await PerformanceFrameMonitor.markScenarioReady(
+      command.runId,
+      command.expectedActions,
+      dataDirectory: localPath,
+      serverBaseUrl: configuredServerBaseUrl,
+    );
+    await _waitForBenchmarkCapture(command);
+    final cadence = command.actionCadence;
+    if (cadence <= Duration.zero) {
+      throw StateError('Video-toggle action cadence must be positive.');
+    }
+    final actionSchedule = Stopwatch()..start();
+    for (var action = 0; action < command.expectedActions; action += 1) {
+      await _waitForBenchmarkActionDeadline(
+        command.runId,
+        actionSchedule,
+        cadence * action,
+      );
+      _assertBenchmarkRunActive(command.runId);
+      playVideoClipNotifier.value = action.isOdd;
+      PerformanceFrameMonitor.markScenarioActionPerformed(command.runId);
+    }
+    actionSchedule.stop();
+    await _waitForBenchmarkCondition(
+      command.runId,
+      'final video-toggle state',
+      () =>
+          playVideoClipNotifier.value &&
+          _isVideoInitialized &&
+          _videoController?.value.isPlaying == true,
+      timeout: const Duration(seconds: 15),
+    );
+    await Future<void>.delayed(const Duration(seconds: 2));
+    _assertBenchmarkRunActive(command.runId);
+    if (!playVideoClipNotifier.value ||
+        !_isVideoInitialized ||
+        _videoController?.value.isPlaying != true) {
+      throw StateError('Video-toggle final state did not remain stable.');
+    }
+    await PerformanceFrameMonitor.markScenarioActionComplete(
+      command.runId,
+      command.expectedActions,
+    );
+  }
+
+  Future<List<dynamic>> _prepareBenchmarkAudio(
+    String runId,
+    int trackId,
+  ) async {
+    final track30 = _benchmarkTrack(_benchmarkVideo30TrackId);
+    final track60 = _benchmarkTrack(_benchmarkVideo60TrackId);
+    final queue = <dynamic>[track30, track60];
+    final index = trackId == _benchmarkVideo30TrackId ? 0 : 1;
+    await _requireBenchmarkLocalMedia(trackId, video: false);
+    playVideoClipNotifier.value = false;
+    startPlayback(queue, index);
+    await _waitForBenchmarkCondition(
+      runId,
+      'local audio playback',
+      () =>
+          playingIndex == index &&
+          activeTrackNotifier.value?['id'] == trackId &&
+          audioPlayer.state == PlayerState.playing,
+    );
+    return queue;
+  }
+
+  Future<List<dynamic>> _prepareBenchmarkVideo(
+    String runId,
+    int trackId,
+  ) async {
+    await _requireBenchmarkLocalMedia(trackId, video: true);
+    final queue = await _prepareBenchmarkAudio(runId, trackId);
+    _assertBenchmarkRunActive(runId);
+    playVideoClipNotifier.value = true;
+    final expectedVideo = File('$localPath/video_$trackId.mp4').absolute.path;
+    try {
+      await _waitForBenchmarkCondition(runId, 'local video playback', () {
+        final controller = _videoController;
+        return controller != null &&
+            _isVideoInitialized &&
+            controller.value.isInitialized &&
+            controller.value.isPlaying &&
+            _sameBenchmarkPath(controller.dataSource, expectedVideo);
+      }, timeout: const Duration(seconds: 15));
+    } on TimeoutException {
+      final controller = _videoController;
+      throw StateError(
+        'Local video did not become ready: controller=${controller != null}, '
+        'screenInitialized=$_isVideoInitialized, '
+        'valueInitialized=${controller?.value.isInitialized}, '
+        'playing=${controller?.value.isPlaying}, '
+        'buffering=${controller?.value.isBuffering}, '
+        'source=${controller?.dataSource}, expected=$expectedVideo, '
+        'error=${controller?.value.errorDescription}.',
+      );
+    }
+    return queue;
+  }
+
+  dynamic _benchmarkTrack(int trackId) {
+    for (final track in [...playingQueue, ...cachedTracks]) {
+      if (track is Map && track['id'] == trackId) {
+        return track;
+      }
+    }
+    throw StateError('Benchmark track $trackId is missing from seed data.');
+  }
+
+  Future<void> _requireBenchmarkLocalMedia(
+    int trackId, {
+    required bool video,
+  }) async {
+    final audioFile = File('$localPath/track_$trackId.mp3');
+    if (!await audioFile.exists() || await audioFile.length() == 0) {
+      throw StateError('Local benchmark MP3 is missing for track $trackId.');
+    }
+    if (video) {
+      final videoFile = File('$localPath/video_$trackId.mp4');
+      if (!await videoFile.exists() || await videoFile.length() == 0) {
+        throw StateError('Local benchmark MP4 is missing for track $trackId.');
+      }
+    }
+  }
+
+  Future<void> _waitForBenchmarkCapture(
+    BenchmarkScenarioCommand command,
+  ) async {
+    if (command.awaitCapture) {
+      await PerformanceFrameMonitor.waitForCapture(command.runId);
+    }
+    _assertBenchmarkRunActive(command.runId);
+    if (command.actionDelay > Duration.zero) {
+      await Future<void>.delayed(command.actionDelay);
+      _assertBenchmarkRunActive(command.runId);
+    }
+  }
+
+  Future<void> _waitForBenchmarkActionDeadline(
+    String runId,
+    Stopwatch schedule,
+    Duration deadline,
+  ) async {
+    final remaining = deadline - schedule.elapsed;
+    if (remaining > Duration.zero) {
+      await Future<void>.delayed(remaining);
+    }
+    _assertBenchmarkRunActive(runId);
+  }
+
+  Future<void> _waitForBenchmarkCondition(
+    String runId,
+    String description,
+    bool Function() predicate, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      _assertBenchmarkRunActive(runId);
+      if (predicate()) return;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    throw TimeoutException('Timed out waiting for $description.');
+  }
+
+  void _assertBenchmarkRunActive(String runId) {
+    if (!mounted || !PerformanceFrameMonitor.isCurrentBenchmarkRun(runId)) {
+      throw StateError('Benchmark run $runId is no longer active.');
+    }
+  }
+
+  bool _sameBenchmarkPath(String first, String second) {
+    String normalize(String value) {
+      final path = value.startsWith('file:')
+          ? File.fromUri(Uri.parse(value)).path
+          : value;
+      final normalized = File(path).absolute.path.replaceAll('/', '\\');
+      return Platform.isWindows ? normalized.toLowerCase() : normalized;
     }
 
+    return normalize(first) == normalize(second);
+  }
+
+  Future<void> startData() async {
+    final appDir = await getShikiDataDirectory();
+    if (_stateDisposing) return;
+
     // Migrate existing tracks, covers, and config files from root Documents directory
-    try {
-      final entities = docsDir.listSync();
-      for (final entity in entities) {
-        if (entity is File) {
-          final name = entity.path.split(Platform.pathSeparator).last;
-          if (name.startsWith('track_') ||
-              name.startsWith('cover_') ||
-              name == 'liked_tracks.json' ||
-              name == 'my_playlists.json' ||
-              name == 'offline_tracks.json' ||
-              name == 'app_state.json' ||
-              name == 'shiki_settings.json') {
-            final newPath = '${appDir.path}/$name';
-            try {
-              await entity.rename(newPath);
-              debugPrint('Migrated: $name -> $newPath');
-            } catch (e) {
-              // Fallback to copy & delete if rename fails across different partitions
-              await entity.copy(newPath);
-              await entity.delete();
-              debugPrint('Migrated via copy/delete: $name -> $newPath');
+    if (!hasAppDataDirectoryOverride) {
+      try {
+        final docsDir = await getDocumentsRootDirectory();
+        final entities = docsDir.listSync();
+        for (final entity in entities) {
+          if (entity is File) {
+            final name = entity.path.split(Platform.pathSeparator).last;
+            final isTemporary =
+                name.contains('.part.') ||
+                name.contains('.tmp.') ||
+                name.endsWith('.lock');
+            if (!isTemporary &&
+                (name.startsWith('track_') ||
+                    name.startsWith('video_') ||
+                    name.startsWith('cover_') ||
+                    name == 'liked_tracks.json' ||
+                    name == 'my_playlists.json' ||
+                    name == 'offline_tracks.json' ||
+                    name == 'app_state.json' ||
+                    name == 'shiki_settings.json')) {
+              final newPath = '${appDir.path}/$name';
+              try {
+                final result = await safeFileMigration.migrate(
+                  source: entity,
+                  destination: File(newPath),
+                );
+                if (result == SafeFileMigrationResult.copied) {
+                  debugPrint('Copied legacy file: $name -> $newPath');
+                }
+              } catch (e) {
+                debugPrint('Legacy file copy failed for $name: $e');
+              }
             }
           }
         }
+      } catch (e) {
+        debugPrint('Migration failed: $e');
       }
-    } catch (e) {
-      debugPrint('Migration failed: $e');
     }
 
+    if (_stateDisposing) return;
     localPath = appDir.path;
     globalLocalPath = localPath;
     await readFavorites();
+    if (_stateDisposing) return;
     await readPlaylists();
-    await syncDatabase();
+    if (_stateDisposing) return;
+    await _loadOfflineTrackCache();
+    if (_stateDisposing) return;
     await _loadState();
+    if (_stateDisposing) return;
+    unawaited(syncDatabase());
+  }
+
+  Future<void> _startDataSafely() async {
+    try {
+      await startData();
+    } catch (error, stackTrace) {
+      debugPrint('Startup data load failed: $error\n$stackTrace');
+    }
   }
 
   Future<void> _saveState() async {
@@ -753,7 +1938,7 @@ class MainAppScreenState extends State<MainAppScreen>
         'isShuffled': isShuffled,
         'unshuffledQueue': _unshuffledQueue,
       };
-      await f.writeAsString(json.encode(data));
+      await atomicFileStore.writeString(f, json.encode(data));
     } catch (e) {
       debugPrint(e.toString());
     }
@@ -761,63 +1946,83 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> _loadState() async {
     if (localPath.isEmpty) return;
+    final revisionBeforeRead = _trackRevision;
     try {
       final f = File('$localPath/app_state.json');
       if (await f.exists()) {
-        final data = json.decode(await f.readAsString());
+        final decoded = json.decode(await f.readAsString());
+        if (decoded is! Map) return;
+        final data = Map<String, dynamic>.from(decoded);
 
         if (data['volume'] != null) {
           volume = (data['volume'] as num).toDouble();
-          audioPlayer.setVolume(volume);
+          await audioPlayer.setVolume(volume);
         }
-        if (data['loopMode'] != null) {
-          loopMode = LoopMode.values[data['loopMode']];
+        final savedLoopMode = data['loopMode'];
+        if (savedLoopMode is int &&
+            savedLoopMode >= 0 &&
+            savedLoopMode < LoopMode.values.length) {
+          loopMode = LoopMode.values[savedLoopMode];
         }
-        if (data['isShuffled'] != null) {
-          isShuffled = data['isShuffled'];
+        if (data['isShuffled'] is bool) {
+          isShuffled = data['isShuffled'] as bool;
         }
-        if (data['unshuffledQueue'] != null) {
+        if (data['unshuffledQueue'] is List) {
           _unshuffledQueue = List<dynamic>.from(data['unshuffledQueue']);
         }
 
-        if (data['playingQueue'] != null && data['playingQueue'].isNotEmpty) {
-          playingQueue = List<dynamic>.from(data['playingQueue']);
-          playingIndex = data['playingIndex'] ?? 0;
+        final savedQueue = data['playingQueue'];
+        if (revisionBeforeRead != _trackRevision ||
+            savedQueue is! List ||
+            savedQueue.isEmpty) {
+          return;
+        }
+        playingQueue = List<dynamic>.from(savedQueue);
+        final savedIndex = data['playingIndex'];
+        playingIndex = savedIndex is int
+            ? savedIndex.clamp(0, playingQueue.length - 1)
+            : 0;
 
-          final targetTrack = playingQueue[playingIndex];
-          activeTrackNotifier.value = targetTrack;
+        final targetTrack = playingQueue[playingIndex];
+        final trackRevision = ++_trackRevision;
+        _transportRevision += 1;
+        _seekRevision += 1;
+        activeTrackNotifier.value = targetTrack;
 
-          if (isAudioServiceActive) {
-            final dur = trackDurations[targetTrack['id']];
-            audioHandler.mediaItem.add(
-              MediaItem(
-                id: targetTrack['id'].toString(),
-                title: targetTrack['title'].toString(),
-                artist: targetTrack['album']['artist']['name'].toString(),
-                album: targetTrack['album']['title']?.toString(),
-                artUri: getArtUri(targetTrack),
-                duration: dur != null ? Duration(seconds: dur) : null,
-              ),
-            );
-          }
-
-          final localTrackPath = File(
-            '$localPath/track_${targetTrack['id']}.mp3',
+        if (isAudioServiceActive) {
+          final dur = trackDurations[targetTrack['id']];
+          audioHandler.mediaItem.add(
+            MediaItem(
+              id: targetTrack['id'].toString(),
+              title: targetTrack['title'].toString(),
+              artist: targetTrack['album']['artist']['name'].toString(),
+              album: targetTrack['album']['title']?.toString(),
+              artUri: getArtUri(targetTrack),
+              duration: dur != null ? Duration(seconds: dur) : null,
+            ),
           );
-          if (await localTrackPath.exists()) {
-            await audioPlayer.setSource(DeviceFileSource(localTrackPath.path));
-          } else {
-            await audioPlayer.setSource(UrlSource(targetTrack['audio_file']));
-          }
+        }
 
-          if (data['position'] != null) {
-            final pos = Duration(milliseconds: data['position']);
-            await audioPlayer.seek(pos);
-            currentPositionNotifier.value = pos;
-          }
+        final savedPosition = data['position'];
+        final position = Duration(
+          milliseconds: savedPosition is num
+              ? max(0, savedPosition.toInt())
+              : 0,
+        );
+        currentPositionNotifier.value = position;
+        unawaited(fetchLyrics(targetTrack));
+        if (mounted) setState(() {});
 
-          fetchLyrics(targetTrack);
-          setState(() {});
+        await _enqueueAudioWork(
+          () => _restoreTrackSource(
+            targetTrack: targetTrack,
+            trackRevision: trackRevision,
+            position: position,
+          ),
+        );
+        if (_isCurrentTrackRevision(trackRevision)) {
+          _syncMediaSessionMetadata();
+          _syncMediaSessionPlayback();
           updateRPC(force: true);
         }
       }
@@ -831,7 +2036,12 @@ class MainAppScreenState extends State<MainAppScreen>
     if (await favFile.exists()) {
       try {
         final list = json.decode(await favFile.readAsString());
-        setState(() => favs = Set<int>.from(list));
+        final loaded = Set<int>.from(list);
+        if (mounted) {
+          setState(() => favs = loaded);
+        } else {
+          favs = loaded;
+        }
       } catch (e) {
         debugPrint(e.toString());
       }
@@ -843,11 +2053,14 @@ class MainAppScreenState extends State<MainAppScreen>
     if (await f.exists()) {
       try {
         final list = json.decode(await f.readAsString());
-        setState(() {
-          myPlaylists = List<Map<String, dynamic>>.from(
-            list.map((e) => Map<String, dynamic>.from(e)),
-          );
-        });
+        final loaded = List<Map<String, dynamic>>.from(
+          list.map((e) => Map<String, dynamic>.from(e)),
+        );
+        if (mounted) {
+          setState(() => myPlaylists = loaded);
+        } else {
+          myPlaylists = loaded;
+        }
       } catch (e) {
         debugPrint(e.toString());
       }
@@ -855,36 +2068,92 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> savePlaylists() async {
-    final f = File('$localPath/my_playlists.json');
-    await f.writeAsString(json.encode(myPlaylists));
+    try {
+      final f = File('$localPath/my_playlists.json');
+      final snapshot = json.encode(myPlaylists);
+      await atomicFileStore.writeString(f, snapshot);
+    } catch (error) {
+      debugPrint('Playlist save failed: $error');
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  Network
   // ═══════════════════════════════════════════════════════════════════════════
 
-  Future<void> syncDatabase() async {
-    final offlineJsonFile = File('$localPath/offline_tracks.json');
+  Future<void> _persistOfflineTracks() {
+    if (localPath.isEmpty) return Future<void>.value();
+    final snapshot = json.encode(cachedTracks);
+    return atomicFileStore.writeString(
+      File('$localPath/offline_tracks.json'),
+      snapshot,
+    );
+  }
+
+  void _applyTracks(List<dynamic> tracks) {
+    if (_stateDisposing) return;
+    if (mounted) {
+      setState(() {
+        cachedTracks = tracks;
+        isLoading = false;
+      });
+    } else {
+      cachedTracks = tracks;
+      isLoading = false;
+    }
+  }
+
+  Future<List<dynamic>?> _readOfflineTrackCache() async {
+    if (localPath.isEmpty) return null;
+    final file = File('$localPath/offline_tracks.json');
+    if (!await file.exists()) return null;
     try {
-      final res = await http
-          .get(Uri.parse('http://192.168.31.13:8000/api/tracks/'))
-          .timeout(const Duration(seconds: 5));
-      if (res.statusCode == 200) {
-        final data = json.decode(utf8.decode(res.bodyBytes));
-        await offlineJsonFile.writeAsString(json.encode(data));
-        setState(() {
-          cachedTracks = data;
-          isLoading = false;
-        });
+      final decoded = json.decode(await file.readAsString());
+      if (decoded is List) return List<dynamic>.from(decoded);
+      debugPrint('Offline track cache must contain a JSON list.');
+    } catch (error) {
+      debugPrint('Offline track cache read failed: $error');
+    }
+    return null;
+  }
+
+  Future<void> _loadOfflineTrackCache() async {
+    final tracks = await _readOfflineTrackCache();
+    if (tracks != null) _applyTracks(tracks);
+  }
+
+  bool _isCurrentDatabaseSync(int revision) =>
+      !_stateDisposing && revision == _databaseSyncRevision;
+
+  Future<void> syncDatabase() async {
+    final revision = ++_databaseSyncRevision;
+    final tracksUri = configuredServerUri('/api/tracks/');
+
+    try {
+      final res = await http.get(tracksUri).timeout(const Duration(seconds: 5));
+      if (res.statusCode != HttpStatus.ok) {
+        throw HttpException(
+          'Track sync failed with HTTP ${res.statusCode}.',
+          uri: tracksUri,
+        );
+      }
+      final decoded = json.decode(utf8.decode(res.bodyBytes));
+      if (decoded is! List) {
+        throw const FormatException('Track response must be a JSON list.');
+      }
+      if (!_isCurrentDatabaseSync(revision)) return;
+      _applyTracks(List<dynamic>.from(decoded));
+      try {
+        await _persistOfflineTracks();
+      } catch (error) {
+        debugPrint('Offline track cache write failed: $error');
       }
     } catch (e) {
-      if (await offlineJsonFile.exists()) {
-        setState(() {
-          cachedTracks = json.decode(offlineJsonFile.readAsStringSync());
-          isLoading = false;
-        });
-      } else {
-        setState(() => isLoading = false);
+      if (!_isCurrentDatabaseSync(revision)) return;
+      if (cachedTracks.isEmpty) {
+        final offlineTracks = await _readOfflineTrackCache();
+        if (!_isCurrentDatabaseSync(revision)) return;
+        _applyTracks(offlineTracks ?? <dynamic>[]);
       }
       // Show a snackbar only when the user might care (i.e. we had no cache)
       if (mounted && cachedTracks.isEmpty) {
@@ -902,8 +2171,9 @@ class MainAppScreenState extends State<MainAppScreen>
     if (searchQuery.isEmpty) return;
     setState(() => isSearchLoading = true);
     try {
-      final queryEndpoint = Uri.parse(
-        'http://192.168.31.13:8000/api/smart_search/?q=${Uri.encodeComponent(searchQuery)}',
+      final queryEndpoint = configuredServerUri(
+        '/api/smart_search/',
+        queryParameters: <String, Object?>{'q': searchQuery},
       );
       final res = await http
           .get(queryEndpoint)
@@ -948,86 +2218,143 @@ class MainAppScreenState extends State<MainAppScreen>
 
   bool isTrackLocal(int id) {
     if (localPath.isEmpty) return false;
-    return File('$localPath/track_$id.mp3').existsSync();
+    final file = File('$localPath/track_$id.mp3');
+    try {
+      return file.existsSync() && file.lengthSync() > 0;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  bool isTrackDownloadComplete(dynamic track) {
+    if (localPath.isEmpty || track is! Map) return false;
+    final rawTrackId = track['id'];
+    final trackId = rawTrackId is int
+        ? rawTrackId
+        : int.tryParse(rawTrackId?.toString() ?? '');
+    if (trackId == null) return false;
+    final audioFile = File('$localPath/track_$trackId.mp3');
+    final videoFile = File('$localPath/video_$trackId.mp4');
+    try {
+      return audioFile.existsSync() &&
+          audioFile.lengthSync() > 0 &&
+          videoFile.existsSync() &&
+          videoFile.lengthSync() > 0;
+    } on FileSystemException {
+      return false;
+    }
   }
 
   Future<void> downloadMediaFile(dynamic mediaObj) async {
     final trackId = mediaObj['id'];
-    setState(() => downloadQueue.add(trackId));
+    if (downloadQueue.contains(trackId)) return;
+    if (mounted) {
+      setState(() => downloadQueue.add(trackId));
+    } else {
+      downloadQueue.add(trackId);
+    }
     try {
-      final audioFile = File('$localPath/track_$trackId.mp3');
-      final coverFile = File('$localPath/cover_${trackId}_${getCoverFileName(mediaObj)}');
-      final lrcFile = File('$localPath/track_$trackId.lrc');
-
-      if (!await audioFile.exists()) {
-        final audioStream = await http.get(Uri.parse(mediaObj['audio_file']));
-        await audioFile.writeAsBytes(audioStream.bodyBytes);
-      }
-      if (!await _isCoverValidAndSquare(coverFile)) {
-        try {
-          if (await coverFile.exists()) {
-            await coverFile.delete();
-          }
-        } catch (_) {}
-        await _downloadAndCropCover(
-          mediaObj['album']['cover'].toString(),
-          coverFile,
+      await _downloadTaskLimiter.run(() async {
+        final audioFile = File('$localPath/track_$trackId.mp3');
+        final coverFile = File(
+          '$localPath/cover_${trackId}_${getCoverFileName(mediaObj)}',
         );
-      }
-      if (!await lrcFile.exists() &&
-          mediaObj['lyrics'] != null &&
-          mediaObj['lyrics'].toString().trim().isNotEmpty) {
-        await lrcFile.writeAsString(mediaObj['lyrics'].toString());
-      }
+        final lrcFile = File('$localPath/track_$trackId.lrc');
 
-      // Check if clip exists or download it on the server first
-      var videoFileUrl = mediaObj['video_file']?.toString();
-      if (videoFileUrl == null || videoFileUrl.trim().isEmpty) {
-        try {
-          final res = await http.post(
-            Uri.parse('http://192.168.31.13:8000/api/tracks/$trackId/download_clip/'),
-          ).timeout(const Duration(seconds: 15));
-          if (res.statusCode == 200) {
-            final data = json.decode(res.body);
-            videoFileUrl = data['video_url']?.toString();
+        if (!await _hasNonEmptyFile(audioFile)) {
+          await _mediaFileDownloader.download(
+            source: Uri.parse(mediaObj['audio_file'].toString()),
+            destination: audioFile,
+          );
+        }
+        if (!await _isCoverValidAndSquare(coverFile)) {
+          await _downloadAndCropCover(
+            mediaObj['album']['cover'].toString(),
+            coverFile,
+          );
+        }
+        if (!await lrcFile.exists() &&
+            mediaObj['lyrics'] != null &&
+            mediaObj['lyrics'].toString().trim().isNotEmpty) {
+          await atomicFileStore.writeString(
+            lrcFile,
+            mediaObj['lyrics'].toString(),
+          );
+        }
+
+        // Check if clip exists or download it on the server first
+        final parsedTrackId = trackId is int
+            ? trackId
+            : int.tryParse(trackId.toString());
+        var videoFileUrl = parsedTrackId == null
+            ? mediaObj['video_file']?.toString()
+            : _knownVideoUrlForTrack(parsedTrackId, mediaObj);
+        if ((videoFileUrl == null || videoFileUrl.trim().isEmpty) &&
+            parsedTrackId != null) {
+          try {
+            videoFileUrl = await _clipTaskLimiter.run<String?>(() async {
+              final knownUrl = _knownVideoUrlForTrack(parsedTrackId, mediaObj);
+              if (knownUrl != null) return knownUrl;
+              final res = await _requestClipGeneration(parsedTrackId);
+              if (res.statusCode != HttpStatus.ok) return null;
+              final data = json.decode(res.body);
+              return data['video_url']?.toString();
+            });
             if (videoFileUrl != null) {
               videoFileUrl = _resolveAbsoluteUrl(videoFileUrl);
               // Save to memory lists
               for (var i = 0; i < playingQueue.length; i++) {
-                if (playingQueue[i]['id'] == trackId) {
+                if (_VideoRequest.from(playingQueue[i]).trackId ==
+                    parsedTrackId) {
                   playingQueue[i]['video_file'] = videoFileUrl;
                 }
               }
+              final activeTrack = activeTrackNotifier.value;
+              if (_VideoRequest.from(activeTrack).trackId == parsedTrackId) {
+                activeTrack['video_file'] = videoFileUrl;
+              }
               for (var i = 0; i < cachedTracks.length; i++) {
-                if (cachedTracks[i]['id'] == trackId) {
+                if (_VideoRequest.from(cachedTracks[i]).trackId ==
+                    parsedTrackId) {
                   cachedTracks[i]['video_file'] = videoFileUrl;
                 }
               }
-              final offlineJsonFile = File('$localPath/offline_tracks.json');
-              await offlineJsonFile.writeAsString(json.encode(cachedTracks));
+              await _persistOfflineTracks();
             }
-          }
-        } catch (_) {}
-      }
-
-      if (videoFileUrl != null && videoFileUrl.trim().isNotEmpty) {
-        final videoFile = File('$localPath/video_$trackId.mp4');
-        if (!await videoFile.exists()) {
-          final resolvedUrl = _resolveAbsoluteUrl(videoFileUrl);
-          final videoStream = await http.get(Uri.parse(resolvedUrl));
-          await videoFile.writeAsBytes(videoStream.bodyBytes);
+          } catch (_) {}
         }
-      }
+
+        if (videoFileUrl != null && videoFileUrl.trim().isNotEmpty) {
+          final videoFile = File('$localPath/video_$trackId.mp4');
+          if (!await _hasNonEmptyFile(videoFile)) {
+            final resolvedUrl = _resolveAbsoluteUrl(videoFileUrl);
+            await _mediaFileDownloader.download(
+              source: Uri.parse(resolvedUrl),
+              destination: videoFile,
+            );
+            _downloadedVideoSources.add(
+              _videoSourceKey(
+                _VideoRequest(trackId: parsedTrackId, videoUrl: resolvedUrl),
+              ),
+            );
+          }
+        }
+      });
     } catch (e) {
       debugPrint(e.toString());
+    } finally {
+      if (mounted) {
+        setState(() => downloadQueue.remove(trackId));
+      } else {
+        downloadQueue.remove(trackId);
+      }
     }
-    setState(() => downloadQueue.remove(trackId));
   }
 
   Future<void> downloadAllTracks(List<dynamic> tracksToDownload) async {
     for (var track in tracksToDownload) {
       final trackId = track['id'];
-      if (!isTrackLocal(trackId) && !downloadQueue.contains(trackId)) {
+      if (!isTrackDownloadComplete(track) && !downloadQueue.contains(trackId)) {
         downloadMediaFile(track);
         await Future.delayed(const Duration(milliseconds: 200));
       }
@@ -1083,7 +2410,12 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     });
     final favFile = File('$localPath/liked_tracks.json');
-    await favFile.writeAsString(json.encode(favs.toList()));
+    final snapshot = json.encode(favs.toList());
+    try {
+      await atomicFileStore.writeString(favFile, snapshot);
+    } catch (error) {
+      debugPrint('Favorite save failed: $error');
+    }
   }
 
   ImageProvider getPlaylistImage(String pathOrUrl) {
@@ -1095,69 +2427,56 @@ class MainAppScreenState extends State<MainAppScreen>
   //  Playback
   // ═══════════════════════════════════════════════════════════════════════════
 
-  void startPlayback(List<dynamic> targetQueue, int index) async {
-    if (targetQueue.isEmpty) return;
+  void startPlayback(List<dynamic> targetQueue, int index) {
+    if (targetQueue.isEmpty || index < 0 || index >= targetQueue.length) return;
     if (isPremium) playCount++;
 
     setState(() {
       playingQueue = List.from(targetQueue);
       playingIndex = index;
     });
-    _setPlaying(true);
-
     // Reset shuffle when starting fresh from a list tap
     isShuffled = false;
     _unshuffledQueue = [];
 
     final targetTrack = playingQueue[playingIndex];
-    activeTrackNotifier.value = targetTrack;
-    _ensureCoverDownloaded(targetTrack);
-
-    if (isAudioServiceActive) {
-      final dur = trackDurations[targetTrack['id']];
-      audioHandler.mediaItem.add(
-        MediaItem(
-          id: targetTrack['id'].toString(),
-          title: targetTrack['title'].toString(),
-          artist: targetTrack['album']['artist']['name'].toString(),
-          album: targetTrack['album']['title']?.toString(),
-          artUri: getArtUri(targetTrack),
-          duration: dur != null ? Duration(seconds: dur) : null,
-        ),
-      );
-      // playbackState is now auto-managed by AudioPlayerHandler listeners
-    }
-
-    final localTrackPath = File('$localPath/track_${targetTrack['id']}.mp3');
-    if (await localTrackPath.exists()) {
-      await audioPlayer.play(DeviceFileSource(localTrackPath.path));
-    } else {
-      await audioPlayer.play(UrlSource(targetTrack['audio_file']));
-    }
-
-    discordStart = DateTime.now().millisecondsSinceEpoch;
-    fetchLyrics(targetTrack);
-    _syncMediaSessionMetadata();
-    _syncMediaSessionPlayback();
-    _saveState();
+    _activateTrackForPlayback(targetTrack);
   }
 
-  void pauseTrack() async {
+  void pauseTrack() {
     if (playingQueue.isEmpty) return;
-    if (isPlaying) {
-      await audioPlayer.pause();
-      _setPlaying(false);
-      updateRPC(force: true);
-    } else {
-      await audioPlayer.resume();
-      _setPlaying(true);
-      discordStart =
-          DateTime.now().millisecondsSinceEpoch -
-          currentPositionNotifier.value.inMilliseconds;
-      updateRPC(force: true);
-    }
+    final shouldPlay = !isPlaying;
+    final revision = ++_transportRevision;
+    _setPlaying(shouldPlay);
     _syncMediaSessionPlayback();
-    _saveState();
+    unawaited(_saveState());
+    unawaited(
+      _enqueueAudioWork(() async {
+        if (_stateDisposing || revision != _transportRevision) return;
+        try {
+          if (shouldPlay) {
+            await audioPlayer.resume();
+          } else {
+            await audioPlayer.pause();
+          }
+        } catch (_) {
+          if (!_stateDisposing && revision == _transportRevision) {
+            _setPlaying(!shouldPlay);
+            _syncMediaSessionPlayback();
+          }
+          rethrow;
+        }
+        if (_stateDisposing || revision != _transportRevision) return;
+        if (shouldPlay) {
+          discordStart =
+              DateTime.now().millisecondsSinceEpoch -
+              currentPositionNotifier.value.inMilliseconds;
+        }
+        updateRPC(force: true);
+        _syncMediaSessionPlayback();
+        unawaited(_saveState());
+      }),
+    );
   }
 
   void nextTrack() {
@@ -1168,9 +2487,7 @@ class MainAppScreenState extends State<MainAppScreen>
       if (loopMode == LoopMode.list || loopMode == LoopMode.one) {
         _playIndex(0);
       } else {
-        audioPlayer.stop();
-        _setPlaying(false);
-        updateRPC(force: true);
+        _stopPlaybackAtQueueEnd();
       }
     }
   }
@@ -1178,8 +2495,7 @@ class MainAppScreenState extends State<MainAppScreen>
   void prevTrack() {
     if (playingQueue.isEmpty) return;
     if (currentPositionNotifier.value.inSeconds > 3) {
-      audioPlayer.seek(Duration.zero);
-      _saveState();
+      seekTo(Duration.zero);
     } else {
       if (playingIndex > 0) {
         _playIndex(playingIndex - 1);
@@ -1187,8 +2503,7 @@ class MainAppScreenState extends State<MainAppScreen>
         if (loopMode == LoopMode.list || loopMode == LoopMode.one) {
           _playIndex(playingQueue.length - 1);
         } else {
-          audioPlayer.seek(Duration.zero);
-          _saveState();
+          seekTo(Duration.zero);
         }
       }
     }
@@ -1196,15 +2511,27 @@ class MainAppScreenState extends State<MainAppScreen>
 
   /// Internal: play a specific index within the *current* queue (preserves
   /// shuffle state).
-  void _playIndex(int index) async {
-    if (playingQueue.isEmpty) return;
+  void _playIndex(int index) {
+    if (playingQueue.isEmpty || index < 0 || index >= playingQueue.length) {
+      return;
+    }
 
     setState(() => playingIndex = index);
-    _setPlaying(true);
 
     final targetTrack = playingQueue[playingIndex];
+    _activateTrackForPlayback(targetTrack);
+  }
+
+  void _activateTrackForPlayback(dynamic targetTrack) {
+    final trackRevision = ++_trackRevision;
+    final transportRevision = ++_transportRevision;
+    _seekRevision += 1;
+    _setPlaying(true);
+    discordStart = null;
     activeTrackNotifier.value = targetTrack;
-    _ensureCoverDownloaded(targetTrack);
+    currentPositionNotifier.value = Duration.zero;
+    fullDurationNotifier.value = Duration.zero;
+    unawaited(_ensureCoverDownloaded(targetTrack));
 
     if (isAudioServiceActive) {
       final dur = trackDurations[targetTrack['id']];
@@ -1221,18 +2548,139 @@ class MainAppScreenState extends State<MainAppScreen>
       // playbackState is now auto-managed by AudioPlayerHandler listeners
     }
 
-    final localTrackPath = File('$localPath/track_${targetTrack['id']}.mp3');
-    if (await localTrackPath.exists()) {
-      await audioPlayer.play(DeviceFileSource(localTrackPath.path));
-    } else {
-      await audioPlayer.play(UrlSource(targetTrack['audio_file']));
-    }
-
-    discordStart = DateTime.now().millisecondsSinceEpoch;
-    fetchLyrics(targetTrack);
+    unawaited(fetchLyrics(targetTrack));
     _syncMediaSessionMetadata();
     _syncMediaSessionPlayback();
-    _saveState();
+    unawaited(_saveState());
+    unawaited(
+      _enqueueAudioWork(
+        () => _playTrackSource(
+          targetTrack: targetTrack,
+          trackRevision: trackRevision,
+          transportRevision: transportRevision,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _playTrackSource({
+    required dynamic targetTrack,
+    required int trackRevision,
+    required int transportRevision,
+  }) async {
+    if (!_isCurrentTrackRevision(trackRevision)) return;
+    final trackId = targetTrack['id'] as int;
+    final localTrackPath = File('$localPath/track_$trackId.mp3');
+    final hasLocalTrack = await _hasNonEmptyFile(localTrackPath);
+    if (!_isCurrentTrackRevision(trackRevision)) return;
+
+    _audioSourceTrackId = null;
+    _settledTrackRevision = -1;
+    try {
+      if (hasLocalTrack) {
+        await audioPlayer.setSource(DeviceFileSource(localTrackPath.path));
+      } else {
+        await audioPlayer.setSource(
+          UrlSource(targetTrack['audio_file'].toString()),
+        );
+      }
+    } catch (_) {
+      if (_isCurrentTrackRevision(trackRevision) &&
+          transportRevision == _transportRevision) {
+        _setPlaying(false);
+        _syncMediaSessionPlayback();
+      }
+      rethrow;
+    }
+    if (!_isCurrentTrackRevision(trackRevision)) return;
+
+    _audioSourceTrackId = trackId;
+    _settledTrackRevision = trackRevision;
+    try {
+      final duration = await audioPlayer.getDuration();
+      if (!_isCurrentTrackRevision(trackRevision)) return;
+      if (duration != null) {
+        trackDurations[trackId] = duration.inSeconds;
+        fullDurationNotifier.value = duration;
+      }
+
+      if (isPlaying) {
+        await audioPlayer.resume();
+      } else {
+        await audioPlayer.pause();
+      }
+    } catch (_) {
+      if (_isCurrentTrackRevision(trackRevision) &&
+          transportRevision == _transportRevision) {
+        _setPlaying(false);
+        _syncMediaSessionPlayback();
+      }
+      rethrow;
+    }
+    if (!_isCurrentTrackRevision(trackRevision)) return;
+
+    discordStart = isPlaying ? DateTime.now().millisecondsSinceEpoch : null;
+    updateRPC(force: true);
+    _syncMediaSessionMetadata();
+    _syncMediaSessionPlayback();
+    unawaited(_saveState());
+  }
+
+  Future<void> _restoreTrackSource({
+    required dynamic targetTrack,
+    required int trackRevision,
+    required Duration position,
+  }) async {
+    if (!_isCurrentTrackRevision(trackRevision)) return;
+    final trackId = targetTrack['id'] as int;
+    final localTrackPath = File('$localPath/track_$trackId.mp3');
+    final hasLocalTrack = await _hasNonEmptyFile(localTrackPath);
+    if (!_isCurrentTrackRevision(trackRevision)) return;
+
+    _audioSourceTrackId = null;
+    _settledTrackRevision = -1;
+    if (hasLocalTrack) {
+      await audioPlayer.setSource(DeviceFileSource(localTrackPath.path));
+    } else {
+      await audioPlayer.setSource(
+        UrlSource(targetTrack['audio_file'].toString()),
+      );
+    }
+    if (!_isCurrentTrackRevision(trackRevision)) return;
+
+    _audioSourceTrackId = trackId;
+    _settledTrackRevision = trackRevision;
+    final duration = await audioPlayer.getDuration();
+    if (!_isCurrentTrackRevision(trackRevision)) return;
+    if (duration != null) {
+      trackDurations[trackId] = duration.inSeconds;
+      fullDurationNotifier.value = duration;
+    }
+    if (position > Duration.zero) {
+      final targetPosition = duration != null && position > duration
+          ? duration
+          : position;
+      await audioPlayer.seek(targetPosition);
+      if (_isCurrentTrackRevision(trackRevision)) {
+        currentPositionNotifier.value = targetPosition;
+      }
+    }
+  }
+
+  void _stopPlaybackAtQueueEnd() {
+    final revision = ++_transportRevision;
+    _setPlaying(false);
+    _syncMediaSessionPlayback();
+    updateRPC(force: true);
+    unawaited(_saveState());
+    unawaited(
+      _enqueueAudioWork(() async {
+        if (_stateDisposing || revision != _transportRevision) return;
+        await audioPlayer.stop();
+        if (_stateDisposing || revision != _transportRevision) return;
+        _audioSourceTrackId = null;
+      }),
+    );
   }
 
   // ── Shuffle ──────────────────────────────────────────────────────────────
@@ -1287,32 +2735,57 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
-  void seekTo(Duration pos) async {
-    await audioPlayer.seek(pos);
+  void seekTo(Duration pos) {
+    final trackRevision = _trackRevision;
+    final seekRevision = ++_seekRevision;
     currentPositionNotifier.value = pos;
     discordStart = DateTime.now().millisecondsSinceEpoch - pos.inMilliseconds;
-    
-    // Immediately seek the video controller to match the audio seek
-    if (_videoController != null && _isVideoInitialized) {
-      await _videoController!.seekTo(pos);
-    }
-    
     checkLyrics(pos);
     _syncMediaSessionPlayback();
+    unawaited(_saveState());
+    unawaited(
+      _enqueueAudioWork(() async {
+        if (!_isCurrentTrackRevision(trackRevision) ||
+            seekRevision != _seekRevision) {
+          return;
+        }
+        await audioPlayer.seek(pos);
+        if (!_isCurrentTrackRevision(trackRevision) ||
+            seekRevision != _seekRevision) {
+          return;
+        }
+
+        // Serialize video seek with initialize/dispose. Audio stays authoritative.
+        _enqueueVideoWork(() async {
+          if (!_isCurrentTrackRevision(trackRevision) ||
+              seekRevision != _seekRevision) {
+            return;
+          }
+          final controller = _videoController;
+          if (controller != null &&
+              _isVideoInitialized &&
+              identical(controller, _videoController)) {
+            await controller.seekTo(pos);
+          }
+        });
+      }),
+    );
   }
 
   Future<void> fetchLyrics(dynamic trackObj) async {
+    final revision = ++_lyricsRevision;
     globalLyrics.clear();
     noLrcData = "";
     currentLine = -1;
     lrcLoading = true;
     uiSignal.value++;
 
-    String artistName = trackObj['album']['artist']['name'];
-    String trackTitle = trackObj['title'];
-    int trackId = trackObj['id'];
+    final artistName = trackObj['album']['artist']['name'].toString();
+    final trackTitle = trackObj['title'].toString();
+    final trackId = trackObj['id'] as int;
 
-    void parseLrcString(String lrcContent) {
+    List<LyricLine> parseLrcString(String lrcContent) {
+      final parsed = <LyricLine>[];
       final RegExp rx = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
       for (var lineStr in lrcContent.split('\n')) {
         final matchData = rx.firstMatch(lineStr);
@@ -1326,7 +2799,7 @@ class MainAppScreenState extends State<MainAppScreen>
           final txt = matchData.group(4)!.trim();
 
           if (txt.isNotEmpty) {
-            globalLyrics.add(
+            parsed.add(
               LyricLine(
                 Duration(minutes: min, seconds: sec, milliseconds: ms),
                 txt,
@@ -1336,30 +2809,36 @@ class MainAppScreenState extends State<MainAppScreen>
           }
         }
       }
+      return parsed;
     }
 
     final localLrc = File('$localPath/track_$trackId.lrc');
-    if (await localLrc.exists()) {
-      final fileContent = await localLrc.readAsString();
-      parseLrcString(fileContent);
-      if (globalLyrics.isEmpty) noLrcData = fileContent;
-      lrcLoading = false;
-      uiSignal.value++;
-      updateRPC(force: true);
-      return;
+    try {
+      if (await _hasNonEmptyFile(localLrc)) {
+        final fileContent = await localLrc.readAsString();
+        _commitLyrics(
+          revision: revision,
+          trackId: trackId,
+          lyrics: parseLrcString(fileContent),
+          plainText: fileContent,
+        );
+        return;
+      }
+    } catch (error) {
+      debugPrint('Local lyrics read failed: $error');
     }
+    if (!_isCurrentLyricsRequest(revision, trackId)) return;
 
     if (trackObj['lyrics'] != null &&
         trackObj['lyrics'].toString().trim().isNotEmpty) {
       final dbLyrics = trackObj['lyrics'].toString();
-      parseLrcString(dbLyrics);
-      if (globalLyrics.isEmpty) noLrcData = dbLyrics;
-      try {
-        await localLrc.writeAsString(dbLyrics);
-      } catch (_) {}
-      lrcLoading = false;
-      uiSignal.value++;
-      updateRPC(force: true);
+      _commitLyrics(
+        revision: revision,
+        trackId: trackId,
+        lyrics: parseLrcString(dbLyrics),
+        plainText: dbLyrics,
+      );
+      unawaited(_writeLyricsFile(localLrc, dbLyrics));
       return;
     }
 
@@ -1367,46 +2846,94 @@ class MainAppScreenState extends State<MainAppScreen>
       final parsedUrl = Uri.parse(
         'https://lrclib.net/api/get?artist_name=${Uri.encodeComponent(artistName)}&track_name=${Uri.encodeComponent(trackTitle)}',
       );
-      final res = await http.get(parsedUrl).timeout(const Duration(seconds: 15));
-      if (res.statusCode == 200) {
+      final res = await http
+          .get(parsedUrl)
+          .timeout(const Duration(seconds: 15));
+      if (!_isCurrentLyricsRequest(revision, trackId)) return;
+      if (res.statusCode == HttpStatus.ok) {
         final jsonData = json.decode(utf8.decode(res.bodyBytes));
         final syncedText = jsonData['syncedLyrics'];
         final plainText = jsonData['plainLyrics'];
 
         if (syncedText != null && syncedText.toString().isNotEmpty) {
-          parseLrcString(syncedText);
-          try {
-            await localLrc.writeAsString(syncedText.toString());
-          } catch (_) {}
-          _saveLyricsToServer(trackId, syncedText.toString());
-        } else if (plainText != null) {
-          noLrcData = plainText;
-          try {
-            await localLrc.writeAsString(plainText.toString());
-          } catch (_) {}
-          _saveLyricsToServer(trackId, plainText.toString());
+          final contents = syncedText.toString();
+          _commitLyrics(
+            revision: revision,
+            trackId: trackId,
+            lyrics: parseLrcString(contents),
+            plainText: contents,
+          );
+          unawaited(_writeLyricsFile(localLrc, contents));
+          unawaited(_saveLyricsToServer(trackId, contents));
+          return;
+        } else if (plainText != null && plainText.toString().isNotEmpty) {
+          final contents = plainText.toString();
+          _commitLyrics(
+            revision: revision,
+            trackId: trackId,
+            lyrics: const <LyricLine>[],
+            plainText: contents,
+          );
+          unawaited(_writeLyricsFile(localLrc, contents));
+          unawaited(_saveLyricsToServer(trackId, contents));
+          return;
         }
       }
     } catch (e) {
       debugPrint("error $e");
     }
 
+    _commitLyrics(
+      revision: revision,
+      trackId: trackId,
+      lyrics: const <LyricLine>[],
+      plainText: '',
+    );
+  }
+
+  bool _isCurrentLyricsRequest(int revision, int trackId) {
+    return !_stateDisposing &&
+        revision == _lyricsRevision &&
+        activeTrackNotifier.value?['id'] == trackId;
+  }
+
+  void _commitLyrics({
+    required int revision,
+    required int trackId,
+    required List<LyricLine> lyrics,
+    required String plainText,
+  }) {
+    if (!_isCurrentLyricsRequest(revision, trackId)) return;
+    globalLyrics
+      ..clear()
+      ..addAll(lyrics);
+    noLrcData = lyrics.isEmpty ? plainText : '';
     lrcLoading = false;
     uiSignal.value++;
     updateRPC(force: true);
   }
 
+  Future<void> _writeLyricsFile(File file, String contents) async {
+    try {
+      await atomicFileStore.writeString(file, contents);
+    } catch (error) {
+      debugPrint('Lyrics cache write failed: $error');
+    }
+  }
+
   Future<void> _saveLyricsToServer(int trackId, String lyricsText) async {
     try {
-      final url = Uri.parse('http://192.168.31.13:8000/api/tracks/$trackId/update_lyrics/');
-      final res = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'lyrics': lyricsText}),
-      );
+      final url = configuredServerUri('/api/tracks/$trackId/update_lyrics/');
+      final res = await http
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'lyrics': lyricsText}),
+          )
+          .timeout(const Duration(seconds: 15));
       if (res.statusCode == 200) {
         debugPrint('Lyrics updated on server for track $trackId');
-        
+
         // Update local cachedTracks in memory
         for (var track in cachedTracks) {
           if (track['id'] == trackId) {
@@ -1415,10 +2942,7 @@ class MainAppScreenState extends State<MainAppScreen>
           }
         }
         // Also update offline_tracks.json
-        final offlineJsonFile = File('$localPath/offline_tracks.json');
-        if (await offlineJsonFile.exists()) {
-          await offlineJsonFile.writeAsString(json.encode(cachedTracks));
-        }
+        await _persistOfflineTracks();
       } else {
         debugPrint('Failed to update lyrics on server: ${res.body}');
       }
@@ -1432,6 +2956,9 @@ class MainAppScreenState extends State<MainAppScreen>
   // ═══════════════════════════════════════════════════════════════════════════
 
   final Map<int, String> _publicCoverCache = {};
+  final Map<int, Future<String?>> _publicCoverRequests = {};
+  final Map<int, DateTime> _publicCoverMisses = {};
+  static const Duration _publicCoverMissTtl = Duration(minutes: 30);
 
   String _transliterate(String input) {
     const rus = [
@@ -1541,9 +3068,38 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<String?> _getPublicCoverUrl(dynamic trackData) async {
     final id = trackData['id'] as int;
-    if (_publicCoverCache.containsKey(id)) {
-      return _publicCoverCache[id];
+    final cached = _publicCoverCache[id];
+    if (cached != null) return cached;
+
+    final now = DateTime.now();
+    final missedAt = _publicCoverMisses[id];
+    if (missedAt != null && now.difference(missedAt) < _publicCoverMissTtl) {
+      return null;
     }
+    _publicCoverMisses.remove(id);
+
+    final inFlight = _publicCoverRequests[id];
+    if (inFlight != null) return inFlight;
+
+    final request = _fetchPublicCoverUrl(trackData);
+    _publicCoverRequests[id] = request;
+    try {
+      final result = await request;
+      if (result == null) {
+        _publicCoverMisses[id] = DateTime.now();
+      } else {
+        _publicCoverMisses.remove(id);
+      }
+      return result;
+    } finally {
+      if (identical(_publicCoverRequests[id], request)) {
+        _publicCoverRequests.remove(id);
+      }
+    }
+  }
+
+  Future<String?> _fetchPublicCoverUrl(dynamic trackData) async {
+    final id = trackData['id'] as int;
 
     final title = trackData['title']?.toString() ?? '';
     final artist = trackData['album']?['artist']?['name']?.toString() ?? '';
@@ -1551,8 +3107,11 @@ class MainAppScreenState extends State<MainAppScreen>
 
     // 1. Try iTunes Search API (extremely fast, clean square covers)
     try {
-      final itunesUrl = 'https://itunes.apple.com/search?term=${Uri.encodeComponent('$artist $title')}&entity=song&limit=1';
-      final res = await http.get(Uri.parse(itunesUrl)).timeout(const Duration(seconds: 3));
+      final itunesUrl =
+          'https://itunes.apple.com/search?term=${Uri.encodeComponent('$artist $title')}&entity=song&limit=1';
+      final res = await http
+          .get(Uri.parse(itunesUrl))
+          .timeout(const Duration(seconds: 3));
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         final results = data['results'] as List<dynamic>?;
@@ -1579,7 +3138,7 @@ class MainAppScreenState extends State<MainAppScreen>
       final infoRes = await http
           .get(
             Uri.parse(
-              'http://ws.audioscrobbler.com/2.0/?method=track.getInfo&artist=${Uri.encodeComponent(artist)}&track=${Uri.encodeComponent(title)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json',
+              'https://ws.audioscrobbler.com/2.0/?method=track.getInfo&artist=${Uri.encodeComponent(artist)}&track=${Uri.encodeComponent(title)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json',
             ),
           )
           .timeout(const Duration(seconds: 3));
@@ -1620,7 +3179,7 @@ class MainAppScreenState extends State<MainAppScreen>
       final searchRes = await http
           .get(
             Uri.parse(
-              'http://ws.audioscrobbler.com/2.0/?method=track.search&artist=${Uri.encodeComponent(artist)}&track=${Uri.encodeComponent(title)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json',
+              'https://ws.audioscrobbler.com/2.0/?method=track.search&artist=${Uri.encodeComponent(artist)}&track=${Uri.encodeComponent(title)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json',
             ),
           )
           .timeout(const Duration(seconds: 3));
@@ -1668,7 +3227,9 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void updateRPC({bool force = false}) {
-    if (!isDesktop || playingQueue.isEmpty) return;
+    if (PerformanceFrameMonitor.enabled || !isDesktop || playingQueue.isEmpty) {
+      return;
+    }
 
     Future<void> sendToDiscord() async {
       lastRpcTime = DateTime.now();
@@ -1718,8 +3279,8 @@ class MainAppScreenState extends State<MainAppScreen>
           }
         }
 
-        FlutterDiscordRPC.instance.setActivity(
-          activity: RPCActivity(
+        await _setDiscordActivity(
+          RPCActivity(
             details: p1,
             state: p2,
             activityType: ActivityType.listening,
@@ -1727,7 +3288,9 @@ class MainAppScreenState extends State<MainAppScreen>
             timestamps: discordStart != null
                 ? RPCTimestamps(
                     start: discordStart!,
-                    end: durationMs != null ? (discordStart! + durationMs) : null,
+                    end: durationMs != null
+                        ? (discordStart! + durationMs)
+                        : null,
                   )
                 : null,
             buttons: [
@@ -1739,8 +3302,8 @@ class MainAppScreenState extends State<MainAppScreen>
           ),
         );
       } else {
-        FlutterDiscordRPC.instance.setActivity(
-          activity: RPCActivity(
+        await _setDiscordActivity(
+          RPCActivity(
             details: '⏸ На паузе',
             state: '$title — $art',
             activityType: ActivityType.listening,
@@ -1963,7 +3526,7 @@ class MainAppScreenState extends State<MainAppScreen>
   Widget buildDownloadButton() {
     if (playingQueue.isEmpty) return const SizedBox(width: 24);
     final trackId = playingQueue[playingIndex]['id'];
-    final isDownloaded = isTrackLocal(trackId);
+    final isDownloaded = isTrackDownloadComplete(playingQueue[playingIndex]);
     final isDownloading = downloadQueue.contains(trackId);
 
     if (isDownloading) {
@@ -2528,15 +4091,18 @@ class MainAppScreenState extends State<MainAppScreen>
                             border: Border.all(color: Colors.white12, width: 3),
                           ),
                           child: ClipOval(
-                            child: _isVideoInitialized &&
+                            child:
+                                _isVideoInitialized &&
                                     _videoController != null &&
                                     playVideoClipNotifier.value
                                 ? SizedBox.expand(
                                     child: FittedBox(
                                       fit: BoxFit.cover,
                                       child: SizedBox(
-                                        width: _videoController!.value.size.width,
-                                        height: _videoController!.value.size.height,
+                                        width:
+                                            _videoController!.value.size.width,
+                                        height:
+                                            _videoController!.value.size.height,
                                         child: VideoPlayer(_videoController!),
                                       ),
                                     ),
@@ -2981,7 +4547,9 @@ class MainAppScreenState extends State<MainAppScreen>
                             ? currentObject['id'] ==
                                   playingQueue[playingIndex]['id']
                             : false;
-                        final isDownloaded = isTrackLocal(trackId);
+                        final isDownloaded = isTrackDownloadComplete(
+                          currentObject,
+                        );
                         final isDownloading = downloadQueue.contains(trackId);
                         final isFavorited = favs.contains(trackId);
 
