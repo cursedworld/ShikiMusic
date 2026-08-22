@@ -103,6 +103,10 @@ Future<void> _loadSavedSettings() async {
 
       // Restore video clip setting
       playVideoClipNotifier.value = data['playVideoClip'] ?? false;
+
+      // Restore discord github button setting
+      discordShowGitHubButtonNotifier.value =
+          data['discordShowGitHubButton'] ?? true;
     }
   } catch (_) {}
 }

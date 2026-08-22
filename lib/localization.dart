@@ -318,4 +318,93 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Plays YouTube music video inside the player circle',
     'ja': 'プレイヤーのサークル内でYouTubeクリップを再生します',
   },
+  'discord_github_button': {
+    'ru': 'Кнопка GitHub в Discord',
+    'en': 'GitHub Button in Discord',
+    'ja': 'DiscordのGitHubボタン',
+  },
+  'discord_github_button_desc': {
+    'ru': 'Ссылка на репозиторий',
+    'en': 'Repository Link',
+    'ja': 'リポジトリリンク',
+  },
+  'discord_github_button_hint': {
+    'ru': 'Отображать кнопку со ссылкой на GitHub в статусе Discord',
+    'en': 'Show the GitHub link button in Discord Rich Presence',
+    'ja': 'DiscordステータスにGitHubリンクボタンを表示',
+  },
+
+  // ── Downloads management ──
+  'delete_downloaded_track': {
+    'ru': 'Удалить из загрузок',
+    'en': 'Delete from downloads',
+    'ja': 'ダウンロードから削除',
+  },
+  'track_deleted_from_storage': {
+    'ru': 'Трек удален из памяти',
+    'en': 'Track deleted from storage',
+    'ja': '曲がストレージから削除されました',
+  },
+
+  // ── Artists & Albums ──
+  'sidebar_artists': {
+    'ru': 'Исполнители',
+    'en': 'Artists',
+    'ja': 'アーティスト',
+  },
+  'artist_bio': {
+    'ru': 'Биография',
+    'en': 'Biography',
+    'ja': 'バイオグラフィー',
+  },
+  'artist_albums': {
+    'ru': 'Альбомы',
+    'en': 'Albums',
+    'ja': 'アルバム',
+  },
+  'artist_all_tracks': {
+    'ru': 'Все треки',
+    'en': 'All Tracks',
+    'ja': 'すべての曲',
+  },
+  'artist_play_all': {
+    'ru': 'Слушать всё',
+    'en': 'Play All',
+    'ja': 'すべて再生',
+  },
+  'artist_shuffle': {
+    'ru': 'Перемешать',
+    'en': 'Shuffle',
+    'ja': 'シャッフル',
+  },
+  'no_bio_available': {
+    'ru': 'Биография отсутствует',
+    'en': 'No biography available',
+    'ja': 'バイオグラフィーはありません',
+  },
+  'albums_title': {
+    'ru': 'Альбомы',
+    'en': 'Albums',
+    'ja': 'アルバム',
+  },
+  'read_more': {
+    'ru': 'Подробнее',
+    'en': 'Read more',
+    'ja': 'もっと見る',
+  },
+  'show_less': {
+    'ru': 'Свернуть',
+    'en': 'Show less',
+    'ja': '閉じる',
+  },
+  'artist_tracks_count': {
+    'ru': 'треков',
+    'en': 'tracks',
+    'ja': '曲',
+  },
+  'artist_albums_count': {
+    'ru': 'альбомов',
+    'en': 'albums',
+    'ja': 'アルバム',
+  },
 };
