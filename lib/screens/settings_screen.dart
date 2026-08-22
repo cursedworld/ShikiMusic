@@ -122,6 +122,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _selectedLang = 'ru';
   bool _vinylRotation = true;
   bool _playVideoClip = false;
+  bool _discordShowGitHubButton = true;
   static final SettingsPersistenceQueue _settingsPersistence =
       SettingsPersistenceQueue();
   static Future<void> _backgroundMutation = Future<void>.value();
@@ -158,6 +159,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _selectedLang = data['language'] ?? 'ru';
           _vinylRotation = data['vinylRotation'] ?? true;
           _playVideoClip = data['playVideoClip'] ?? false;
+          _discordShowGitHubButton = data['discordShowGitHubButton'] ?? true;
         });
 
         customBackgroundNotifier.value = availableBackground;
@@ -171,6 +173,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         languageNotifier.value = _selectedLang;
         vinylRotationNotifier.value = _vinylRotation;
         playVideoClipNotifier.value = _playVideoClip;
+        discordShowGitHubButtonNotifier.value = _discordShowGitHubButton;
       }
     } catch (_) {}
   }
@@ -181,6 +184,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'language': _selectedLang,
       'vinylRotation': _vinylRotation,
       'playVideoClip': _playVideoClip,
+      'discordShowGitHubButton': _discordShowGitHubButton,
       'customBackground': customBackgroundNotifier.value,
       'accentColor': _selectedColorKey == 'custom'
           ? accentColorNotifier.value.toARGB32()
@@ -458,6 +462,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         onChanged: (val) {
                           setState(() => _playVideoClip = val);
                           playVideoClipNotifier.value = val;
+                          _saveSettings();
+                        },
+                      ),
+                    ),
+
+                    const SizedBox(height: 32),
+
+                    // ── Discord RPC GitHub Button ──
+                    _buildSectionHeader(
+                      Icons.link,
+                      tr('discord_github_button'),
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: SwitchListTile(
+                        title: Text(
+                          tr('discord_github_button_desc'),
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        subtitle: Text(
+                          tr('discord_github_button_hint'),
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 12,
+                          ),
+                        ),
+                        value: _discordShowGitHubButton,
+                        activeThumbColor: accent,
+                        activeTrackColor: accent.withValues(alpha: 0.3),
+                        onChanged: (val) {
+                          setState(() => _discordShowGitHubButton = val);
+                          discordShowGitHubButtonNotifier.value = val;
                           _saveSettings();
                         },
                       ),

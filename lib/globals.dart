@@ -36,6 +36,7 @@ ValueNotifier<String> languageNotifier = ValueNotifier('ru');
 ValueNotifier<bool> vinylRotationNotifier = ValueNotifier(true);
 ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
 ValueNotifier<bool> playVideoClipNotifier = ValueNotifier(false);
+ValueNotifier<bool> discordShowGitHubButtonNotifier = ValueNotifier(true);
 
 // ── Track duration cache (populated as songs are played) ──────────────────
 
@@ -120,6 +121,23 @@ Uri getArtUri(dynamic track) {
     }
   }
   return Uri.parse(track['album']['cover'].toString());
+}
+
+/// Returns an [ImageProvider] for an artist avatar/photo.
+ImageProvider? getArtistPhotoProvider(dynamic artistData) {
+  if (artistData == null) return null;
+  final photoUrl = artistData is Map ? artistData['photo']?.toString() : null;
+  if (photoUrl == null || photoUrl.isEmpty) return null;
+  
+  final artistId = artistData is Map ? artistData['id'] : null;
+  if (artistId != null && globalLocalPath.isNotEmpty) {
+    final localPhoto = File('$globalLocalPath/artist_$artistId.jpg');
+    if (localPhoto.existsSync() && localPhoto.lengthSync() > 0) {
+      return FileImage(localPhoto);
+    }
+  }
+
+  return NetworkImage(photoUrl);
 }
 
 /// Clears the in-memory cover cache. Call this after cache wipe.

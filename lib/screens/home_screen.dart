@@ -25,6 +25,7 @@ import '../media_file_downloader.dart';
 import '../perf/frame_metrics.dart';
 import '../safe_file_migration.dart';
 import '../server_config.dart';
+import 'artist_screen.dart';
 import 'lyrics_screen.dart';
 import 'settings_screen.dart';
 
@@ -392,6 +393,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
     // React to vinyl rotation toggle changes from Settings
     vinylRotationNotifier.addListener(_onVinylRotationChanged);
+    discordShowGitHubButtonNotifier.addListener(_onDiscordSettingChanged);
 
     // Synchronize video player actions
     activeTrackNotifier.addListener(_onActiveTrackChanged);
@@ -546,6 +548,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _videoTrackSwitchTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     vinylRotationNotifier.removeListener(_onVinylRotationChanged);
+    discordShowGitHubButtonNotifier.removeListener(_onDiscordSettingChanged);
     activeTrackNotifier.removeListener(_onActiveTrackChanged);
     isPlayingNotifier.removeListener(_syncVideoPlayState);
     playVideoClipNotifier.removeListener(_onVideoSettingChanged);
@@ -1364,6 +1367,10 @@ class MainAppScreenState extends State<MainAppScreen>
     } else if (isPlaying && !_vinylUserStopped && _videoLifecycleVisible) {
       _vinylController.repeat();
     }
+  }
+
+  void _onDiscordSettingChanged() {
+    updateRPC(force: true);
   }
 
   void _setPlaying(bool value) {
@@ -2234,15 +2241,88 @@ class MainAppScreenState extends State<MainAppScreen>
         : int.tryParse(rawTrackId?.toString() ?? '');
     if (trackId == null) return false;
     final audioFile = File('$localPath/track_$trackId.mp3');
-    final videoFile = File('$localPath/video_$trackId.mp4');
     try {
-      return audioFile.existsSync() &&
-          audioFile.lengthSync() > 0 &&
-          videoFile.existsSync() &&
-          videoFile.lengthSync() > 0;
+      return audioFile.existsSync() && audioFile.lengthSync() > 0;
     } on FileSystemException {
       return false;
     }
+  }
+
+  Future<void> deleteDownloadedTrack(dynamic track) async {
+    if (track is! Map || localPath.isEmpty) return;
+    final rawTrackId = track['id'];
+    final trackId = rawTrackId is int
+        ? rawTrackId
+        : int.tryParse(rawTrackId?.toString() ?? '');
+    if (trackId == null) return;
+
+    try {
+      final audioFile = File('$localPath/track_$trackId.mp3');
+      if (await audioFile.exists()) {
+        await audioFile.delete();
+      }
+      final lrcFile = File('$localPath/track_$trackId.lrc');
+      if (await lrcFile.exists()) {
+        await lrcFile.delete();
+      }
+      final videoFile = File('$localPath/video_$trackId.mp4');
+      if (await videoFile.exists()) {
+        await videoFile.delete();
+      }
+      final fallbackCover = File('$localPath/cover_$trackId.jpg');
+      if (await fallbackCover.exists()) {
+        await fallbackCover.delete();
+      }
+
+      final dir = Directory(localPath);
+      if (await dir.exists()) {
+        final prefix = 'cover_${trackId}_';
+        await for (final entity in dir.list()) {
+          if (entity is File && entity.uri.pathSegments.last.startsWith(prefix)) {
+            try {
+              await entity.delete();
+            } catch (_) {}
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(tr('track_deleted_from_storage')),
+            backgroundColor: Colors.black87,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error deleting track files: $e');
+    }
+  }
+
+  void _openArtistScreen(int artistId, String artistName) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (ctx) => ArtistScreen(
+          artistId: artistId,
+          artistName: artistName,
+          allTracks: cachedTracks,
+          onPlayTrack: (queue, idx) => startPlayback(queue, idx),
+          onToggleFavorite: (id) => toggleFavorite(id),
+          onDownloadTrack: (t) => downloadMediaFile(t),
+          onDeleteDownloadedTrack: (t) => deleteDownloadedTrack(t),
+          isTrackDownloaded: (t) => isTrackDownloadComplete(t),
+          isTrackFavorited: (id) => favs.contains(id),
+          isDownloading: (id) => downloadQueue.contains(id),
+          activeTrackId: (playingQueue.isNotEmpty && playingIndex < playingQueue.length)
+              ? playingQueue[playingIndex]['id']
+              : null,
+          isPlaying: isPlaying,
+        ),
+      ),
+    );
   }
 
   Future<void> downloadMediaFile(dynamic mediaObj) async {
@@ -3293,12 +3373,14 @@ class MainAppScreenState extends State<MainAppScreen>
                         : null,
                   )
                 : null,
-            buttons: [
-              const RPCButton(
-                label: "GitHub",
-                url: "https://github.com/cursedworld/ShikiMusic",
-              ),
-            ],
+            buttons: discordShowGitHubButtonNotifier.value
+                ? [
+                    const RPCButton(
+                      label: "GitHub",
+                      url: "https://github.com/cursedworld/ShikiMusic",
+                    ),
+                  ]
+                : null,
           ),
         );
       } else {
@@ -3308,12 +3390,14 @@ class MainAppScreenState extends State<MainAppScreen>
             state: '$title — $art',
             activityType: ActivityType.listening,
             assets: RPCAssets(largeImage: largeImg),
-            buttons: [
-              const RPCButton(
-                label: "GitHub",
-                url: "https://github.com/cursedworld/ShikiMusic",
-              ),
-            ],
+            buttons: discordShowGitHubButtonNotifier.value
+                ? [
+                    const RPCButton(
+                      label: "GitHub",
+                      url: "https://github.com/cursedworld/ShikiMusic",
+                    ),
+                  ]
+                : null,
           ),
         );
       }
@@ -3536,10 +3620,14 @@ class MainAppScreenState extends State<MainAppScreen>
         child: CircularProgressIndicator(color: Colors.white54, strokeWidth: 2),
       );
     } else if (isDownloaded) {
-      return const Icon(
-        Icons.download_done,
-        color: Colors.greenAccent,
-        size: 24,
+      return IconButton(
+        icon: const Icon(
+          Icons.download_done,
+          color: Colors.greenAccent,
+          size: 24,
+        ),
+        tooltip: tr('delete_downloaded_track'),
+        onPressed: () => deleteDownloadedTrack(playingQueue[playingIndex]),
       );
     } else {
       return IconButton(
@@ -3628,6 +3716,15 @@ class MainAppScreenState extends State<MainAppScreen>
             ),
             tooltip: tr('sidebar_downloaded'),
             onPressed: () => setState(() => navId = 2),
+          ),
+          const SizedBox(height: 20),
+          IconButton(
+            icon: Icon(
+              Icons.people_alt_outlined,
+              color: navId == -1 ? Colors.white : Colors.white54,
+            ),
+            tooltip: tr('sidebar_artists'),
+            onPressed: () => setState(() => navId = -1),
           ),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 15),
@@ -3727,6 +3824,12 @@ class MainAppScreenState extends State<MainAppScreen>
             Icons.offline_pin,
             tr('sidebar_downloaded'),
             2,
+            accent,
+          ),
+          _mobileNavTile(
+            Icons.people_alt_outlined,
+            tr('sidebar_artists'),
+            -1,
             accent,
           ),
           if (myPlaylists.isNotEmpty) ...[
@@ -4318,6 +4421,157 @@ class MainAppScreenState extends State<MainAppScreen>
     );
   }
 
+  Widget _buildArtistsView(bool isMobile) {
+    final accent = accentColorNotifier.value;
+
+    final Map<String, Map<String, dynamic>> artistMap = {};
+    for (final t in cachedTracks) {
+      final trackArtists = t['artists'] as List<dynamic>?;
+      final mainArtist = t['album']?['artist'];
+
+      final List<dynamic> artistsToProcess = [];
+      if (trackArtists != null && trackArtists.isNotEmpty) {
+        artistsToProcess.addAll(trackArtists);
+      } else if (mainArtist != null) {
+        artistsToProcess.add(mainArtist);
+      }
+
+      for (final a in artistsToProcess) {
+        if (a == null || a['name'] == null) continue;
+        final name = a['name'].toString().trim();
+        if (name.isEmpty) continue;
+        final key = name.toLowerCase();
+
+        if (!artistMap.containsKey(key)) {
+          artistMap[key] = {
+            'id': a['id'] ?? 0,
+            'name': name,
+            'photo': a['photo'],
+            'bio': a['bio'] ?? '',
+            'tracks': [t],
+            'albums': {t['album']?['title'] ?? ''},
+          };
+        } else {
+          final existing = artistMap[key]!;
+          if ((existing['photo'] == null || existing['photo'].toString().isEmpty) && a['photo'] != null) {
+            existing['photo'] = a['photo'];
+          }
+          if (a['id'] != null && existing['id'] == 0) {
+            existing['id'] = a['id'];
+          }
+          final tracksList = existing['tracks'] as List;
+          if (!tracksList.any((item) => item['id'] == t['id'])) {
+            tracksList.add(t);
+          }
+          if (t['album']?['title'] != null) {
+            (existing['albums'] as Set).add(t['album']['title']);
+          }
+        }
+      }
+    }
+
+    var artists = artistMap.values.toList();
+    if (searchQuery.isNotEmpty) {
+      final q = searchQuery.toLowerCase();
+      artists = artists
+          .where((a) => a['name'].toString().toLowerCase().contains(q))
+          .toList();
+    }
+
+    if (artists.isEmpty) {
+      return Center(
+        child: Text(
+          tr('no_data'),
+          style: const TextStyle(color: Colors.white38, fontSize: 18),
+        ),
+      );
+    }
+
+    return GridView.builder(
+      physics: const BouncingScrollPhysics(
+        parent: AlwaysScrollableScrollPhysics(),
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: isMobile ? 2 : 4,
+        crossAxisSpacing: 16,
+        mainAxisSpacing: 16,
+        childAspectRatio: 0.85,
+      ),
+      itemCount: artists.length,
+      itemBuilder: (ctx, idx) {
+        final artist = artists[idx];
+        final aId = artist['id'] is int ? artist['id'] as int : 0;
+        final aName = artist['name'] as String;
+        final aTracks = artist['tracks'] as List;
+        final aAlbums = artist['albums'] as Set;
+        final photoUrl = artist['photo']?.toString();
+
+        return MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            onTap: () => _openArtistScreen(aId, aName),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white12),
+              ),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 90,
+                    height: 90,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white10,
+                      border: Border.all(
+                        color: accent.withValues(alpha: 0.5),
+                        width: 2,
+                      ),
+                      image: photoUrl != null && photoUrl.isNotEmpty
+                          ? DecorationImage(
+                              image: NetworkImage(photoUrl),
+                              fit: BoxFit.cover,
+                            )
+                          : null,
+                    ),
+                    child: photoUrl == null || photoUrl.isEmpty
+                        ? const Icon(Icons.person, size: 48, color: Colors.white54)
+                        : null,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    aName,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${aTracks.length} ${tr('artist_tracks_count')} • ${aAlbums.length} ${tr('artist_albums_count')}',
+                    style: const TextStyle(
+                      color: Colors.white38,
+                      fontSize: 11,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  Build
   // ═══════════════════════════════════════════════════════════════════════════
@@ -4329,7 +4583,10 @@ class MainAppScreenState extends State<MainAppScreen>
     List<dynamic> finalListToRender;
     String headText = "";
 
-    if (navId == 0) {
+    if (navId == -1) {
+      finalListToRender = [];
+      headText = tr('sidebar_artists');
+    } else if (navId == 0) {
       finalListToRender = cachedTracks;
       headText = tr('nav_home');
     } else if (navId == 1) {
@@ -4475,7 +4732,9 @@ class MainAppScreenState extends State<MainAppScreen>
                   ),
             const SizedBox(height: 20),
             Expanded(
-              child: isLoading
+              child: navId == -1
+                  ? _buildArtistsView(isMobile)
+                  : isLoading
                   ? const Center(
                       child: CircularProgressIndicator(color: Colors.redAccent),
                     )
@@ -4586,11 +4845,24 @@ class MainAppScreenState extends State<MainAppScreen>
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
-                            subtitle: Text(
-                              currentObject['album']['artist']['name'],
-                              style: const TextStyle(color: Colors.white54),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                            subtitle: MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: GestureDetector(
+                                onTap: () {
+                                  final a = currentObject['album']?['artist'];
+                                  final aId = a?['id'] is int ? a['id'] as int : 0;
+                                  final aName = a?['name']?.toString() ?? '';
+                                  if (aName.isNotEmpty) {
+                                    _openArtistScreen(aId, aName);
+                                  }
+                                },
+                                child: Text(
+                                  currentObject['album']['artist']['name'],
+                                  style: const TextStyle(color: Colors.white54),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
                             ),
                             trailing: FittedBox(
                               fit: BoxFit.scaleDown,
@@ -4664,10 +4936,15 @@ class MainAppScreenState extends State<MainAppScreen>
                                       ),
                                     )
                                   else if (isDownloaded)
-                                    const Icon(
-                                      Icons.download_done,
-                                      color: Colors.greenAccent,
-                                      size: 24,
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.download_done,
+                                        color: Colors.greenAccent,
+                                        size: 24,
+                                      ),
+                                      tooltip: tr('delete_downloaded_track'),
+                                      onPressed: () =>
+                                          deleteDownloadedTrack(currentObject),
                                     )
                                   else
                                     IconButton(
