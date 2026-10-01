@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
+import 'dart:convert';
 
 import 'audio_handler.dart';
 
@@ -53,6 +54,11 @@ bool get isDesktop =>
     Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
 final Map<String, ImageProvider> _coverCache = {};
+final ImageProvider _emptyCover = MemoryImage(
+  base64Decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=',
+  ),
+);
 
 String getCoverFileName(dynamic currentObject) {
   if (currentObject == null || currentObject['album'] == null || currentObject['album']['cover'] == null) {
@@ -73,7 +79,8 @@ String getCoverFileName(dynamic currentObject) {
 ImageProvider getPictureProvider(dynamic currentObject) {
   final id = currentObject['id'] as int;
   final coverFileName = getCoverFileName(currentObject);
-  final cacheKey = '$id-$coverFileName';
+  final coverUrl = currentObject['album']?['cover']?.toString().trim() ?? '';
+  final cacheKey = '$id-$coverFileName|$globalLocalPath|$coverUrl';
   final cached = _coverCache[cacheKey];
   if (cached != null) return cached;
 
@@ -90,10 +97,10 @@ ImageProvider getPictureProvider(dynamic currentObject) {
     } else if (fallbackImage.existsSync() && fallbackImage.lengthSync() > 0) {
       provider = FileImage(fallbackImage);
     } else {
-      provider = NetworkImage(currentObject['album']['cover']);
+      provider = coverUrl.isEmpty ? _emptyCover : NetworkImage(coverUrl);
     }
   } else {
-    provider = NetworkImage(currentObject['album']['cover']);
+    provider = coverUrl.isEmpty ? _emptyCover : NetworkImage(coverUrl);
   }
 
   // Simple LRU-like eviction when cache grows too large
@@ -107,7 +114,7 @@ ImageProvider getPictureProvider(dynamic currentObject) {
 /// Returns a [Uri] pointing to the local cover file if it exists,
 /// otherwise falls back to the network URL.
 /// Used for Android notification artwork.
-Uri getArtUri(dynamic track) {
+Uri? getArtUri(dynamic track) {
   final id = track['id'] as int;
   final coverFileName = getCoverFileName(track);
   if (globalLocalPath.isNotEmpty) {
@@ -120,15 +127,13 @@ Uri getArtUri(dynamic track) {
       return Uri.file(fallbackCover.path);
     }
   }
-  return Uri.parse(track['album']['cover'].toString());
+  final coverUrl = track['album']?['cover']?.toString().trim() ?? '';
+  return coverUrl.isEmpty ? null : Uri.parse(coverUrl);
 }
 
 /// Returns an [ImageProvider] for an artist avatar/photo.
 ImageProvider? getArtistPhotoProvider(dynamic artistData) {
   if (artistData == null) return null;
-  final photoUrl = artistData is Map ? artistData['photo']?.toString() : null;
-  if (photoUrl == null || photoUrl.isEmpty) return null;
-  
   final artistId = artistData is Map ? artistData['id'] : null;
   if (artistId != null && globalLocalPath.isNotEmpty) {
     final localPhoto = File('$globalLocalPath/artist_$artistId.jpg');
@@ -137,8 +142,15 @@ ImageProvider? getArtistPhotoProvider(dynamic artistData) {
     }
   }
 
+  final photoUrl = artistData is Map ? artistData['photo']?.toString() : null;
+  if (photoUrl == null || photoUrl.isEmpty) return null;
+
   return NetworkImage(photoUrl);
 }
 
 /// Clears the in-memory cover cache. Call this after cache wipe.
 void clearCoverCache() => _coverCache.clear();
+
+/// Refresh only the provider whose local cover was written or removed.
+void invalidateTrackCover(int trackId) =>
+    _coverCache.removeWhere((key, _) => key.startsWith('$trackId-'));

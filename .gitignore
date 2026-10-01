@@ -32,6 +32,8 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+/third_party/flutter_discord_rpc/target/
+/third_party/flutter_discord_rpc/cargokit/build_tool/.dart_tool/
 
 # Local agent planning/performance artifacts
 .agents/

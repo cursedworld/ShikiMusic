@@ -1,15 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../globals.dart';
+import '../atomic_file_store.dart';
 import '../localization.dart';
 import '../server_config.dart';
 
 class ArtistScreen extends StatefulWidget {
   final int artistId;
   final String artistName;
-  final List<dynamic> allTracks;
+  final List<dynamic> Function() getAllTracks;
   final Function(List<dynamic> queue, int index) onPlayTrack;
   final Function(int trackId) onToggleFavorite;
   final Function(dynamic track) onDownloadTrack;
@@ -17,14 +20,16 @@ class ArtistScreen extends StatefulWidget {
   final bool Function(dynamic track) isTrackDownloaded;
   final bool Function(int trackId) isTrackFavorited;
   final bool Function(int trackId) isDownloading;
-  final int? activeTrackId;
-  final bool isPlaying;
+  final Listenable? libraryChanges;
+
+  /// An injected client remains owned by its caller.
+  final http.Client? httpClient;
 
   const ArtistScreen({
     super.key,
     required this.artistId,
     required this.artistName,
-    required this.allTracks,
+    required this.getAllTracks,
     required this.onPlayTrack,
     required this.onToggleFavorite,
     required this.onDownloadTrack,
@@ -32,8 +37,8 @@ class ArtistScreen extends StatefulWidget {
     required this.isTrackDownloaded,
     required this.isTrackFavorited,
     required this.isDownloading,
-    required this.activeTrackId,
-    required this.isPlaying,
+    this.libraryChanges,
+    this.httpClient,
   });
 
   @override
@@ -45,24 +50,126 @@ class _ArtistScreenState extends State<ArtistScreen> {
   bool _isLoading = true;
   bool _isBioExpanded = false;
   int? _selectedAlbumId; // null = all albums
+  late final http.Client _httpClient;
+  late final bool _ownsHttpClient;
 
   @override
   void initState() {
     super.initState();
-    _fetchArtistDetails();
+    _ownsHttpClient = widget.httpClient == null;
+    _httpClient = widget.httpClient ?? http.Client();
+    activeTrackNotifier.addListener(_onLibraryChanged);
+    isPlayingNotifier.addListener(_onLibraryChanged);
+    accentColorNotifier.addListener(_onLibraryChanged);
+    widget.libraryChanges?.addListener(_onLibraryChanged);
+    unawaited(_loadArtistDetails());
+  }
+
+  @override
+  void didUpdateWidget(covariant ArtistScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.libraryChanges != widget.libraryChanges) {
+      oldWidget.libraryChanges?.removeListener(_onLibraryChanged);
+      widget.libraryChanges?.addListener(_onLibraryChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    activeTrackNotifier.removeListener(_onLibraryChanged);
+    isPlayingNotifier.removeListener(_onLibraryChanged);
+    accentColorNotifier.removeListener(_onLibraryChanged);
+    widget.libraryChanges?.removeListener(_onLibraryChanged);
+    if (_ownsHttpClient) _httpClient.close();
+    super.dispose();
+  }
+
+  void _onLibraryChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _loadArtistDetails() async {
+    // Read the cache first so a late disk read cannot replace fresh server data.
+    await _loadOfflineArtistDetails();
+    if (!mounted) return;
+    await _fetchArtistDetails();
+  }
+
+  Future<void> _loadOfflineArtistDetails() async {
+    try {
+      if (globalLocalPath.isNotEmpty) {
+        final file = File(
+          '$globalLocalPath/artist_details_${widget.artistId}.json',
+        );
+        if (await file.exists()) {
+          final data = jsonDecode(await file.readAsString());
+          if (data is Map<String, dynamic> && mounted) {
+            setState(() {
+              _artistData = data;
+              _isLoading = false;
+            });
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _fetchArtistDetails() async {
     try {
       final uri = configuredServerUri('/api/artists/${widget.artistId}/');
-      final res = await http.get(uri).timeout(const Duration(seconds: 8));
+      final res = await _httpClient
+          .get(uri)
+          .timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
-        if (!mounted) return;
-        setState(() {
-          _artistData = jsonDecode(utf8.decode(res.bodyBytes));
-          _isLoading = false;
-        });
-        return;
+        final data = jsonDecode(utf8.decode(res.bodyBytes));
+        if (data is Map<String, dynamic>) {
+          if (!mounted) return;
+          // Metadata is ready; do not hold the screen behind a photo download.
+          setState(() {
+            _artistData = data;
+            _isLoading = false;
+          });
+          if (globalLocalPath.isNotEmpty) {
+            try {
+              final file = File(
+                '$globalLocalPath/artist_details_${widget.artistId}.json',
+              );
+              await atomicFileStore.writeString(
+                file,
+                utf8.decode(res.bodyBytes),
+              );
+
+              final photoUrl = data['photo']?.toString();
+              if (photoUrl != null && photoUrl.isNotEmpty) {
+                final photoFile = File(
+                  '$globalLocalPath/artist_${widget.artistId}.jpg',
+                );
+                if (!await photoFile.exists() ||
+                    await photoFile.length() == 0) {
+                  final photoUri = photoUrl.startsWith('http')
+                      ? Uri.parse(photoUrl)
+                      : configuredServerUri(photoUrl);
+                  final photoRes = await _httpClient
+                      .get(photoUri)
+                      .timeout(const Duration(seconds: 10));
+                  if (photoRes.statusCode == 200 &&
+                      photoRes.bodyBytes.length > 500) {
+                    await atomicFileStore.writeBytes(
+                      photoFile,
+                      photoRes.bodyBytes,
+                    );
+                  }
+                }
+              }
+            } catch (_) {}
+          }
+
+          if (!mounted) return;
+          setState(() {
+            // Rebuild after a local photo becomes available.
+          });
+          return;
+        }
       }
     } catch (_) {}
 
@@ -78,8 +185,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
     }
     // Fallback to filtering local/cached tracks by artist name
     final queryName = widget.artistName.toLowerCase().trim();
-    return widget.allTracks.where((t) {
-      final aName = t['album']?['artist']?['name']?.toString().toLowerCase().trim() ?? '';
+    return widget.getAllTracks().where((t) {
+      final aName =
+          t['album']?['artist']?['name']?.toString().toLowerCase().trim() ?? '';
       if (aName == queryName || aName.contains(queryName)) return true;
       final artists = t['artists'] as List<dynamic>?;
       if (artists != null) {
@@ -125,6 +233,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
   @override
   Widget build(BuildContext context) {
     final accent = accentColorNotifier.value;
+    final activeTrackId = activeTrackNotifier.value?['id'];
+    final isPlaying = isPlayingNotifier.value;
     final tracks = _getArtistTracks();
     final albums = _getArtistAlbums();
 
@@ -134,6 +244,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
 
     final photoUrl = _artistData?['photo'];
     final bio = _artistData?['bio']?.toString().trim() ?? '';
+    final photoProvider = getArtistPhotoProvider(
+      _artistData ?? {'id': widget.artistId, 'photo': photoUrl},
+    );
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D0202),
@@ -186,15 +299,15 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                 spreadRadius: 2,
                               ),
                             ],
-                            image: photoUrl != null && photoUrl.isNotEmpty
+                            image: photoProvider != null
                                 ? DecorationImage(
-                                    image: NetworkImage(photoUrl),
+                                    image: photoProvider,
                                     fit: BoxFit.cover,
                                   )
                                 : null,
                             color: Colors.white10,
                           ),
-                          child: photoUrl == null || photoUrl.isEmpty
+                          child: photoProvider == null
                               ? const Icon(
                                   Icons.person,
                                   size: 70,
@@ -228,7 +341,10 @@ class _ArtistScreenState extends State<ArtistScreen> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             ElevatedButton.icon(
-                              icon: const Icon(Icons.play_arrow_rounded, size: 24),
+                              icon: const Icon(
+                                Icons.play_arrow_rounded,
+                                size: 24,
+                              ),
                               label: Text(
                                 tr('artist_play_all'),
                                 style: const TextStyle(
@@ -254,13 +370,19 @@ class _ArtistScreenState extends State<ArtistScreen> {
                             ),
                             const SizedBox(width: 16),
                             OutlinedButton.icon(
-                              icon: Icon(Icons.shuffle, color: accent, size: 20),
+                              icon: Icon(
+                                Icons.shuffle,
+                                color: accent,
+                                size: 20,
+                              ),
                               label: Text(
                                 tr('artist_shuffle'),
                                 style: const TextStyle(color: Colors.white),
                               ),
                               style: OutlinedButton.styleFrom(
-                                side: BorderSide(color: accent.withValues(alpha: 0.6)),
+                                side: BorderSide(
+                                  color: accent.withValues(alpha: 0.6),
+                                ),
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 20,
                                   vertical: 12,
@@ -272,7 +394,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
                               onPressed: tracks.isEmpty
                                   ? null
                                   : () {
-                                      final shuffled = List.from(tracks)..shuffle();
+                                      final shuffled = List.from(tracks)
+                                        ..shuffle();
                                       widget.onPlayTrack(shuffled, 0);
                                     },
                             ),
@@ -303,7 +426,11 @@ class _ArtistScreenState extends State<ArtistScreen> {
                           children: [
                             Row(
                               children: [
-                                Icon(Icons.info_outline, color: accent, size: 20),
+                                Icon(
+                                  Icons.info_outline,
+                                  color: accent,
+                                  size: 20,
+                                ),
                                 const SizedBox(width: 8),
                                 Text(
                                   tr('artist_bio'),
@@ -324,7 +451,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                 height: 1.4,
                               ),
                               maxLines: _isBioExpanded ? null : 3,
-                              overflow: _isBioExpanded ? null : TextOverflow.ellipsis,
+                              overflow: _isBioExpanded
+                                  ? null
+                                  : TextOverflow.ellipsis,
                             ),
                             if (bio.length > 180) ...[
                               const SizedBox(height: 6),
@@ -377,7 +506,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
                           if (i == 0) {
                             final isAllSelected = _selectedAlbumId == null;
                             return GestureDetector(
-                              onTap: () => setState(() => _selectedAlbumId = null),
+                              onTap: () =>
+                                  setState(() => _selectedAlbumId = null),
                               child: Container(
                                 width: 120,
                                 margin: const EdgeInsets.only(right: 14),
@@ -387,7 +517,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                       : Colors.white.withValues(alpha: 0.05),
                                   borderRadius: BorderRadius.circular(12),
                                   border: Border.all(
-                                    color: isAllSelected ? accent : Colors.white12,
+                                    color: isAllSelected
+                                        ? accent
+                                        : Colors.white12,
                                     width: isAllSelected ? 2 : 1,
                                   ),
                                 ),
@@ -396,22 +528,31 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                   children: [
                                     Icon(
                                       Icons.library_music,
-                                      color: isAllSelected ? accent : Colors.white54,
+                                      color: isAllSelected
+                                          ? accent
+                                          : Colors.white54,
                                       size: 38,
                                     ),
                                     const SizedBox(height: 8),
                                     Text(
                                       tr('artist_all_tracks'),
                                       style: TextStyle(
-                                        color: isAllSelected ? Colors.white : Colors.white70,
-                                        fontWeight: isAllSelected ? FontWeight.bold : FontWeight.normal,
+                                        color: isAllSelected
+                                            ? Colors.white
+                                            : Colors.white70,
+                                        fontWeight: isAllSelected
+                                            ? FontWeight.bold
+                                            : FontWeight.normal,
                                         fontSize: 12,
                                       ),
                                       textAlign: TextAlign.center,
                                     ),
                                     Text(
                                       '${tracks.length} ${tr('artist_tracks_count')}',
-                                      style: const TextStyle(color: Colors.white38, fontSize: 10),
+                                      style: const TextStyle(
+                                        color: Colors.white38,
+                                        fontSize: 10,
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -423,7 +564,20 @@ class _ArtistScreenState extends State<ArtistScreen> {
                           final aId = album['id'] as int?;
                           final isSelected = _selectedAlbumId == aId;
                           final coverUrl = album['cover']?.toString();
-                          final albumTracks = album['tracks'] as List<dynamic>? ?? [];
+                          final albumTracks =
+                              album['tracks'] as List<dynamic>? ?? [];
+                          final ImageProvider? coverProvider =
+                              coverUrl == null || coverUrl.isEmpty
+                              ? null
+                              : albumTracks.isNotEmpty
+                              ? getPictureProvider(albumTracks.first)
+                              : NetworkImage(
+                                  coverUrl.startsWith('http')
+                                      ? coverUrl
+                                      : configuredServerUri(
+                                          coverUrl,
+                                        ).toString(),
+                                );
 
                           return GestureDetector(
                             onTap: () => setState(() {
@@ -446,20 +600,26 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                       height: 120,
                                       decoration: BoxDecoration(
                                         border: Border.all(
-                                          color: isSelected ? accent : Colors.white12,
+                                          color: isSelected
+                                              ? accent
+                                              : Colors.white12,
                                           width: isSelected ? 2.5 : 1,
                                         ),
                                         borderRadius: BorderRadius.circular(10),
                                         color: Colors.white10,
-                                        image: coverUrl != null && coverUrl.isNotEmpty
+                                        image: coverProvider != null
                                             ? DecorationImage(
-                                                image: NetworkImage(coverUrl),
+                                                image: coverProvider,
                                                 fit: BoxFit.cover,
                                               )
                                             : null,
                                       ),
-                                      child: coverUrl == null || coverUrl.isEmpty
-                                          ? const Icon(Icons.album, color: Colors.white38, size: 40)
+                                      child: coverProvider == null
+                                          ? const Icon(
+                                              Icons.album,
+                                              color: Colors.white38,
+                                              size: 40,
+                                            )
                                           : null,
                                     ),
                                   ),
@@ -468,7 +628,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                     album['title'] ?? '',
                                     style: TextStyle(
                                       color: isSelected ? accent : Colors.white,
-                                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                                      fontWeight: isSelected
+                                          ? FontWeight.bold
+                                          : FontWeight.w500,
                                       fontSize: 12,
                                     ),
                                     maxLines: 1,
@@ -476,7 +638,10 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                   ),
                                   Text(
                                     '${albumTracks.length} ${tr('artist_tracks_count')}',
-                                    style: const TextStyle(color: Colors.white38, fontSize: 10),
+                                    style: const TextStyle(
+                                      color: Colors.white38,
+                                      fontSize: 10,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -507,7 +672,10 @@ class _ArtistScreenState extends State<ArtistScreen> {
                         ),
                         Text(
                           '${filteredTracks.length} ${tr('artist_tracks_count')}',
-                          style: const TextStyle(color: Colors.white38, fontSize: 13),
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 13,
+                          ),
                         ),
                       ],
                     ),
@@ -516,113 +684,125 @@ class _ArtistScreenState extends State<ArtistScreen> {
 
                 // ── Tracks List ──
                 SliverPadding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
                   sliver: SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, idx) {
-                        final track = filteredTracks[idx];
-                        final trackId = track['id'];
-                        final isPlayingThis = widget.activeTrackId == trackId && widget.isPlaying;
-                        final isDownloaded = widget.isTrackDownloaded(track);
-                        final isDownloading = widget.isDownloading(trackId);
-                        final isFav = widget.isTrackFavorited(trackId);
+                    delegate: SliverChildBuilderDelegate((context, idx) {
+                      final track = filteredTracks[idx];
+                      final trackId = track['id'];
+                      final isPlayingThis =
+                          activeTrackId == trackId && isPlaying;
+                      final isDownloaded = widget.isTrackDownloaded(track);
+                      final isDownloading = widget.isDownloading(trackId);
+                      final isFav = widget.isTrackFavorited(trackId);
 
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          decoration: BoxDecoration(
-                            color: widget.activeTrackId == trackId
-                                ? Colors.white.withValues(alpha: 0.1)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(10),
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: activeTrackId == trackId
+                              ? Colors.white.withValues(alpha: 0.1)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: ListTile(
+                          leading: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image(
+                              image: getPictureProvider(track),
+                              width: 48,
+                              height: 48,
+                              fit: BoxFit.cover,
+                            ),
                           ),
-                          child: ListTile(
-                            leading: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Image(
-                                image: getPictureProvider(track),
-                                width: 48,
-                                height: 48,
-                                fit: BoxFit.cover,
+                          title: Text(
+                            track['title'] ?? '',
+                            style: TextStyle(
+                              color: activeTrackId == trackId
+                                  ? accent
+                                  : Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            track['album']?['title'] ?? '',
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 13,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: Icon(
+                                  isFav
+                                      ? Icons.favorite
+                                      : Icons.favorite_border,
+                                  color: isFav
+                                      ? Colors.redAccent
+                                      : Colors.white54,
+                                  size: 22,
+                                ),
+                                onPressed: () {
+                                  widget.onToggleFavorite(trackId);
+                                  setState(() {});
+                                },
                               ),
-                            ),
-                            title: Text(
-                              track['title'] ?? '',
-                              style: TextStyle(
-                                color: widget.activeTrackId == trackId ? accent : Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 15,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              track['album']?['title'] ?? '',
-                              style: const TextStyle(color: Colors.white54, fontSize: 13),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
+                              if (isDownloading)
+                                const SizedBox(
+                                  width: 24,
+                                  height: 24,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white54,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              else if (isDownloaded)
                                 IconButton(
-                                  icon: Icon(
-                                    isFav ? Icons.favorite : Icons.favorite_border,
-                                    color: isFav ? Colors.redAccent : Colors.white54,
+                                  icon: const Icon(
+                                    Icons.download_done,
+                                    color: Colors.greenAccent,
+                                    size: 24,
+                                  ),
+                                  tooltip: tr('delete_downloaded_track'),
+                                  onPressed: () {
+                                    widget.onDeleteDownloadedTrack(track);
+                                    setState(() {});
+                                  },
+                                )
+                              else
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.download,
+                                    color: Colors.white54,
                                     size: 22,
                                   ),
                                   onPressed: () {
-                                    widget.onToggleFavorite(trackId);
+                                    widget.onDownloadTrack(track);
                                     setState(() {});
                                   },
                                 ),
-                                if (isDownloading)
-                                  const SizedBox(
-                                    width: 24,
-                                    height: 24,
-                                    child: CircularProgressIndicator(
-                                      color: Colors.white54,
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                else if (isDownloaded)
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.download_done,
-                                      color: Colors.greenAccent,
-                                      size: 24,
-                                    ),
-                                    tooltip: tr('delete_downloaded_track'),
-                                    onPressed: () {
-                                      widget.onDeleteDownloadedTrack(track);
-                                      setState(() {});
-                                    },
-                                  )
-                                else
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.download,
-                                      color: Colors.white54,
-                                      size: 22,
-                                    ),
-                                    onPressed: () {
-                                      widget.onDownloadTrack(track);
-                                      setState(() {});
-                                    },
-                                  ),
-                                const SizedBox(width: 8),
-                                Icon(
-                                  isPlayingThis ? Icons.graphic_eq : Icons.play_arrow,
-                                  color: isPlayingThis ? accent : Colors.white54,
-                                  size: 22,
-                                ),
-                              ],
-                            ),
-                            onTap: () => widget.onPlayTrack(filteredTracks, idx),
+                              const SizedBox(width: 8),
+                              Icon(
+                                isPlayingThis
+                                    ? Icons.graphic_eq
+                                    : Icons.play_arrow,
+                                color: isPlayingThis ? accent : Colors.white54,
+                                size: 22,
+                              ),
+                            ],
                           ),
-                        );
-                      },
-                      childCount: filteredTracks.length,
-                    ),
+                          onTap: () => widget.onPlayTrack(filteredTracks, idx),
+                        ),
+                      );
+                    }, childCount: filteredTracks.length),
                   ),
                 ),
 
@@ -634,7 +814,10 @@ class _ArtistScreenState extends State<ArtistScreen> {
 
   String _getAlbumTitle(int? albumId, List<dynamic> albums) {
     if (albumId == null) return '';
-    final a = albums.firstWhere((al) => al['id'] == albumId, orElse: () => null);
+    final a = albums.firstWhere(
+      (al) => al['id'] == albumId,
+      orElse: () => null,
+    );
     return a != null ? a['title'] ?? '' : '';
   }
 }

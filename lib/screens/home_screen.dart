@@ -188,7 +188,7 @@ class MainAppScreenState extends State<MainAppScreen>
         title: track['title']?.toString() ?? 'Unknown',
         artist: track['album']?['artist']?['name']?.toString() ?? 'Unknown',
         album: track['album']?['title']?.toString(),
-        artworkUri: getArtUri(track).toString(),
+        artworkUri: getArtUri(track)?.toString(),
         duration: dur != null ? Duration(seconds: dur) : Duration.zero,
       ),
     );
@@ -285,6 +285,7 @@ class MainAppScreenState extends State<MainAppScreen>
       coverFile,
     );
     if (success) {
+      invalidateTrackCover(track['id'] as int);
       _syncMediaSessionMetadata();
     }
   }
@@ -294,6 +295,9 @@ class MainAppScreenState extends State<MainAppScreen>
   bool isPremium = true;
   int playCount = 0;
   List<dynamic> cachedTracks = [];
+  List<dynamic> cachedArtists = [];
+  bool _isSyncingArtists = false;
+  final ValueNotifier<int> _artistLibraryChanges = ValueNotifier<int>(0);
   bool isLoading = true;
   bool isPlaying = false;
   List<dynamic> playingQueue = [];
@@ -313,6 +317,7 @@ class MainAppScreenState extends State<MainAppScreen>
   Timer? rpcThrottleTimer;
   DateTime? lastRpcTime;
   bool _discordConnected = false;
+  int _discordActivityRevision = 0;
   // ignore: unused_field
   int _syncTicks = 0;
 
@@ -542,6 +547,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _databaseSyncRevision += 1;
     _videoRevision += 1;
     _lyricsRevision += 1;
+    _discordActivityRevision += 1;
     _videoOperation?.cancel();
     _videoOperation = null;
     _videoReleaseTimer?.cancel();
@@ -590,6 +596,7 @@ class MainAppScreenState extends State<MainAppScreen>
     fullDurationNotifier.dispose();
     currentPositionNotifier.dispose();
     _vinylController.dispose();
+    _artistLibraryChanges.dispose();
 
     if (isDesktop) {
       unawaited(_disposeDiscordRpc());
@@ -689,6 +696,15 @@ class MainAppScreenState extends State<MainAppScreen>
       await FlutterDiscordRPC.instance.dispose();
     } catch (error) {
       debugPrint('Discord RPC dispose failed: $error');
+    }
+  }
+
+  Future<void> _clearDiscordActivity() async {
+    if (!_discordConnected) return;
+    try {
+      await FlutterDiscordRPC.instance.clearActivity();
+    } catch (error) {
+      debugPrint('Discord RPC clear failed: $error');
     }
   }
 
@@ -1311,6 +1327,9 @@ class MainAppScreenState extends State<MainAppScreen>
     if (!_videoLifecycleVisible || !isPlayingNotifier.value) {
       await controller.pause();
     } else {
+      try {
+        await controller.setVolume(0.0);
+      } catch (_) {}
       await controller.play();
     }
   }
@@ -1919,9 +1938,12 @@ class MainAppScreenState extends State<MainAppScreen>
     if (_stateDisposing) return;
     await _loadOfflineTrackCache();
     if (_stateDisposing) return;
+    await _loadOfflineArtistsCache();
+    if (_stateDisposing) return;
     await _loadState();
     if (_stateDisposing) return;
     unawaited(syncDatabase());
+    unawaited(_syncArtistsCache());
   }
 
   Future<void> _startDataSafely() async {
@@ -2108,6 +2130,7 @@ class MainAppScreenState extends State<MainAppScreen>
       cachedTracks = tracks;
       isLoading = false;
     }
+    _notifyArtistLibraryChanged();
   }
 
   Future<List<dynamic>?> _readOfflineTrackCache() async {
@@ -2127,6 +2150,90 @@ class MainAppScreenState extends State<MainAppScreen>
   Future<void> _loadOfflineTrackCache() async {
     final tracks = await _readOfflineTrackCache();
     if (tracks != null) _applyTracks(tracks);
+  }
+
+  Future<void> _loadOfflineArtistsCache() async {
+    if (localPath.isEmpty) return;
+    try {
+      final file = File('$localPath/offline_artists.json');
+      if (await file.exists()) {
+        final decoded = json.decode(await file.readAsString());
+        if (decoded is List) {
+          if (_stateDisposing) return;
+          if (mounted) {
+            setState(() {
+              cachedArtists = List<dynamic>.from(decoded);
+            });
+          } else {
+            cachedArtists = List<dynamic>.from(decoded);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to load offline artists cache: $e');
+    }
+  }
+
+  Future<void> _syncArtistsCache() async {
+    if (_isSyncingArtists || localPath.isEmpty || _stateDisposing) return;
+    _isSyncingArtists = true;
+    try {
+      final uri = configuredServerUri('/api/artists/');
+      final res = await http.get(uri).timeout(const Duration(seconds: 8));
+      if (res.statusCode == HttpStatus.ok) {
+        final decoded = json.decode(utf8.decode(res.bodyBytes));
+        if (decoded is List) {
+          final artistsList = List<dynamic>.from(decoded);
+          cachedArtists = artistsList;
+          await atomicFileStore.writeString(
+            File('$localPath/offline_artists.json'),
+            json.encode(artistsList),
+          );
+          if (mounted && !_stateDisposing) setState(() {});
+
+          // Concurrently fetch full details and download photos for each artist
+          for (final artist in artistsList) {
+            if (_stateDisposing) break;
+            if (artist is! Map) continue;
+            final artistId = artist['id'];
+            if (artistId == null) continue;
+
+            // 1. Fetch artist details
+            try {
+              final detailUri = configuredServerUri('/api/artists/$artistId/');
+              final detailRes = await http.get(detailUri).timeout(const Duration(seconds: 6));
+              if (detailRes.statusCode == HttpStatus.ok) {
+                final detailFile = File('$localPath/artist_details_$artistId.json');
+                await atomicFileStore.writeString(detailFile, utf8.decode(detailRes.bodyBytes));
+              }
+            } catch (_) {}
+
+            // 2. Download avatar photo if missing
+            final photoUrlStr = artist['photo']?.toString();
+            if (photoUrlStr != null && photoUrlStr.isNotEmpty) {
+              final localPhoto = File('$localPath/artist_$artistId.jpg');
+              if (!await localPhoto.exists() || await localPhoto.length() == 0) {
+                try {
+                  final photoUri = photoUrlStr.startsWith('http')
+                      ? Uri.parse(photoUrlStr)
+                      : configuredServerUri(photoUrlStr);
+                  final photoRes = await http.get(photoUri).timeout(const Duration(seconds: 10));
+                  if (photoRes.statusCode == HttpStatus.ok && photoRes.bodyBytes.length > 500) {
+                    await atomicFileStore.writeBytes(localPhoto, photoRes.bodyBytes);
+                  }
+                } catch (_) {}
+              }
+            }
+          }
+
+          if (mounted && !_stateDisposing) setState(() {});
+        }
+      }
+    } catch (e) {
+      debugPrint('Artists cache sync notice (working offline): $e');
+    } finally {
+      _isSyncingArtists = false;
+    }
   }
 
   bool _isCurrentDatabaseSync(int revision) =>
@@ -2155,6 +2262,7 @@ class MainAppScreenState extends State<MainAppScreen>
       } catch (error) {
         debugPrint('Offline track cache write failed: $error');
       }
+      unawaited(_syncArtistsCache());
     } catch (e) {
       if (!_isCurrentDatabaseSync(revision)) return;
       if (cachedTracks.isEmpty) {
@@ -2286,8 +2394,10 @@ class MainAppScreenState extends State<MainAppScreen>
         }
       }
 
+      invalidateTrackCover(trackId);
       if (mounted) {
         setState(() {});
+        _notifyArtistLibraryChanged();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(tr('track_deleted_from_storage')),
@@ -2308,7 +2418,7 @@ class MainAppScreenState extends State<MainAppScreen>
         builder: (ctx) => ArtistScreen(
           artistId: artistId,
           artistName: artistName,
-          allTracks: cachedTracks,
+          getAllTracks: () => cachedTracks,
           onPlayTrack: (queue, idx) => startPlayback(queue, idx),
           onToggleFavorite: (id) => toggleFavorite(id),
           onDownloadTrack: (t) => downloadMediaFile(t),
@@ -2316,13 +2426,14 @@ class MainAppScreenState extends State<MainAppScreen>
           isTrackDownloaded: (t) => isTrackDownloadComplete(t),
           isTrackFavorited: (id) => favs.contains(id),
           isDownloading: (id) => downloadQueue.contains(id),
-          activeTrackId: (playingQueue.isNotEmpty && playingIndex < playingQueue.length)
-              ? playingQueue[playingIndex]['id']
-              : null,
-          isPlaying: isPlaying,
+          libraryChanges: _artistLibraryChanges,
         ),
       ),
     );
+  }
+
+  void _notifyArtistLibraryChanged() {
+    if (!_stateDisposing) _artistLibraryChanges.value++;
   }
 
   Future<void> downloadMediaFile(dynamic mediaObj) async {
@@ -2333,6 +2444,7 @@ class MainAppScreenState extends State<MainAppScreen>
     } else {
       downloadQueue.add(trackId);
     }
+    _notifyArtistLibraryChanged();
     try {
       await _downloadTaskLimiter.run(() async {
         final audioFile = File('$localPath/track_$trackId.mp3');
@@ -2352,6 +2464,7 @@ class MainAppScreenState extends State<MainAppScreen>
             mediaObj['album']['cover'].toString(),
             coverFile,
           );
+          if (trackId is int) invalidateTrackCover(trackId);
         }
         if (!await lrcFile.exists() &&
             mediaObj['lyrics'] != null &&
@@ -2428,6 +2541,7 @@ class MainAppScreenState extends State<MainAppScreen>
       } else {
         downloadQueue.remove(trackId);
       }
+      _notifyArtistLibraryChanged();
     }
   }
 
@@ -2456,7 +2570,10 @@ class MainAppScreenState extends State<MainAppScreen>
       for (var f in cacheDirectory.listSync()) {
         if (f.path.endsWith('.jpg') ||
             f.path.endsWith('.mp3') ||
-            f.path.endsWith('.lrc')) {
+            f.path.endsWith('.lrc') ||
+            f.path.endsWith('.mp4') ||
+            f.path.contains('offline_') ||
+            f.path.contains('artist_')) {
           try {
             f.deleteSync();
           } catch (e) {
@@ -2467,6 +2584,7 @@ class MainAppScreenState extends State<MainAppScreen>
     }
     setState(() {
       cachedTracks.clear();
+      cachedArtists.clear();
       isLoading = true;
     });
     if (mounted) {
@@ -2489,6 +2607,7 @@ class MainAppScreenState extends State<MainAppScreen>
         favs.add(id);
       }
     });
+    _notifyArtistLibraryChanged();
     final favFile = File('$localPath/liked_tracks.json');
     final snapshot = json.encode(favs.toList());
     try {
@@ -2551,6 +2670,8 @@ class MainAppScreenState extends State<MainAppScreen>
           discordStart =
               DateTime.now().millisecondsSinceEpoch -
               currentPositionNotifier.value.inMilliseconds;
+        } else {
+          discordStart = null;
         }
         updateRPC(force: true);
         _syncMediaSessionPlayback();
@@ -2808,7 +2929,7 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     }
 
-    if (resolvedIndex != currentLine && resolvedIndex != -1) {
+    if (resolvedIndex != currentLine) {
       currentLine = resolvedIndex;
       updateRPC();
       uiSignal.value++;
@@ -2819,8 +2940,11 @@ class MainAppScreenState extends State<MainAppScreen>
     final trackRevision = _trackRevision;
     final seekRevision = ++_seekRevision;
     currentPositionNotifier.value = pos;
-    discordStart = DateTime.now().millisecondsSinceEpoch - pos.inMilliseconds;
+    discordStart = isPlaying
+        ? (DateTime.now().millisecondsSinceEpoch - pos.inMilliseconds)
+        : null;
     checkLyrics(pos);
+    updateRPC(force: true);
     _syncMediaSessionPlayback();
     unawaited(_saveState());
     unawaited(
@@ -3036,6 +3160,7 @@ class MainAppScreenState extends State<MainAppScreen>
   // ═══════════════════════════════════════════════════════════════════════════
 
   final Map<int, String> _publicCoverCache = {};
+  final Map<String, String> _publicArtistPhotoCache = {};
   final Map<int, Future<String?>> _publicCoverRequests = {};
   final Map<int, DateTime> _publicCoverMisses = {};
   static const Duration _publicCoverMissTtl = Duration(minutes: 30);
@@ -3185,7 +3310,9 @@ class MainAppScreenState extends State<MainAppScreen>
     final artist = trackData['album']?['artist']?['name']?.toString() ?? '';
     if (title.isEmpty) return null;
 
-    // 1. Try iTunes Search API (extremely fast, clean square covers)
+    final artistKey = artist.toLowerCase().trim();
+
+    // 1. Try iTunes Search API (fast, high-res covers)
     try {
       final itunesUrl =
           'https://itunes.apple.com/search?term=${Uri.encodeComponent('$artist $title')}&entity=song&limit=1';
@@ -3201,7 +3328,6 @@ class MainAppScreenState extends State<MainAppScreen>
           if (_isArtistMatch(artist, resArtist)) {
             String? cover = first['artworkUrl100']?.toString();
             if (cover != null && cover.isNotEmpty) {
-              // Convert to higher resolution
               cover = cover.replaceAll('100x100bb.jpg', '600x600bb.jpg');
               _publicCoverCache[id] = cover;
               return cover;
@@ -3213,7 +3339,35 @@ class MainAppScreenState extends State<MainAppScreen>
       debugPrint('Error in iTunes search: $e');
     }
 
-    // 2. Try Last.fm track.getInfo to get exact album cover
+    // 2. Try Deezer Search API (superb coverage for Russian rap/indie/phonk)
+    try {
+      final deezerUrl =
+          'https://api.deezer.com/search?q=${Uri.encodeComponent('$artist $title')}&limit=1';
+      final res = await http
+          .get(Uri.parse(deezerUrl))
+          .timeout(const Duration(seconds: 3));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        final results = data['data'] as List<dynamic>?;
+        if (results != null && results.isNotEmpty) {
+          final first = results[0];
+          final resArtist = first['artist']?['name']?.toString() ?? '';
+          if (_isArtistMatch(artist, resArtist)) {
+            final album = first['album'];
+            String? cover = album?['cover_big']?.toString() ??
+                album?['cover_medium']?.toString();
+            if (cover != null && cover.isNotEmpty) {
+              _publicCoverCache[id] = cover;
+              return cover;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error in Deezer track search: $e');
+    }
+
+    // 3. Try Last.fm track.getInfo to get exact album cover
     try {
       final infoRes = await http
           .get(
@@ -3254,7 +3408,7 @@ class MainAppScreenState extends State<MainAppScreen>
       debugPrint('Error in track.getInfo: $e');
     }
 
-    // 3. Try Last.fm track.search as a fallback
+    // 4. Try Last.fm track.search as a fallback
     try {
       final searchRes = await http
           .get(
@@ -3303,15 +3457,120 @@ class MainAppScreenState extends State<MainAppScreen>
       debugPrint('Error fetching public cover from Last.fm: $e');
     }
 
+    // ── FALLBACK TO ARTIST AVATAR / PHOTO ──
+    if (_publicArtistPhotoCache.containsKey(artistKey)) {
+      final cachedArtistPhoto = _publicArtistPhotoCache[artistKey]!;
+      _publicCoverCache[id] = cachedArtistPhoto;
+      return cachedArtistPhoto;
+    }
+
+    // 5. Try Deezer artist photo
+    try {
+      final artistUrl =
+          'https://api.deezer.com/search/artist?q=${Uri.encodeComponent(artist)}&limit=1';
+      final res = await http
+          .get(Uri.parse(artistUrl))
+          .timeout(const Duration(seconds: 3));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        final results = data['data'] as List<dynamic>?;
+        if (results != null && results.isNotEmpty) {
+          final first = results[0];
+          String? photo = first['picture_big']?.toString() ??
+              first['picture_medium']?.toString();
+          if (photo != null && photo.isNotEmpty) {
+            _publicArtistPhotoCache[artistKey] = photo;
+            _publicCoverCache[id] = photo;
+            return photo;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error in Deezer artist search: $e');
+    }
+
+    // 6. Try iTunes artist album artwork
+    try {
+      final itunesArtistUrl =
+          'https://itunes.apple.com/search?term=${Uri.encodeComponent(artist)}&entity=album&limit=1';
+      final res = await http
+          .get(Uri.parse(itunesArtistUrl))
+          .timeout(const Duration(seconds: 3));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        final results = data['results'] as List<dynamic>?;
+        if (results != null && results.isNotEmpty) {
+          final first = results[0];
+          String? cover = first['artworkUrl100']?.toString();
+          if (cover != null && cover.isNotEmpty) {
+            cover = cover.replaceAll('100x100bb.jpg', '600x600bb.jpg');
+            _publicArtistPhotoCache[artistKey] = cover;
+            _publicCoverCache[id] = cover;
+            return cover;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error in iTunes artist search: $e');
+    }
+
+    // 7. Try Last.fm artist.getInfo
+    try {
+      final lastFmArtistUrl =
+          'https://ws.audioscrobbler.com/2.0/?method=artist.getInfo&artist=${Uri.encodeComponent(artist)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json';
+      final res = await http
+          .get(Uri.parse(lastFmArtistUrl))
+          .timeout(const Duration(seconds: 3));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        final artistObj = data['artist'];
+        if (artistObj != null) {
+          final images = artistObj['image'] as List<dynamic>?;
+          if (images != null && images.isNotEmpty) {
+            String? photo;
+            for (var img in images) {
+              if (img['size'] == 'extralarge' || img['size'] == 'large') {
+                photo = img['#text']?.toString();
+              }
+            }
+            photo ??= images.last['#text']?.toString();
+            if (photo != null &&
+                photo.isNotEmpty &&
+                !photo.contains('2a96cbd8') &&
+                !photo.contains('noimage')) {
+              _publicArtistPhotoCache[artistKey] = photo;
+              _publicCoverCache[id] = photo;
+              return photo;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error in Last.fm artist search: $e');
+    }
+
     return null;
   }
 
   void updateRPC({bool force = false}) {
-    if (PerformanceFrameMonitor.enabled || !isDesktop || playingQueue.isEmpty) {
+    if (PerformanceFrameMonitor.enabled ||
+        !isDesktop ||
+        _stateDisposing ||
+        playingQueue.isEmpty ||
+        playingIndex < 0 ||
+        playingIndex >= playingQueue.length) {
       return;
     }
+    final activityRevision = ++_discordActivityRevision;
 
     Future<void> sendToDiscord() async {
+      if (_stateDisposing ||
+          activityRevision != _discordActivityRevision ||
+          playingQueue.isEmpty ||
+          playingIndex < 0 ||
+          playingIndex >= playingQueue.length) {
+        return;
+      }
       lastRpcTime = DateTime.now();
       final trackData = playingQueue[playingIndex];
       final trackId = trackData['id'] as int;
@@ -3323,7 +3582,10 @@ class MainAppScreenState extends State<MainAppScreen>
           coverUrl.contains('localhost') ||
           coverUrl.contains('127.0.0.1')) {
         final publicUrl = await _getPublicCoverUrl(trackData);
-        if (playingQueue.isEmpty ||
+        if (_stateDisposing ||
+            activityRevision != _discordActivityRevision ||
+            playingQueue.isEmpty ||
+            playingIndex < 0 ||
             playingIndex >= playingQueue.length ||
             playingQueue[playingIndex]['id'] != trackId) {
           return;
@@ -3347,15 +3609,17 @@ class MainAppScreenState extends State<MainAppScreen>
           ? coverUrl
           : 'https://cdn.discordapp.com/app-icons/1480246072042590219/36573ffd3ca304580ed8968517090b0e.png';
 
+      if (_stateDisposing || activityRevision != _discordActivityRevision) return;
+
       if (isPlaying) {
-        String p1 = '🎵 $title — $art';
-        String p2 = '🎧 Слушает музыку';
+        String p1 = '$title — $art';
+        String p2 = 'Слушает музыку';
 
         if (globalLyrics.isNotEmpty) {
           if (currentLine >= 0 && currentLine < globalLyrics.length) {
-            p2 = '🎤 ${globalLyrics[currentLine].txt}';
+            p2 = globalLyrics[currentLine].txt;
           } else if (currentLine == -1) {
-            p2 = '🎶 Вступление...';
+            p2 = 'Вступление...';
           }
         }
 
@@ -3384,10 +3648,23 @@ class MainAppScreenState extends State<MainAppScreen>
           ),
         );
       } else {
+        await _clearDiscordActivity();
+        if (_stateDisposing || activityRevision != _discordActivityRevision) {
+          return;
+        }
+        final currentPos = currentPositionNotifier.value;
+        final totalDur = fullDurationNotifier.value > Duration.zero
+            ? fullDurationNotifier.value
+            : (durationMs != null ? Duration(milliseconds: durationMs) : null);
+        final posStr = formatDuration(currentPos);
+        final durStr = totalDur != null && totalDur > Duration.zero
+            ? ' / ${formatDuration(totalDur)}'
+            : '';
+
         await _setDiscordActivity(
           RPCActivity(
-            details: '⏸ На паузе',
-            state: '$title — $art',
+            details: '$title — $art',
+            state: 'На паузе ($posStr$durStr)',
             activityType: ActivityType.listening,
             assets: RPCAssets(largeImage: largeImg),
             buttons: discordShowGitHubButtonNotifier.value
@@ -3415,7 +3692,7 @@ class MainAppScreenState extends State<MainAppScreen>
       rpcThrottleTimer?.cancel();
       sendToDiscord();
     } else {
-      if (rpcThrottleTimer?.isActive ?? false) return;
+      rpcThrottleTimer?.cancel();
       final wait =
           const Duration(milliseconds: 1500) - now.difference(lastRpcTime!);
       rpcThrottleTimer = Timer(wait, sendToDiscord);
@@ -3724,7 +4001,10 @@ class MainAppScreenState extends State<MainAppScreen>
               color: navId == -1 ? Colors.white : Colors.white54,
             ),
             tooltip: tr('sidebar_artists'),
-            onPressed: () => setState(() => navId = -1),
+            onPressed: () {
+              setState(() => navId = -1);
+              unawaited(_syncArtistsCache());
+            },
           ),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 15),
@@ -3964,6 +4244,9 @@ class MainAppScreenState extends State<MainAppScreen>
       onTap: () {
         setState(() => navId = id);
         Navigator.pop(context);
+        if (id == -1) {
+          unawaited(_syncArtistsCache());
+        }
       },
     );
   }
@@ -4425,15 +4708,38 @@ class MainAppScreenState extends State<MainAppScreen>
     final accent = accentColorNotifier.value;
 
     final Map<String, Map<String, dynamic>> artistMap = {};
+
+    // 1. Populate from cachedArtists (offline_artists.json or server API)
+    for (final a in cachedArtists) {
+      if (a == null || a['name'] == null) continue;
+      final name = a['name'].toString().trim();
+      if (name.isEmpty) continue;
+      final key = name.toLowerCase();
+      artistMap[key] = {
+        'id': a['id'] ?? 0,
+        'name': name,
+        'photo': a['photo'],
+        'bio': a['bio'] ?? '',
+        'tracks_count': a['tracks_count'] ?? 0,
+        'albums_count': a['albums_count'] ?? 0,
+        'tracks': <dynamic>[],
+        'albums': <String>{},
+      };
+    }
+
+    // 2. Associate cached tracks and any extra offline tracks
     for (final t in cachedTracks) {
       final trackArtists = t['artists'] as List<dynamic>?;
       final mainArtist = t['album']?['artist'];
+      final albumId = t['album']?['id'];
+      final albumKey = albumId != null
+          ? 'id:$albumId'
+          : 'title:${t['album']?['title'] ?? ''}';
 
       final List<dynamic> artistsToProcess = [];
+      if (mainArtist != null) artistsToProcess.add(mainArtist);
       if (trackArtists != null && trackArtists.isNotEmpty) {
         artistsToProcess.addAll(trackArtists);
-      } else if (mainArtist != null) {
-        artistsToProcess.add(mainArtist);
       }
 
       for (final a in artistsToProcess) {
@@ -4448,8 +4754,10 @@ class MainAppScreenState extends State<MainAppScreen>
             'name': name,
             'photo': a['photo'],
             'bio': a['bio'] ?? '',
+            'tracks_count': 0,
+            'albums_count': 0,
             'tracks': [t],
-            'albums': {t['album']?['title'] ?? ''},
+            'albums': {albumKey},
           };
         } else {
           final existing = artistMap[key]!;
@@ -4463,8 +4771,8 @@ class MainAppScreenState extends State<MainAppScreen>
           if (!tracksList.any((item) => item['id'] == t['id'])) {
             tracksList.add(t);
           }
-          if (t['album']?['title'] != null) {
-            (existing['albums'] as Set).add(t['album']['title']);
+          if (albumId != null || t['album']?['title'] != null) {
+            (existing['albums'] as Set).add(albumKey);
           }
         }
       }
@@ -4505,7 +4813,14 @@ class MainAppScreenState extends State<MainAppScreen>
         final aName = artist['name'] as String;
         final aTracks = artist['tracks'] as List;
         final aAlbums = artist['albums'] as Set;
-        final photoUrl = artist['photo']?.toString();
+        final tracksCount = artist['tracks_count'] is int && artist['tracks_count'] > 0
+            ? artist['tracks_count'] as int
+            : aTracks.length;
+        final albumsCount = artist['albums_count'] is int && artist['albums_count'] > 0
+            ? artist['albums_count'] as int
+            : aAlbums.length;
+
+        final photoProvider = getArtistPhotoProvider(artist);
 
         return MouseRegion(
           cursor: SystemMouseCursors.click,
@@ -4531,14 +4846,14 @@ class MainAppScreenState extends State<MainAppScreen>
                         color: accent.withValues(alpha: 0.5),
                         width: 2,
                       ),
-                      image: photoUrl != null && photoUrl.isNotEmpty
+                      image: photoProvider != null
                           ? DecorationImage(
-                              image: NetworkImage(photoUrl),
+                              image: photoProvider,
                               fit: BoxFit.cover,
                             )
                           : null,
                     ),
-                    child: photoUrl == null || photoUrl.isEmpty
+                    child: photoProvider == null
                         ? const Icon(Icons.person, size: 48, color: Colors.white54)
                         : null,
                   ),
@@ -4556,7 +4871,7 @@ class MainAppScreenState extends State<MainAppScreen>
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${aTracks.length} ${tr('artist_tracks_count')} • ${aAlbums.length} ${tr('artist_albums_count')}',
+                    '$tracksCount ${tr('artist_tracks_count')} • $albumsCount ${tr('artist_albums_count')}',
                     style: const TextStyle(
                       color: Colors.white38,
                       fontSize: 11,
