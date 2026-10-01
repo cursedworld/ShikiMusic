@@ -358,6 +358,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  StatusDisplayType dco_decode_box_autoadd_status_display_type(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_status_display_type(raw);
+  }
+
+  @protected
   int dco_decode_i_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
@@ -436,6 +442,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  StatusDisplayType? dco_decode_opt_box_autoadd_status_display_type(
+      dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_status_display_type(raw);
+  }
+
+  @protected
   I32Array2? dco_decode_opt_i_32_array_2(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_i_32_array_2(raw);
@@ -451,8 +464,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   RPCActivity dco_decode_rpc_activity(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return RPCActivity(
       state: dco_decode_opt_String(arr[0]),
       details: dco_decode_opt_String(arr[1]),
@@ -462,6 +475,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       secrets: dco_decode_opt_box_autoadd_rpc_secrets(arr[5]),
       buttons: dco_decode_opt_list_rpc_button(arr[6]),
       activityType: dco_decode_opt_box_autoadd_activity_type(arr[7]),
+      statusDisplayType: dco_decode_opt_box_autoadd_status_display_type(arr[8]),
     );
   }
 
@@ -526,6 +540,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       start: dco_decode_opt_box_autoadd_i_64(arr[0]),
       end: dco_decode_opt_box_autoadd_i_64(arr[1]),
     );
+  }
+
+  @protected
+  StatusDisplayType dco_decode_status_display_type(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return StatusDisplayType.values[raw as int];
   }
 
   @protected
@@ -604,6 +624,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_rpc_timestamps(deserializer));
+  }
+
+  @protected
+  StatusDisplayType sse_decode_box_autoadd_status_display_type(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_status_display_type(deserializer));
   }
 
   @protected
@@ -733,6 +760,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  StatusDisplayType? sse_decode_opt_box_autoadd_status_display_type(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_status_display_type(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   I32Array2? sse_decode_opt_i_32_array_2(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -768,6 +807,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_buttons = sse_decode_opt_list_rpc_button(deserializer);
     var var_activityType =
         sse_decode_opt_box_autoadd_activity_type(deserializer);
+    var var_statusDisplayType =
+        sse_decode_opt_box_autoadd_status_display_type(deserializer);
     return RPCActivity(
         state: var_state,
         details: var_details,
@@ -776,7 +817,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         assets: var_assets,
         secrets: var_secrets,
         buttons: var_buttons,
-        activityType: var_activityType);
+        activityType: var_activityType,
+        statusDisplayType: var_statusDisplayType);
   }
 
   @protected
@@ -825,6 +867,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_start = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_end = sse_decode_opt_box_autoadd_i_64(deserializer);
     return RPCTimestamps(start: var_start, end: var_end);
+  }
+
+  @protected
+  StatusDisplayType sse_decode_status_display_type(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return StatusDisplayType.values[inner];
   }
 
   @protected
@@ -910,6 +960,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       RPCTimestamps self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_rpc_timestamps(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_status_display_type(
+      StatusDisplayType self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_status_display_type(self, serializer);
   }
 
   @protected
@@ -1033,6 +1090,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_status_display_type(
+      StatusDisplayType? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_status_display_type(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_i_32_array_2(I32Array2? self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -1064,6 +1132,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_box_autoadd_rpc_secrets(self.secrets, serializer);
     sse_encode_opt_list_rpc_button(self.buttons, serializer);
     sse_encode_opt_box_autoadd_activity_type(self.activityType, serializer);
+    sse_encode_opt_box_autoadd_status_display_type(
+        self.statusDisplayType, serializer);
   }
 
   @protected
@@ -1102,6 +1172,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_opt_box_autoadd_i_64(self.start, serializer);
     sse_encode_opt_box_autoadd_i_64(self.end, serializer);
+  }
+
+  @protected
+  void sse_encode_status_display_type(
+      StatusDisplayType self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected

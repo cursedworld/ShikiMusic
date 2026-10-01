@@ -487,6 +487,19 @@ impl SseDecode for Option<crate::api::types::RPCTimestamps> {
     }
 }
 
+impl SseDecode for Option<crate::api::types::StatusDisplayType> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::types::StatusDisplayType>::sse_decode(
+                deserializer,
+            ));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<[i32; 2]> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -524,6 +537,8 @@ impl SseDecode for crate::api::types::RPCActivity {
         let mut var_buttons = <Option<Vec<crate::api::types::RPCButton>>>::sse_decode(deserializer);
         let mut var_activityType =
             <Option<crate::api::types::ActivityType>>::sse_decode(deserializer);
+        let mut var_statusDisplayType =
+            <Option<crate::api::types::StatusDisplayType>>::sse_decode(deserializer);
         return crate::api::types::RPCActivity {
             state: var_state,
             details: var_details,
@@ -533,6 +548,7 @@ impl SseDecode for crate::api::types::RPCActivity {
             secrets: var_secrets,
             buttons: var_buttons,
             activity_type: var_activityType,
+            status_display_type: var_statusDisplayType,
         };
     }
 }
@@ -599,6 +615,19 @@ impl SseDecode for crate::api::types::RPCTimestamps {
         return crate::api::types::RPCTimestamps {
             start: var_start,
             end: var_end,
+        };
+    }
+}
+
+impl SseDecode for crate::api::types::StatusDisplayType {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::types::StatusDisplayType::Name,
+            1 => crate::api::types::StatusDisplayType::State,
+            2 => crate::api::types::StatusDisplayType::Details,
+            _ => unreachable!("Invalid variant for StatusDisplayType: {}", inner),
         };
     }
 }
@@ -692,6 +721,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::types::RPCActivity {
             self.secrets.into_into_dart().into_dart(),
             self.buttons.into_into_dart().into_dart(),
             self.activity_type.into_into_dart().into_dart(),
+            self.status_display_type.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -800,6 +830,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::types::RPCTimestamps>
     for crate::api::types::RPCTimestamps
 {
     fn into_into_dart(self) -> crate::api::types::RPCTimestamps {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::types::StatusDisplayType {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Name => 0.into_dart(),
+            Self::State => 1.into_dart(),
+            Self::Details => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::types::StatusDisplayType
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::types::StatusDisplayType>
+    for crate::api::types::StatusDisplayType
+{
+    fn into_into_dart(self) -> crate::api::types::StatusDisplayType {
         self
     }
 }
@@ -963,6 +1015,16 @@ impl SseEncode for Option<crate::api::types::RPCTimestamps> {
     }
 }
 
+impl SseEncode for Option<crate::api::types::StatusDisplayType> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::types::StatusDisplayType>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<[i32; 2]> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -994,6 +1056,10 @@ impl SseEncode for crate::api::types::RPCActivity {
         <Option<crate::api::types::RPCSecrets>>::sse_encode(self.secrets, serializer);
         <Option<Vec<crate::api::types::RPCButton>>>::sse_encode(self.buttons, serializer);
         <Option<crate::api::types::ActivityType>>::sse_encode(self.activity_type, serializer);
+        <Option<crate::api::types::StatusDisplayType>>::sse_encode(
+            self.status_display_type,
+            serializer,
+        );
     }
 }
 
@@ -1037,6 +1103,23 @@ impl SseEncode for crate::api::types::RPCTimestamps {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Option<i64>>::sse_encode(self.start, serializer);
         <Option<i64>>::sse_encode(self.end, serializer);
+    }
+}
+
+impl SseEncode for crate::api::types::StatusDisplayType {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::types::StatusDisplayType::Name => 0,
+                crate::api::types::StatusDisplayType::State => 1,
+                crate::api::types::StatusDisplayType::Details => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 

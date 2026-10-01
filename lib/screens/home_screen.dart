@@ -19,6 +19,7 @@ import 'package:video_player_media_kit/video_player_media_kit.dart';
 import '../app_paths.dart';
 import '../async_task_limiter.dart';
 import '../atomic_file_store.dart';
+import '../discord_status.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../media_file_downloader.dart';
@@ -399,6 +400,7 @@ class MainAppScreenState extends State<MainAppScreen>
     // React to vinyl rotation toggle changes from Settings
     vinylRotationNotifier.addListener(_onVinylRotationChanged);
     discordShowGitHubButtonNotifier.addListener(_onDiscordSettingChanged);
+    discordLyricsStatusNotifier.addListener(_onDiscordSettingChanged);
 
     // Synchronize video player actions
     activeTrackNotifier.addListener(_onActiveTrackChanged);
@@ -555,6 +557,7 @@ class MainAppScreenState extends State<MainAppScreen>
     WidgetsBinding.instance.removeObserver(this);
     vinylRotationNotifier.removeListener(_onVinylRotationChanged);
     discordShowGitHubButtonNotifier.removeListener(_onDiscordSettingChanged);
+    discordLyricsStatusNotifier.removeListener(_onDiscordSettingChanged);
     activeTrackNotifier.removeListener(_onActiveTrackChanged);
     isPlayingNotifier.removeListener(_syncVideoPlayState);
     playVideoClipNotifier.removeListener(_onVideoSettingChanged);
@@ -3611,6 +3614,15 @@ class MainAppScreenState extends State<MainAppScreen>
 
       if (_stateDisposing || activityRevision != _discordActivityRevision) return;
 
+      final currentLyric = currentLine >= 0 && currentLine < globalLyrics.length
+          ? globalLyrics[currentLine].txt
+          : null;
+      final statusDisplayType = resolveDiscordStatusDisplayType(
+        showLyrics: discordLyricsStatusNotifier.value,
+        isPlaying: isPlaying,
+        currentLyric: currentLyric,
+      );
+
       if (isPlaying) {
         String p1 = '$title — $art';
         String p2 = 'Слушает музыку';
@@ -3628,6 +3640,7 @@ class MainAppScreenState extends State<MainAppScreen>
             details: p1,
             state: p2,
             activityType: ActivityType.listening,
+            statusDisplayType: statusDisplayType,
             assets: RPCAssets(largeImage: largeImg),
             timestamps: discordStart != null
                 ? RPCTimestamps(
@@ -3666,6 +3679,7 @@ class MainAppScreenState extends State<MainAppScreen>
             details: '$title — $art',
             state: 'На паузе ($posStr$durStr)',
             activityType: ActivityType.listening,
+            statusDisplayType: statusDisplayType,
             assets: RPCAssets(largeImage: largeImg),
             buttons: discordShowGitHubButtonNotifier.value
                 ? [

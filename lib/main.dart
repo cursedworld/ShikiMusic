@@ -107,6 +107,7 @@ Future<void> _loadSavedSettings() async {
       // Restore discord github button setting
       discordShowGitHubButtonNotifier.value =
           data['discordShowGitHubButton'] ?? true;
+      discordLyricsStatusNotifier.value = data['discordLyricsStatus'] == true;
     }
   } catch (_) {}
 }

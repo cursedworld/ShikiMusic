@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import '../lib.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`
 
 /// An enum representing the activity type used by an
 /// `RPCActivity`
@@ -39,6 +39,9 @@ class RPCActivity {
   final List<RPCButton>? buttons;
   final ActivityType? activityType;
 
+  /// Which activity field appears in the Discord member-list status.
+  final StatusDisplayType? statusDisplayType;
+
   const RPCActivity({
     this.state,
     this.details,
@@ -48,6 +51,7 @@ class RPCActivity {
     this.secrets,
     this.buttons,
     this.activityType,
+    this.statusDisplayType,
   });
 
   @override
@@ -59,7 +63,8 @@ class RPCActivity {
       assets.hashCode ^
       secrets.hashCode ^
       buttons.hashCode ^
-      activityType.hashCode;
+      activityType.hashCode ^
+      statusDisplayType.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -73,7 +78,8 @@ class RPCActivity {
           assets == other.assets &&
           secrets == other.secrets &&
           buttons == other.buttons &&
-          activityType == other.activityType;
+          activityType == other.activityType &&
+          statusDisplayType == other.statusDisplayType;
 }
 
 /// A struct representing the art assets and hover text
@@ -210,4 +216,11 @@ class RPCTimestamps {
           runtimeType == other.runtimeType &&
           start == other.start &&
           end == other.end;
+}
+
+enum StatusDisplayType {
+  name,
+  state,
+  details,
+  ;
 }

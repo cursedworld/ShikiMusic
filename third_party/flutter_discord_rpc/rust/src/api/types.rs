@@ -11,6 +11,8 @@ pub struct RPCActivity {
     pub secrets: Option<RPCSecrets>,
     pub buttons: Option<Vec<RPCButton>>,
     pub activity_type: Option<ActivityType>,
+    /// Which activity field appears in the Discord member-list status.
+    pub status_display_type: Option<StatusDisplayType>,
 }
 
 /// A struct representing an `RPCActivity`'s timestamps
@@ -76,4 +78,11 @@ pub enum ActivityType {
     Watching = 3,
     /// Activity type "Competing in X"
     Competing = 5,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum StatusDisplayType {
+    Name = 0,
+    State = 1,
+    Details = 2,
 }
