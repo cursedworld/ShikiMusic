@@ -7,7 +7,7 @@ use discord_rich_presence::{
 };
 use lazy_static::lazy_static;
 
-use super::types::ActivityType;
+use super::types::{ActivityType, StatusDisplayType};
 
 lazy_static! {
     static ref DISCORD_CLIENT: Mutex<Option<Box<DiscordIpcClient>>> = Mutex::new(None);
@@ -189,8 +189,15 @@ fn build_activity_payload(activity: &RPCActivity) -> anyhow::Result<serde_json::
     }
 
     let mut payload = serde_json::to_value(r_activity)?;
-    if matches!(activity.activity_type, Some(ActivityType::Listening)) {
-        payload["status_display_type"] = serde_json::json!(2);
+    let display_type = match activity.status_display_type {
+        Some(StatusDisplayType::Name) => Some(0),
+        Some(StatusDisplayType::State) => Some(1),
+        Some(StatusDisplayType::Details) => Some(2),
+        None if matches!(activity.activity_type, Some(ActivityType::Listening)) => Some(2),
+        None => None,
+    };
+    if let Some(display_type) = display_type {
+        payload["status_display_type"] = serde_json::json!(display_type);
     }
     Ok(payload)
 }
@@ -216,6 +223,7 @@ mod tests {
                 url: "https://github.com/cursedworld/ShikiMusic".to_owned(),
             }]),
             activity_type: Some(ActivityType::Listening),
+            status_display_type: None,
         }
     }
 
@@ -237,6 +245,34 @@ mod tests {
         let payload = build_activity_payload(&activity).unwrap();
         assert_eq!(payload["type"], 0);
         assert!(payload.get("status_display_type").is_none());
+    }
+
+    #[test]
+    fn lyrics_display_does_not_swap_or_remove_profile_card_fields() {
+        let mut activity = listening_activity();
+        activity.status_display_type = Some(StatusDisplayType::State);
+        let payload = build_activity_payload(&activity).unwrap();
+        assert_eq!(payload["status_display_type"], 1);
+        assert_eq!(payload["details"], "Song — Artist");
+        assert_eq!(payload["state"], "Current lyric line");
+        assert_eq!(payload["timestamps"]["end"], 2_000);
+        assert_eq!(payload["buttons"][0]["label"], "GitHub");
+    }
+
+    #[test]
+    fn explicit_display_types_follow_discord_wire_values() {
+        for (display_type, expected) in [
+            (StatusDisplayType::Name, 0),
+            (StatusDisplayType::State, 1),
+            (StatusDisplayType::Details, 2),
+        ] {
+            let mut activity = listening_activity();
+            activity.status_display_type = Some(display_type);
+            assert_eq!(
+                build_activity_payload(&activity).unwrap()["status_display_type"],
+                expected
+            );
+        }
     }
 }
 

@@ -51,6 +51,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RPCTimestamps dco_decode_box_autoadd_rpc_timestamps(dynamic raw);
 
   @protected
+  StatusDisplayType dco_decode_box_autoadd_status_display_type(dynamic raw);
+
+  @protected
   int dco_decode_i_32(dynamic raw);
 
   @protected
@@ -90,6 +93,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   RPCTimestamps? dco_decode_opt_box_autoadd_rpc_timestamps(dynamic raw);
 
   @protected
+  StatusDisplayType? dco_decode_opt_box_autoadd_status_display_type(
+      dynamic raw);
+
+  @protected
   I32Array2? dco_decode_opt_i_32_array_2(dynamic raw);
 
   @protected
@@ -112,6 +119,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RPCTimestamps dco_decode_rpc_timestamps(dynamic raw);
+
+  @protected
+  StatusDisplayType dco_decode_status_display_type(dynamic raw);
 
   @protected
   int dco_decode_u_8(dynamic raw);
@@ -149,6 +159,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RPCTimestamps sse_decode_box_autoadd_rpc_timestamps(
+      SseDeserializer deserializer);
+
+  @protected
+  StatusDisplayType sse_decode_box_autoadd_status_display_type(
       SseDeserializer deserializer);
 
   @protected
@@ -195,6 +209,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  StatusDisplayType? sse_decode_opt_box_autoadd_status_display_type(
+      SseDeserializer deserializer);
+
+  @protected
   I32Array2? sse_decode_opt_i_32_array_2(SseDeserializer deserializer);
 
   @protected
@@ -217,6 +235,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RPCTimestamps sse_decode_rpc_timestamps(SseDeserializer deserializer);
+
+  @protected
+  StatusDisplayType sse_decode_status_display_type(
+      SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_8(SseDeserializer deserializer);
@@ -264,6 +286,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_rpc_timestamps(
       RPCTimestamps self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_status_display_type(
+      StatusDisplayType self, SseSerializer serializer);
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
@@ -314,6 +340,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       RPCTimestamps? self, SseSerializer serializer);
 
   @protected
+  void sse_encode_opt_box_autoadd_status_display_type(
+      StatusDisplayType? self, SseSerializer serializer);
+
+  @protected
   void sse_encode_opt_i_32_array_2(I32Array2? self, SseSerializer serializer);
 
   @protected
@@ -337,6 +367,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_rpc_timestamps(RPCTimestamps self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_status_display_type(
+      StatusDisplayType self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_8(int self, SseSerializer serializer);

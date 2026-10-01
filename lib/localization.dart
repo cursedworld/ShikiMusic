@@ -318,6 +318,21 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Plays YouTube music video inside the player circle',
     'ja': 'プレイヤーのサークル内でYouTubeクリップを再生します',
   },
+  'discord_settings': {
+    'ru': 'Discord',
+    'en': 'Discord',
+    'ja': 'Discord',
+  },
+  'discord_lyrics_status': {
+    'ru': 'Текст песни в статусе Discord',
+    'en': 'Lyrics in Discord status',
+    'ja': 'Discordのステータスに歌詞を表示',
+  },
+  'discord_lyrics_status_hint': {
+    'ru': 'Текущая строка вместо трека и артиста. Без текста или на паузе — трек и артист. Карточка профиля не меняется.',
+    'en': 'Show the current lyric instead of track and artist. Without lyrics or when paused, show track and artist. The profile card stays unchanged.',
+    'ja': '曲名とアーティストの代わりに現在の歌詞を表示。歌詞がない場合や一時停止中は曲名とアーティストを表示します。プロフィールカードは変わりません。',
+  },
   'discord_github_button': {
     'ru': 'Кнопка GitHub в Discord',
     'en': 'GitHub Button in Discord',

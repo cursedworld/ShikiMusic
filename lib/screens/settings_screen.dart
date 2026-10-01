@@ -111,7 +111,12 @@ bool _isSafeCustomBackgroundSize(int width, int height) =>
 
 class SettingsScreen extends StatefulWidget {
   final VoidCallback onClearCache;
-  const SettingsScreen({super.key, required this.onClearCache});
+  final Future<Directory> Function() dataDirectoryProvider;
+  const SettingsScreen({
+    super.key,
+    required this.onClearCache,
+    this.dataDirectoryProvider = getShikiDataDirectory,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -123,6 +128,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _vinylRotation = true;
   bool _playVideoClip = false;
   bool _discordShowGitHubButton = true;
+  bool _discordLyricsStatus = discordLyricsStatusNotifier.value;
+  late final Future<Directory> Function() _getDataDirectory;
   static final SettingsPersistenceQueue _settingsPersistence =
       SettingsPersistenceQueue();
   static Future<void> _backgroundMutation = Future<void>.value();
@@ -131,6 +138,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _getDataDirectory = widget.dataDirectoryProvider;
     _loadSettings();
   }
 
@@ -142,7 +150,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _loadSettings() async {
     try {
-      final appDir = await getShikiDataDirectory();
+      final appDir = await _getDataDirectory();
       final file = File('${appDir.path}/shiki_settings.json');
       if (await file.exists()) {
         final data = jsonDecode(await file.readAsString());
@@ -160,6 +168,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _vinylRotation = data['vinylRotation'] ?? true;
           _playVideoClip = data['playVideoClip'] ?? false;
           _discordShowGitHubButton = data['discordShowGitHubButton'] ?? true;
+          _discordLyricsStatus = data['discordLyricsStatus'] == true;
         });
 
         customBackgroundNotifier.value = availableBackground;
@@ -174,6 +183,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         vinylRotationNotifier.value = _vinylRotation;
         playVideoClipNotifier.value = _playVideoClip;
         discordShowGitHubButtonNotifier.value = _discordShowGitHubButton;
+        discordLyricsStatusNotifier.value = _discordLyricsStatus;
       }
     } catch (_) {}
   }
@@ -185,6 +195,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'vinylRotation': _vinylRotation,
       'playVideoClip': _playVideoClip,
       'discordShowGitHubButton': _discordShowGitHubButton,
+      'discordLyricsStatus': _discordLyricsStatus,
       'customBackground': customBackgroundNotifier.value,
       'accentColor': _selectedColorKey == 'custom'
           ? accentColorNotifier.value.toARGB32()
@@ -192,7 +203,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
     return _settingsPersistence.enqueue(() async {
       try {
-        final appDir = await getShikiDataDirectory();
+        final appDir = await _getDataDirectory();
         final file = File('${appDir.path}/shiki_settings.json');
         await atomicFileStore.writeString(file, contents);
         return true;
@@ -469,11 +480,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                     const SizedBox(height: 32),
 
-                    // ── Discord RPC GitHub Button ──
-                    _buildSectionHeader(
-                      Icons.link,
-                      tr('discord_github_button'),
-                    ),
+                    // ── Discord RPC ──
+                    _buildSectionHeader(Icons.link, tr('discord_settings')),
                     const SizedBox(height: 12),
                     Container(
                       decoration: BoxDecoration(
@@ -502,6 +510,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         },
                       ),
                     ),
+
+                    if (isDesktop) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: SwitchListTile(
+                          key: const ValueKey('discord_lyrics_status_switch'),
+                          title: Text(
+                            tr('discord_lyrics_status'),
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                          subtitle: Text(
+                            tr('discord_lyrics_status_hint'),
+                            style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 12,
+                            ),
+                          ),
+                          value: _discordLyricsStatus,
+                          activeThumbColor: accent,
+                          activeTrackColor: accent.withValues(alpha: 0.3),
+                          onChanged: (value) {
+                            setState(() => _discordLyricsStatus = value);
+                            discordLyricsStatusNotifier.value = value;
+                            _saveSettings();
+                          },
+                        ),
+                      ),
+                    ],
 
                     const SizedBox(height: 32),
 
@@ -768,7 +808,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
         if (_isDisposed || jpegBytes == null) return;
 
-        final appDir = await getShikiDataDirectory();
+        final appDir = await _getDataDirectory();
         if (_isDisposed) return;
 
         // Save as optimized JPEG
@@ -841,7 +881,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _deleteCustomBgFiles({String? exceptFileName}) async {
     try {
-      final appDir = await getShikiDataDirectory();
+      final appDir = await _getDataDirectory();
       if (!await appDir.exists()) return;
       await for (final entity in appDir.list()) {
         if (entity is! File) continue;

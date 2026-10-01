@@ -38,6 +38,7 @@ ValueNotifier<bool> vinylRotationNotifier = ValueNotifier(true);
 ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
 ValueNotifier<bool> playVideoClipNotifier = ValueNotifier(false);
 ValueNotifier<bool> discordShowGitHubButtonNotifier = ValueNotifier(true);
+ValueNotifier<bool> discordLyricsStatusNotifier = ValueNotifier(false);
 
 // ── Track duration cache (populated as songs are played) ──────────────────
 

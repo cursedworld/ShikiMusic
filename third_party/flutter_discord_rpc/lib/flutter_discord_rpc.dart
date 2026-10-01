@@ -9,5 +9,6 @@ export 'src/rust/api/types.dart'
         RPCAssets,
         RPCButton,
         RPCSecrets,
-        ActivityType;
+        ActivityType,
+        StatusDisplayType;
 export 'src/rust/lib.dart' show I32Array2;
