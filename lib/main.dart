@@ -75,6 +75,10 @@ Future<void> _loadSavedSettings() async {
 
     if (await file.exists()) {
       final data = jsonDecode(await file.readAsString());
+      // A benchmark must never pick up a real server from copied preferences.
+      if (!PerformanceFrameMonitor.enabled && data is Map) {
+        restoreSavedServerBaseUrl(data['serverBaseUrl'] as String?);
+      }
 
       // Restore accent color
       final colorKey = data['themeColor'] ?? 'color_red';

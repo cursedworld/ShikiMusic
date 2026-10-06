@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -12,20 +13,32 @@ import 'package:audio_service/audio_service.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_media_session/flutter_media_session.dart' as fms;
-import 'package:image/image.dart' as img;
 import 'package:video_player/video_player.dart';
 import 'package:video_player_media_kit/video_player_media_kit.dart';
+import 'package:crypto/crypto.dart';
 
 import '../app_paths.dart';
 import '../async_task_limiter.dart';
 import '../atomic_file_store.dart';
+import '../cover_processing.dart';
+import '../disposable_cache.dart';
+import '../discord_artwork.dart';
+import '../discord_cover.dart';
 import '../discord_status.dart';
+import '../download_batch.dart';
 import '../globals.dart';
 import '../localization.dart';
+import '../lrc_parser.dart';
 import '../media_file_downloader.dart';
+import '../music_import.dart';
+import '../clip_retry_gate.dart';
 import '../perf/frame_metrics.dart';
+import '../playlist_artwork.dart';
 import '../safe_file_migration.dart';
 import '../server_config.dart';
+import '../track_updates.dart';
+import '../widgets/track_updates_dialog.dart';
+import '../widgets/track_metadata_dialog.dart';
 import 'artist_screen.dart';
 import 'lyrics_screen.dart';
 import 'settings_screen.dart';
@@ -95,6 +108,8 @@ class _SharedClipGeneration {
   int subscribers = 0;
   bool completed = false;
   bool transportStarted = false;
+  bool forceRequested = false;
+  bool forceSent = false;
 }
 
 class _ClipGenerationCancelledException implements Exception {
@@ -187,7 +202,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _mediaSession!.updateMetadata(
       fms.MediaMetadata(
         title: track['title']?.toString() ?? 'Unknown',
-        artist: track['album']?['artist']?['name']?.toString() ?? 'Unknown',
+        artist: trackArtistLabel(track),
         album: track['album']?['title']?.toString(),
         artworkUri: getArtUri(track)?.toString(),
         duration: dur != null ? Duration(seconds: dur) : Duration.zero,
@@ -213,12 +228,8 @@ class MainAppScreenState extends State<MainAppScreen>
 
   /// Checks if the local cover file exists, is not empty, and is a valid square image.
   Future<bool> _isCoverValidAndSquare(File file) async {
-    if (!await file.exists()) return false;
     try {
-      final bytes = await file.readAsBytes();
-      if (bytes.isEmpty) return false;
-      final image = img.decodeImage(bytes);
-      return image != null && image.width == image.height;
+      return await compute(isSquareCoverFile, file.path);
     } catch (_) {
       return false;
     }
@@ -248,21 +259,8 @@ class MainAppScreenState extends State<MainAppScreen>
           .get(Uri.parse(url))
           .timeout(const Duration(seconds: 5));
       if (res.statusCode == 200) {
-        final bytes = res.bodyBytes;
-        final image = img.decodeImage(bytes);
-        if (image != null) {
-          final size = min(image.width, image.height);
-          final x = (image.width - size) ~/ 2;
-          final y = (image.height - size) ~/ 2;
-          final cropped = img.copyCrop(
-            image,
-            x: x,
-            y: y,
-            width: size,
-            height: size,
-          );
-          final resized = img.copyResize(cropped, width: 600, height: 600);
-          final jpegBytes = img.encodeJpg(resized);
+        final jpegBytes = await compute(cropCoverBytes, res.bodyBytes);
+        if (jpegBytes != null) {
           await atomicFileStore.writeBytes(file, jpegBytes);
           return true;
         }
@@ -298,6 +296,10 @@ class MainAppScreenState extends State<MainAppScreen>
   List<dynamic> cachedTracks = [];
   List<dynamic> cachedArtists = [];
   bool _isSyncingArtists = false;
+  bool _isRefreshingArtistPhotos = false;
+  final Map<int, Map> _artistPhotoQueue = {};
+  final http.Client _artistArtworkClient = http.Client();
+  bool _isRefreshingArtwork = false;
   final ValueNotifier<int> _artistLibraryChanges = ValueNotifier<int>(0);
   bool isLoading = true;
   bool isPlaying = false;
@@ -331,6 +333,9 @@ class MainAppScreenState extends State<MainAppScreen>
   bool _isVideoInitialized = false;
   Duration? _lastBenchmarkVideoPosition;
   final MediaFileDownloader _mediaFileDownloader = MediaFileDownloader();
+  TrackUpdateMonitor? _trackUpdates;
+  String _lastUpdateNotice = '';
+  bool _updateDialogOpen = false;
   MediaFileDownloader? _foregroundVideoDownloader;
   final AsyncTaskLimiter _downloadTaskLimiter = AsyncTaskLimiter(2);
   final AsyncTaskLimiter _clipTaskLimiter = AsyncTaskLimiter(1);
@@ -346,6 +351,7 @@ class MainAppScreenState extends State<MainAppScreen>
   int _videoRevision = 0;
   _VideoOperation? _videoOperation;
   int? _videoTrackId;
+  String? _videoSourcePath;
   bool _videoLifecycleVisible = true;
   bool _videoSurfaceAvailable = false;
   bool _stateDisposing = false;
@@ -376,6 +382,11 @@ class MainAppScreenState extends State<MainAppScreen>
 
   String localPath = "";
   Set<int> downloadQueue = {};
+  final Map<int, Future<TrackDownloadResult>> _mediaDownloadTasks = {};
+  final Map<int, String> _unavailableVideoSignatures = {};
+  final ClipRetryGate _clipRetryGate = ClipRetryGate();
+  bool _bulkDownloadActive = false;
+  Completer<void>? _bulkDownloadFinished;
   Set<int> favs = {};
 
   List<Map<String, dynamic>> myPlaylists = [];
@@ -384,6 +395,8 @@ class MainAppScreenState extends State<MainAppScreen>
   final FocusNode searchFocusNode = FocusNode();
   String searchQuery = "";
   bool isSearchLoading = false;
+  String? _albumImportProgress;
+  bool _importErrorsOpen = false;
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  Lifecycle
@@ -543,6 +556,12 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void dispose() {
     _stateDisposing = true;
+    _discordArtwork?.dispose();
+    _discordCovers?.dispose();
+    _artistArtworkClient.close();
+    _artistPhotoQueue.clear();
+    _trackUpdates?.offers.removeListener(_onTrackUpdates);
+    _trackUpdates?.dispose();
     _trackRevision += 1;
     _transportRevision += 1;
     _seekRevision += 1;
@@ -824,6 +843,7 @@ class MainAppScreenState extends State<MainAppScreen>
     int revision,
     _VideoOperation operation,
   ) async {
+    String? signature;
     try {
       await Future<void>.delayed(_clipFetchDebounce);
       final res = await _foregroundClipTaskLimiter.run<http.Response?>(
@@ -836,6 +856,8 @@ class MainAppScreenState extends State<MainAppScreen>
               activeTrack?['id'] != trackId) {
             return null;
           }
+          signature = _videoAvailabilitySignature(activeTrack as Map);
+          if (!_clipRetryGate.canRequest(trackId, signature!)) return null;
           return _requestClipGeneration(
             trackId,
             abortTrigger: operation.whenCanceled,
@@ -843,7 +865,14 @@ class MainAppScreenState extends State<MainAppScreen>
         },
       );
       if (res == null) return;
-      if (res.statusCode != HttpStatus.ok) return;
+      if (res.statusCode != HttpStatus.ok) {
+        if (signature != null) {
+          _recordClipFailure(trackId, signature!, res);
+        }
+        return;
+      }
+      _clipRetryGate.clear(trackId);
+      _unavailableVideoSignatures.remove(trackId);
 
       final data = json.decode(res.body);
       final rawVideoUrl = data['video_url']?.toString().trim();
@@ -886,6 +915,13 @@ class MainAppScreenState extends State<MainAppScreen>
       await _persistOfflineTracks();
     } catch (e) {
       if (!operation.isCanceled && !_stateDisposing) {
+        if (signature != null) {
+          _clipRetryGate.recordFailure(
+            trackId,
+            signature!,
+            const Duration(minutes: 1),
+          );
+        }
         debugPrint('Error fetching video clip background: $e');
       }
     }
@@ -893,13 +929,18 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<http.Response> _postClipGenerationRequest(
     int trackId,
-    _VideoOperation operation,
-  ) async {
+    _VideoOperation operation, {
+    bool force = false,
+  }) async {
     final request = http.AbortableRequest(
       'POST',
       configuredServerUri('/api/tracks/$trackId/download_clip/'),
       abortTrigger: operation.whenCanceled,
     );
+    if (force) {
+      request.headers['Content-Type'] = 'application/json';
+      request.body = json.encode({'force': true});
+    }
     try {
       final streamedResponse = await (_clipHttpClient ??= http.Client())
           .send(request)
@@ -916,17 +957,27 @@ class MainAppScreenState extends State<MainAppScreen>
   Future<http.Response> _requestClipGeneration(
     int trackId, {
     Future<void>? abortTrigger,
+    bool force = false,
   }) async {
     var shared = _clipGenerationRequests[trackId];
+    if (force && shared != null && shared.completed && !shared.forceSent) {
+      shared = null;
+    }
     if (shared == null) {
       final transportOperation = _VideoOperation();
       final created = _SharedClipGeneration(
         transportOperation: transportOperation,
       );
+      created.forceRequested = force;
       created.response = _clipTransportLimiter.run(
         () {
           created.transportStarted = true;
-          return _postClipGenerationRequest(trackId, transportOperation);
+          created.forceSent = created.forceRequested;
+          return _postClipGenerationRequest(
+            trackId,
+            transportOperation,
+            force: created.forceSent,
+          );
         },
         abortTrigger: transportOperation.whenCanceled,
         cancellationError: const _ClipGenerationCancelledException(),
@@ -946,22 +997,34 @@ class MainAppScreenState extends State<MainAppScreen>
         ),
       );
     }
+    if (force && !shared.transportStarted) shared.forceRequested = true;
 
     shared.subscribers += 1;
+    late http.Response response;
     try {
       if (abortTrigger == null) {
-        return await shared.response;
+        response = await shared.response;
+      } else {
+        response = await Future.any<http.Response>([
+          shared.response,
+          abortTrigger.then<http.Response>(
+            (_) => throw const _ClipGenerationCancelledException(),
+          ),
+        ]);
       }
-      return await Future.any<http.Response>([
-        shared.response,
-        abortTrigger.then<http.Response>(
-          (_) => throw const _ClipGenerationCancelledException(),
-        ),
-      ]);
     } finally {
       shared.subscribers -= 1;
       _releaseClipGenerationIfUnused(trackId, shared);
     }
+    if (force && !shared.forceSent && response.statusCode != HttpStatus.ok) {
+      shared.completed = true;
+      return _requestClipGeneration(
+        trackId,
+        force: true,
+        abortTrigger: abortTrigger,
+      );
+    }
+    return response;
   }
 
   void _releaseClipGenerationIfUnused(
@@ -1085,6 +1148,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (shouldRun &&
         current != null &&
         _videoTrackId == request.trackId &&
+        _videoSourcePath == _localVideoFile(request.trackId!).path &&
         current.value.isInitialized) {
       await _synchronizeVideoController(current);
       if (!_isCurrentVideoOperation(revision, operation) ||
@@ -1111,7 +1175,7 @@ class MainAppScreenState extends State<MainAppScreen>
     }
 
     final trackId = request.trackId!;
-    final localVideoFile = File('$localPath/video_$trackId.mp4');
+    final localVideoFile = _localVideoFile(trackId);
     final hasLocalVideo = await _hasNonEmptyFile(localVideoFile);
     if (!_isCurrentVideoOperation(revision, operation)) return;
     if (!hasLocalVideo) {
@@ -1166,6 +1230,7 @@ class MainAppScreenState extends State<MainAppScreen>
         _initializingVideoController = null;
       }
       _videoTrackId = trackId;
+      _videoSourcePath = localVideoFile.path;
       _isVideoInitialized = true;
       _lastBenchmarkVideoPosition = null;
       _blockedVideoSources.remove(_videoSourceKey(request));
@@ -1299,6 +1364,12 @@ class MainAppScreenState extends State<MainAppScreen>
         );
       }
       _downloadedVideoSources.add(_videoSourceKey(request));
+      final downloadedTrack = cachedTracks
+          .where((track) => track is Map && track['id'] == request.trackId)
+          .firstOrNull;
+      if (downloadedTrack is Map && !_stateDisposing) {
+        await _trackUpdates?.registerDownload(downloadedTrack);
+      }
       if (_isCurrentVideoOperation(revision, operation) &&
           activeTrackNotifier.value?['id'] == request.trackId) {
         _initializeVideo(activeTrackNotifier.value);
@@ -1351,6 +1422,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final controller = _videoController;
     _videoController = null;
     _videoTrackId = null;
+    _videoSourcePath = null;
     _isVideoInitialized = false;
     _lastBenchmarkVideoPosition = null;
     if (controller == null) {
@@ -1935,6 +2007,42 @@ class MainAppScreenState extends State<MainAppScreen>
     if (_stateDisposing) return;
     localPath = appDir.path;
     globalLocalPath = localPath;
+    if (isDesktop && !PerformanceFrameMonitor.enabled) {
+      _discordCovers = DiscordCoverLookup(
+        onResolved: (trackKey) {
+          if (!_stateDisposing &&
+              playingIndex >= 0 &&
+              playingIndex < playingQueue.length &&
+              DiscordCoverLookup.trackKey(playingQueue[playingIndex]) ==
+                  trackKey) {
+            updateRPC();
+          }
+        },
+      );
+      _discordArtwork = DiscordAnimatedArtwork(
+        cacheFile: File('$localPath/discord_artwork_cache.json'),
+        onAvailable: (albumKey) {
+          if (!_stateDisposing &&
+              playingIndex >= 0 &&
+              playingIndex < playingQueue.length &&
+              DiscordAnimatedArtwork.albumKey(playingQueue[playingIndex]) ==
+                  albumKey) {
+            updateRPC();
+          }
+        },
+      );
+    }
+    if (!PerformanceFrameMonitor.enabled) {
+      final monitor = TrackUpdateMonitor(
+        directory: appDir,
+        tracks: () => cachedTracks,
+        onCatalogChanged: _refreshLiveCatalog,
+      );
+      _trackUpdates = monitor;
+      await monitor.load();
+      if (_stateDisposing) return;
+      monitor.offers.addListener(_onTrackUpdates);
+    }
     await readFavorites();
     if (_stateDisposing) return;
     await readPlaylists();
@@ -1945,7 +2053,10 @@ class MainAppScreenState extends State<MainAppScreen>
     if (_stateDisposing) return;
     await _loadState();
     if (_stateDisposing) return;
-    unawaited(syncDatabase());
+    unawaited(() async {
+      await syncDatabase();
+      if (!_stateDisposing) _trackUpdates?.start();
+    }());
     unawaited(_syncArtistsCache());
   }
 
@@ -2027,7 +2138,7 @@ class MainAppScreenState extends State<MainAppScreen>
             MediaItem(
               id: targetTrack['id'].toString(),
               title: targetTrack['title'].toString(),
-              artist: targetTrack['album']['artist']['name'].toString(),
+              artist: trackArtistLabel(targetTrack),
               album: targetTrack['album']['title']?.toString(),
               artUri: getArtUri(targetTrack),
               duration: dur != null ? Duration(seconds: dur) : null,
@@ -2124,6 +2235,28 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void _applyTracks(List<dynamic> tracks) {
     if (_stateDisposing) return;
+    final freshById = {
+      for (final track in tracks)
+        if (track is Map) track['id']: track,
+    };
+    // Metadata only: keep the current source and loaded lyrics untouched.
+    for (final track in playingQueue) {
+      if (track is! Map) continue;
+      final fresh = freshById[track['id']];
+      if (fresh == null) continue;
+      for (final key in [
+        'title',
+        'album',
+        'artists',
+        'duration',
+        'audio_file',
+        'video_file',
+        'lyrics',
+        'content_versions',
+      ]) {
+        track[key] = fresh[key];
+      }
+    }
     if (mounted) {
       setState(() {
         cachedTracks = tracks;
@@ -2134,6 +2267,11 @@ class MainAppScreenState extends State<MainAppScreen>
       isLoading = false;
     }
     _notifyArtistLibraryChanged();
+    if (activeTrackNotifier.value != null) {
+      uiSignal.value++;
+      _syncMediaSessionMetadata();
+      updateRPC(force: true);
+    }
   }
 
   Future<List<dynamic>?> _readOfflineTrackCache() async {
@@ -2177,8 +2315,14 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
-  Future<void> _syncArtistsCache() async {
-    if (_isSyncingArtists || localPath.isEmpty || _stateDisposing) return;
+  Future<void> _syncArtistsCache({bool reportFailure = false}) async {
+    if (_isSyncingArtists) {
+      if (reportFailure) {
+        throw StateError('Artist catalog refresh still running');
+      }
+      return;
+    }
+    if (localPath.isEmpty || _stateDisposing) return;
     _isSyncingArtists = true;
     try {
       final uri = configuredServerUri('/api/artists/');
@@ -2187,6 +2331,10 @@ class MainAppScreenState extends State<MainAppScreen>
         final decoded = json.decode(utf8.decode(res.bodyBytes));
         if (decoded is List) {
           final artistsList = List<dynamic>.from(decoded);
+          final previous = {
+            for (final artist in cachedArtists)
+              if (artist is Map) artist['id']: artist,
+          };
           cachedArtists = artistsList;
           await atomicFileStore.writeString(
             File('$localPath/offline_artists.json'),
@@ -2194,55 +2342,158 @@ class MainAppScreenState extends State<MainAppScreen>
           );
           if (mounted && !_stateDisposing) setState(() {});
 
-          // Concurrently fetch full details and download photos for each artist
+          // The list already contains name, bio and photo. No eager detail HTTP
+          // request per artist; full albums are loaded only when the page opens.
           for (final artist in artistsList) {
             if (_stateDisposing) break;
             if (artist is! Map) continue;
             final artistId = artist['id'];
             if (artistId == null) continue;
 
-            // 1. Fetch artist details
+            final old = previous[artistId];
+            final detailFile = File('$localPath/artist_details_$artistId.json');
+            final detailsChanged =
+                old == null ||
+                [
+                  'name',
+                  'bio',
+                  'photo',
+                  'photo_version',
+                ].any((key) => old[key] != artist[key]);
             try {
-              final detailUri = configuredServerUri('/api/artists/$artistId/');
-              final detailRes = await http.get(detailUri).timeout(const Duration(seconds: 6));
-              if (detailRes.statusCode == HttpStatus.ok) {
-                final detailFile = File('$localPath/artist_details_$artistId.json');
-                await atomicFileStore.writeString(detailFile, utf8.decode(detailRes.bodyBytes));
+              if (detailsChanged || !await detailFile.exists()) {
+                var details = <String, dynamic>{};
+                if (await detailFile.exists()) {
+                  final oldDetails = json.decode(
+                    await detailFile.readAsString(),
+                  );
+                  if (oldDetails is Map) {
+                    details = Map<String, dynamic>.from(oldDetails);
+                  }
+                }
+                await atomicFileStore.writeString(
+                  detailFile,
+                  json.encode({...details, ...artist}),
+                );
               }
             } catch (_) {}
 
-            // 2. Download avatar photo if missing
-            final photoUrlStr = artist['photo']?.toString();
-            if (photoUrlStr != null && photoUrlStr.isNotEmpty) {
-              final localPhoto = File('$localPath/artist_$artistId.jpg');
-              if (!await localPhoto.exists() || await localPhoto.length() == 0) {
-                try {
-                  final photoUri = photoUrlStr.startsWith('http')
-                      ? Uri.parse(photoUrlStr)
-                      : configuredServerUri(photoUrlStr);
-                  final photoRes = await http.get(photoUri).timeout(const Duration(seconds: 10));
-                  if (photoRes.statusCode == HttpStatus.ok && photoRes.bodyBytes.length > 500) {
-                    await atomicFileStore.writeBytes(localPhoto, photoRes.bodyBytes);
-                  }
-                } catch (_) {}
-              }
+            if (artistId is int &&
+                (artist['photo']?.toString().isNotEmpty ?? false)) {
+              _artistPhotoQueue[artistId] = artist;
             }
           }
+          unawaited(_refreshArtistPhotos());
 
           if (mounted && !_stateDisposing) setState(() {});
+          _notifyArtistLibraryChanged();
         }
+      } else if (reportFailure) {
+        throw HttpException('Artist catalog: HTTP ${res.statusCode}');
       }
     } catch (e) {
+      if (reportFailure) rethrow;
       debugPrint('Artists cache sync notice (working offline): $e');
     } finally {
       _isSyncingArtists = false;
     }
   }
 
+  Future<void> _refreshArtistPhotos() async {
+    if (_isRefreshingArtistPhotos || _stateDisposing) return;
+    _isRefreshingArtistPhotos = true;
+    try {
+      // One worker, deduplicated IDs. Optional photos never hold revision polling.
+      while (_artistPhotoQueue.isNotEmpty && !_stateDisposing) {
+        final id = _artistPhotoQueue.keys.first;
+        final artist = _artistPhotoQueue.remove(id)!;
+        final url = artist['photo'].toString();
+        final version = artist['photo_version']?.toString();
+        final suffix =
+            version != null && RegExp(r'^[a-f0-9]{64}$').hasMatch(version)
+            ? '_$version'
+            : '';
+        final file = File('$localPath/artist_$id$suffix.jpg');
+        try {
+          if (await _hasNonEmptyFile(file)) continue;
+          final response = await _artistArtworkClient
+              .get(Uri.parse(_resolveAbsoluteUrl(url)))
+              .timeout(const Duration(seconds: 10));
+          if (_stateDisposing) return;
+          if (response.statusCode == HttpStatus.ok &&
+              response.bodyBytes.length > 500) {
+            await atomicFileStore.writeBytes(file, response.bodyBytes);
+            invalidateArtistPhoto(id);
+            if (mounted && !_stateDisposing) {
+              setState(() {});
+              _notifyArtistLibraryChanged();
+            }
+          }
+        } catch (_) {
+          // Retry on a later catalog/navigation refresh; retain the offline photo.
+        }
+      }
+    } finally {
+      _isRefreshingArtistPhotos = false;
+    }
+  }
+
   bool _isCurrentDatabaseSync(int revision) =>
       !_stateDisposing && revision == _databaseSyncRevision;
 
-  Future<void> syncDatabase() async {
+  Future<void> _refreshLiveCatalog() async {
+    await syncDatabase(reportFailure: true, refreshArtists: false);
+    if (_stateDisposing) return;
+    await _syncArtistsCache(reportFailure: true);
+    unawaited(_refreshCachedArtwork());
+  }
+
+  Future<void> _refreshCachedArtwork() async {
+    if (_isRefreshingArtwork || localPath.isEmpty) return;
+    _isRefreshingArtwork = true;
+    try {
+      final snapshot = List<dynamic>.from(cachedTracks);
+      for (final track in snapshot) {
+        if (_stateDisposing || track is! Map || track['id'] is! int) continue;
+        final id = track['id'] as int;
+        final name = getVersionedCoverName(track);
+        final url = track['album']?['cover']?.toString();
+        if (name == null || url == null || url.isEmpty) continue;
+        final destination = File('$localPath/$name');
+        if (await _hasNonEmptyFile(destination)) continue;
+        final old = File('$localPath/cover_${id}_${getCoverFileName(track)}');
+        final fallback = File('$localPath/cover_$id.jpg');
+        if (!isTrackLocal(id) &&
+            activeTrackNotifier.value?['id'] != id &&
+            !await old.exists() &&
+            !await fallback.exists()) {
+          continue;
+        }
+        try {
+          if (await _downloadAndCropCover(
+            _resolveAbsoluteUrl(url),
+            destination,
+          )) {
+            invalidateTrackCover(id);
+          }
+        } catch (error) {
+          debugPrint('Artwork refresh deferred: $error');
+        }
+      }
+      if (mounted && !_stateDisposing) {
+        setState(() {});
+        uiSignal.value++;
+        _syncMediaSessionMetadata();
+      }
+    } finally {
+      _isRefreshingArtwork = false;
+    }
+  }
+
+  Future<void> syncDatabase({
+    bool reportFailure = false,
+    bool refreshArtists = true,
+  }) async {
     final revision = ++_databaseSyncRevision;
     final tracksUri = configuredServerUri('/api/tracks/');
 
@@ -2265,9 +2516,10 @@ class MainAppScreenState extends State<MainAppScreen>
       } catch (error) {
         debugPrint('Offline track cache write failed: $error');
       }
-      unawaited(_syncArtistsCache());
+      if (refreshArtists) unawaited(_syncArtistsCache());
     } catch (e) {
       if (!_isCurrentDatabaseSync(revision)) return;
+      if (reportFailure) rethrow;
       if (cachedTracks.isEmpty) {
         final offlineTracks = await _readOfflineTrackCache();
         if (!_isCurrentDatabaseSync(revision)) return;
@@ -2286,48 +2538,255 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> downloadFromNetwork() async {
-    if (searchQuery.isEmpty) return;
+    final query = searchQuery.trim();
+    if (query.isEmpty || isSearchLoading || _stateDisposing) return;
+    if (isSupportedAlbumLink(query)) {
+      await _importAlbum(query);
+      return;
+    }
     setState(() => isSearchLoading = true);
     try {
       final queryEndpoint = configuredServerUri(
         '/api/smart_search/',
-        queryParameters: <String, Object?>{'q': searchQuery},
+        queryParameters: <String, Object?>{'q': query},
       );
       final res = await http
           .get(queryEndpoint)
-          .timeout(const Duration(seconds: 60));
-      if (res.statusCode == 200) {
+          .timeout(const Duration(minutes: 5));
+      final response = _decodeApiResponse(res);
+      if (res.statusCode == HttpStatus.ok) {
         await syncDatabase();
-        if (mounted) {
+        if (mounted && !_stateDisposing) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Контент успешно индексирован сервером.'),
+            SnackBar(
+              content: Text(tr('import_complete')),
               backgroundColor: Colors.green,
             ),
           );
         }
       } else {
-        final errData = json.decode(utf8.decode(res.bodyBytes));
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Сбой API: ${errData['error']}'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
+        throw HttpException(
+          response['error']?.toString() ?? 'HTTP ${res.statusCode}',
+        );
       }
-    } catch (e) {
-      if (mounted) {
+    } catch (error) {
+      if (mounted && !_stateDisposing) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Таймаут соединения.'),
+          SnackBar(
+            content: Text('${tr('search_failed')}: ${_downloadError(error)}'),
             backgroundColor: Colors.red,
           ),
         );
       }
+    } finally {
+      if (mounted && !_stateDisposing) setState(() => isSearchLoading = false);
     }
-    setState(() => isSearchLoading = false);
+  }
+
+  Map<String, dynamic> _decodeApiResponse(http.Response response) {
+    try {
+      final decoded = json.decode(utf8.decode(response.bodyBytes));
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    } on FormatException {
+      // A proxy/Django error page is not JSON; preserve its HTTP status.
+    }
+    throw HttpException('HTTP ${response.statusCode}: invalid server response');
+  }
+
+  Future<void> _showAlbumImport() async {
+    if (isSearchLoading || !mounted) return;
+    final url = await showDialog<String>(
+      context: context,
+      builder: (_) => AlbumImportDialog(
+        initialUrl: isSupportedAlbumLink(searchQuery) ? searchQuery.trim() : '',
+      ),
+    );
+    if (url != null && url.isNotEmpty && mounted && !_stateDisposing) {
+      await _importAlbum(url);
+    }
+  }
+
+  Future<void> _importAlbum(String url) async {
+    if (isSearchLoading || _stateDisposing) return;
+    if (!isSupportedAlbumLink(url)) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(tr('invalid_album_link'))));
+      return;
+    }
+    setState(() => isSearchLoading = true);
+    try {
+      final res = await http
+          .post(
+            configuredServerUri('/api/import_album/'),
+            headers: const {'Content-Type': 'application/json'},
+            body: json.encode({'url': url, 'limit': 100}),
+          )
+          .timeout(const Duration(seconds: 15));
+      var response = _decodeApiResponse(res);
+      if (res.statusCode != HttpStatus.ok &&
+          res.statusCode != HttpStatus.accepted) {
+        throw HttpException(
+          response['error']?.toString() ?? 'HTTP ${res.statusCode}',
+        );
+      }
+      if (res.statusCode == HttpStatus.accepted) {
+        final jobId = response['job_id']?.toString() ?? '';
+        if (!RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(jobId)) {
+          throw const FormatException('Invalid import job');
+        }
+        while (!_stateDisposing) {
+          await Future<void>.delayed(const Duration(seconds: 2));
+          if (_stateDisposing) return;
+          final status = await http
+              .get(configuredServerUri('/api/import_jobs/$jobId/'))
+              .timeout(const Duration(seconds: 10));
+          response = _decodeApiResponse(status);
+          if (status.statusCode != HttpStatus.ok) {
+            throw HttpException(
+              response['error']?.toString() ?? 'HTTP ${status.statusCode}',
+            );
+          }
+          if (mounted && !_stateDisposing) {
+            setState(
+              () => _albumImportProgress =
+                  '${response['processed_count'] ?? 0} / ${response['total_count'] ?? '?'}',
+            );
+          }
+          final state = response['status'];
+          if (state == 'completed' || state == 'failed') break;
+          if (state != 'queued' && state != 'running') {
+            throw const FormatException('Invalid import job status');
+          }
+        }
+      }
+      if (_stateDisposing) return;
+      final imported = response['tracks'];
+      final tracks = imported is List
+          ? imported.where((track) => downloadTrackId(track) != null).toList()
+          : <dynamic>[];
+      final errors = response['errors'] is List
+          ? List<dynamic>.from(response['errors'] as List)
+          : <dynamic>[];
+      for (final entry in errors.whereType<Map>()) {
+        final metadata = entry['metadata'];
+        if (metadata is Map &&
+            (metadata['album']?.toString().trim().isEmpty ?? true)) {
+          metadata['album'] = response['album_title']?.toString() ?? '';
+        }
+      }
+      if (response['status'] == 'failed' && errors.isEmpty) {
+        errors.add({
+          'error': response['error']?.toString() ?? tr('import_failed'),
+        });
+      }
+      await syncDatabase(reportFailure: true);
+      if (_stateDisposing || !mounted) return;
+      if (errors.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${tr('import_partial')}: ${tracks.length} / ${tracks.length + errors.length}',
+            ),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 12),
+            action: SnackBarAction(
+              label: tr('download_details'),
+              onPressed: () => _showImportErrors(errors),
+            ),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${tr('import_complete')}: ${tracks.length}'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+      if (tracks.isNotEmpty) await downloadAllTracks(tracks);
+    } catch (error) {
+      if (mounted && !_stateDisposing) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${tr('import_failed')}: ${_downloadError(error)}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted && !_stateDisposing) {
+        setState(() {
+          isSearchLoading = false;
+          _albumImportProgress = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _showImportErrors(List<dynamic> errors) async {
+    if (!mounted || _stateDisposing || _importErrorsOpen) return;
+    _importErrorsOpen = true;
+    final remaining = List<dynamic>.from(errors);
+    try {
+      while (remaining.isNotEmpty && mounted && !_stateDisposing) {
+        if (!mounted) return;
+        final selected = await showDialog<Map>(
+          context: context,
+          builder: (_) => AlbumImportErrorsDialog(errors: remaining),
+        );
+        if (selected == null || _stateDisposing || !mounted) break;
+        if (await _confirmAlbumTrack(selected)) remaining.remove(selected);
+      }
+    } finally {
+      _importErrorsOpen = false;
+    }
+  }
+
+  Future<bool> _confirmAlbumTrack(Map entry) async {
+    final metadata = Map<String, dynamic>.from(entry['metadata'] as Map);
+    final confirmed = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => TrackMetadataDialog(metadata: metadata),
+    );
+    if (confirmed == null || _stateDisposing || !mounted) return false;
+    try {
+      final response = await http
+          .post(
+            configuredServerUri('/api/smart_search/'),
+            headers: const {'Content-Type': 'application/json'},
+            body: json.encode({
+              ...confirmed,
+              'q': confirmed['source_url'],
+              'confirm_metadata': true,
+            }),
+          )
+          .timeout(const Duration(minutes: 5));
+      final data = _decodeApiResponse(response);
+      if (response.statusCode != HttpStatus.ok) {
+        throw HttpException(
+          data['error']?.toString() ?? 'HTTP ${response.statusCode}',
+        );
+      }
+      await syncDatabase(reportFailure: true);
+      if (_stateDisposing || !mounted) return true;
+      final id = downloadTrackId({'id': data['track_id']});
+      final imported = cachedTracks
+          .where((track) => downloadTrackId(track) == id)
+          .toList();
+      if (imported.isNotEmpty) await downloadAllTracks(imported);
+      return true;
+    } catch (error) {
+      if (mounted && !_stateDisposing) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${tr('import_failed')}: ${_downloadError(error)}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return false;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2336,13 +2795,97 @@ class MainAppScreenState extends State<MainAppScreen>
 
   bool isTrackLocal(int id) {
     if (localPath.isEmpty) return false;
-    final file = File('$localPath/track_$id.mp3');
+    final file = _localAudioFile(id);
     try {
       return file.existsSync() && file.lengthSync() > 0;
     } on FileSystemException {
       return false;
     }
   }
+
+  File _localAudioFile(int id) =>
+      _trackUpdates?.audioFile(id) ?? File('$localPath/track_$id.mp3');
+
+  File _localVideoFile(int id) =>
+      _trackUpdates?.videoFile(id) ?? File('$localPath/video_$id.mp4');
+
+  void _onTrackUpdates() {
+    if (_stateDisposing || !mounted) return;
+    final offers = _trackUpdates?.offers.value ?? const <TrackUpdateOffer>[];
+    setState(() {});
+    final signature = offers.map((offer) => offer.signature).join('|');
+    if (offers.isEmpty || signature == _lastUpdateNotice || _updateDialogOpen) {
+      return;
+    }
+    _lastUpdateNotice = signature;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${tr('track_updates')} (${offers.length})'),
+        backgroundColor: Colors.black87,
+        duration: const Duration(seconds: 12),
+        action: SnackBarAction(
+          label: tr('review_updates'),
+          onPressed: _showTrackUpdates,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showTrackUpdates() async {
+    final monitor = _trackUpdates;
+    if (monitor == null || _updateDialogOpen || !mounted) return;
+    _updateDialogOpen = true;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => TrackUpdatesDialog(
+          monitor: monitor,
+          onUpdate: (offer) async {
+            if (downloadQueue.contains(offer.id)) {
+              throw StateError('Track is being downloaded');
+            }
+            setState(() => downloadQueue.add(offer.id));
+            _notifyArtistLibraryChanged();
+            try {
+              final track = await monitor.updateTrack(offer);
+              if (_stateDisposing) return;
+              final updated = cachedTracks
+                  .map((old) => old['id'] == offer.id ? track : old)
+                  .toList();
+              if (!updated.any((item) => item['id'] == offer.id)) {
+                updated.add(track);
+              }
+              _applyTracks(updated);
+              // Leave current lyrics in place; the versioned LRC is read on next start.
+              for (final queued in playingQueue) {
+                if (queued['id'] == offer.id) {
+                  queued['lyrics'] = track['lyrics'];
+                }
+              }
+              await _persistOfflineTracks();
+            } finally {
+              downloadQueue.remove(offer.id);
+              if (!_stateDisposing && mounted) {
+                setState(() {});
+                _notifyArtistLibraryChanged();
+              }
+            }
+          },
+        ),
+      );
+    } finally {
+      _updateDialogOpen = false;
+    }
+  }
+
+  Widget _buildTrackUpdatesButton() =>
+      (_trackUpdates?.offers.value.isNotEmpty ?? false)
+      ? IconButton(
+          tooltip: tr('track_updates'),
+          onPressed: _showTrackUpdates,
+          icon: Icon(Icons.system_update_alt, color: accentColorNotifier.value),
+        )
+      : const SizedBox.shrink();
 
   bool isTrackDownloadComplete(dynamic track) {
     if (localPath.isEmpty || track is! Map) return false;
@@ -2351,7 +2894,7 @@ class MainAppScreenState extends State<MainAppScreen>
         ? rawTrackId
         : int.tryParse(rawTrackId?.toString() ?? '');
     if (trackId == null) return false;
-    final audioFile = File('$localPath/track_$trackId.mp3');
+    final audioFile = _localAudioFile(trackId);
     try {
       return audioFile.existsSync() && audioFile.lengthSync() > 0;
     } on FileSystemException {
@@ -2366,8 +2909,11 @@ class MainAppScreenState extends State<MainAppScreen>
         ? rawTrackId
         : int.tryParse(rawTrackId?.toString() ?? '');
     if (trackId == null) return;
+    if (downloadQueue.contains(trackId)) return;
 
     try {
+      final resolvedVideo = _localVideoFile(trackId);
+      await _trackUpdates?.forget(trackId);
       final audioFile = File('$localPath/track_$trackId.mp3');
       if (await audioFile.exists()) {
         await audioFile.delete();
@@ -2376,7 +2922,7 @@ class MainAppScreenState extends State<MainAppScreen>
       if (await lrcFile.exists()) {
         await lrcFile.delete();
       }
-      final videoFile = File('$localPath/video_$trackId.mp4');
+      final videoFile = resolvedVideo;
       if (await videoFile.exists()) {
         await videoFile.delete();
       }
@@ -2388,8 +2934,15 @@ class MainAppScreenState extends State<MainAppScreen>
       final dir = Directory(localPath);
       if (await dir.exists()) {
         final prefix = 'cover_${trackId}_';
+        final versioned = RegExp(
+          '^track_${trackId}_[a-f0-9]{64}\\.(mp3|lrc)\$',
+        );
+        final versionedVideo = RegExp('^video_${trackId}_[a-f0-9]{64}\\.mp4\$');
         await for (final entity in dir.list()) {
-          if (entity is File && entity.uri.pathSegments.last.startsWith(prefix)) {
+          if (entity is File &&
+              (entity.uri.pathSegments.last.startsWith(prefix) ||
+                  versioned.hasMatch(entity.uri.pathSegments.last) ||
+                  versionedVideo.hasMatch(entity.uri.pathSegments.last))) {
             try {
               await entity.delete();
             } catch (_) {}
@@ -2425,6 +2978,7 @@ class MainAppScreenState extends State<MainAppScreen>
           onPlayTrack: (queue, idx) => startPlayback(queue, idx),
           onToggleFavorite: (id) => toggleFavorite(id),
           onDownloadTrack: (t) => downloadMediaFile(t),
+          onDownloadAlbum: (tracks) => downloadAllTracks(tracks),
           onDeleteDownloadedTrack: (t) => deleteDownloadedTrack(t),
           isTrackDownloaded: (t) => isTrackDownloadComplete(t),
           isTrackFavorited: (id) => favs.contains(id),
@@ -2440,162 +2994,484 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> downloadMediaFile(dynamic mediaObj) async {
-    final trackId = mediaObj['id'];
-    if (downloadQueue.contains(trackId)) return;
-    if (mounted) {
-      setState(() => downloadQueue.add(trackId));
+    final result = await _downloadMedia(mediaObj, retryUnavailableVideo: true);
+    if (mounted && !_stateDisposing) {
+      _showDownloadSummary(DownloadBatchResult(results: [result]), [mediaObj]);
+    }
+  }
+
+  Future<TrackDownloadResult> _downloadMedia(
+    dynamic mediaObj, {
+    bool retryUnavailableVideo = false,
+  }) {
+    final id = downloadTrackId(mediaObj);
+    final title = mediaObj is Map ? mediaObj['title']?.toString() ?? '$id' : '';
+    if (id == null || localPath.isEmpty || _stateDisposing) {
+      return Future.value(
+        TrackDownloadResult(
+          id: id ?? 0,
+          title: title,
+          audioReady: false,
+          videoReady: false,
+          errors: {
+            DownloadComponent.library: tr(
+              localPath.isEmpty ? 'library_not_ready' : 'invalid_track',
+            ),
+          },
+        ),
+      );
+    }
+    final pending = _mediaDownloadTasks[id];
+    if (pending != null) return pending;
+    if (downloadQueue.contains(id)) {
+      return Future.value(
+        TrackDownloadResult(
+          id: id,
+          title: title,
+          audioReady: isTrackDownloadComplete(mediaObj),
+          videoReady: false,
+          errors: {DownloadComponent.library: tr('updating_track')},
+        ),
+      );
+    }
+    final operation = _downloadMediaOnce(
+      Map<String, dynamic>.from(mediaObj as Map),
+      id,
+      retryUnavailableVideo: retryUnavailableVideo,
+    );
+    _mediaDownloadTasks[id] = operation;
+    unawaited(
+      operation.then<void>((_) {
+        if (identical(_mediaDownloadTasks[id], operation)) {
+          _mediaDownloadTasks.remove(id);
+        }
+      }),
+    );
+    return operation;
+  }
+
+  Future<TrackDownloadResult> _downloadMediaOnce(
+    Map<String, dynamic> track,
+    int id, {
+    bool retryUnavailableVideo = false,
+  }) async {
+    final errors = <DownloadComponent, String>{};
+    var audioReady = false;
+    var videoReady = false;
+    var videoUnavailable = false;
+    final audioFile = _localAudioFile(id);
+    final videoFile = _localVideoFile(id);
+    final lrcFile =
+        _trackUpdates?.lyricsFile(id) ?? File('$localPath/track_$id.lrc');
+    final coverFile = File('$localPath/cover_${id}_${getCoverFileName(track)}');
+    final hasCover =
+        (track['album']?['cover']?.toString().trim().isNotEmpty ?? false);
+    final hasLyrics = (track['lyrics']?.toString().trim().isNotEmpty ?? false);
+    Future<String?>
+    generateVideoUrl() => _clipTaskLimiter.run<String?>(() async {
+      final signature = _videoAvailabilitySignature(track);
+      if (!_clipRetryGate.canRequest(
+        id,
+        signature,
+        force: retryUnavailableVideo,
+      )) {
+        videoUnavailable = _unavailableVideoSignatures[id] == signature;
+        if (videoUnavailable) return null;
+        throw const HttpException(
+          'Повторный поиск клипа временно отложен. Можно повторить скачивание вручную.',
+        );
+      }
+      final res = await _requestClipGeneration(
+        id,
+        force: retryUnavailableVideo,
+      );
+      if (res.statusCode != HttpStatus.ok) {
+        _recordClipFailure(id, signature, res);
+      } else {
+        _clipRetryGate.clear(id);
+      }
+      if (res.statusCode == HttpStatus.notFound) {
+        videoUnavailable = true;
+        return null;
+      }
+      final data = _decodeApiResponse(res);
+      if (res.statusCode != HttpStatus.ok) {
+        throw HttpException(
+          data['error']?.toString() ?? 'HTTP ${res.statusCode}',
+        );
+      }
+      final url = data['video_url']?.toString().trim();
+      if (url == null || url.isEmpty) videoUnavailable = true;
+      return url;
+    });
+    final audioAlreadyReady = await _hasNonEmptyFile(audioFile);
+    final videoAlreadyReady = await _hasNonEmptyFile(videoFile);
+    final videoKnownUnavailable =
+        !retryUnavailableVideo && _isVideoUnavailable(id, track);
+    if (audioAlreadyReady &&
+        (videoAlreadyReady || videoKnownUnavailable) &&
+        (!hasCover || await _hasNonEmptyFile(coverFile)) &&
+        (!hasLyrics || await _hasNonEmptyFile(lrcFile))) {
+      return TrackDownloadResult(
+        id: id,
+        title: track['title']?.toString() ?? '$id',
+        audioReady: true,
+        videoReady: videoAlreadyReady,
+        videoUnavailable: videoKnownUnavailable,
+      );
+    }
+    if (mounted && !_stateDisposing) {
+      setState(() => downloadQueue.add(id));
     } else {
-      downloadQueue.add(trackId);
+      downloadQueue.add(id);
     }
     _notifyArtistLibraryChanged();
     try {
       await _downloadTaskLimiter.run(() async {
-        final audioFile = File('$localPath/track_$trackId.mp3');
-        final coverFile = File(
-          '$localPath/cover_${trackId}_${getCoverFileName(mediaObj)}',
-        );
-        final lrcFile = File('$localPath/track_$trackId.lrc');
-
-        if (!await _hasNonEmptyFile(audioFile)) {
-          await _mediaFileDownloader.download(
-            source: Uri.parse(mediaObj['audio_file'].toString()),
-            destination: audioFile,
-          );
-        }
-        if (!await _isCoverValidAndSquare(coverFile)) {
-          await _downloadAndCropCover(
-            mediaObj['album']['cover'].toString(),
-            coverFile,
-          );
-          if (trackId is int) invalidateTrackCover(trackId);
-        }
-        if (!await lrcFile.exists() &&
-            mediaObj['lyrics'] != null &&
-            mediaObj['lyrics'].toString().trim().isNotEmpty) {
-          await atomicFileStore.writeString(
-            lrcFile,
-            mediaObj['lyrics'].toString(),
-          );
-        }
-
-        // Check if clip exists or download it on the server first
-        final parsedTrackId = trackId is int
-            ? trackId
-            : int.tryParse(trackId.toString());
-        var videoFileUrl = parsedTrackId == null
-            ? mediaObj['video_file']?.toString()
-            : _knownVideoUrlForTrack(parsedTrackId, mediaObj);
-        if ((videoFileUrl == null || videoFileUrl.trim().isEmpty) &&
-            parsedTrackId != null) {
-          try {
-            videoFileUrl = await _clipTaskLimiter.run<String?>(() async {
-              final knownUrl = _knownVideoUrlForTrack(parsedTrackId, mediaObj);
-              if (knownUrl != null) return knownUrl;
-              final res = await _requestClipGeneration(parsedTrackId);
-              if (res.statusCode != HttpStatus.ok) return null;
-              final data = json.decode(res.body);
-              return data['video_url']?.toString();
-            });
-            if (videoFileUrl != null) {
-              videoFileUrl = _resolveAbsoluteUrl(videoFileUrl);
-              // Save to memory lists
-              for (var i = 0; i < playingQueue.length; i++) {
-                if (_VideoRequest.from(playingQueue[i]).trackId ==
-                    parsedTrackId) {
-                  playingQueue[i]['video_file'] = videoFileUrl;
-                }
-              }
-              final activeTrack = activeTrackNotifier.value;
-              if (_VideoRequest.from(activeTrack).trackId == parsedTrackId) {
-                activeTrack['video_file'] = videoFileUrl;
-              }
-              for (var i = 0; i < cachedTracks.length; i++) {
-                if (_VideoRequest.from(cachedTracks[i]).trackId ==
-                    parsedTrackId) {
-                  cachedTracks[i]['video_file'] = videoFileUrl;
-                }
-              }
-              await _persistOfflineTracks();
-            }
-          } catch (_) {}
-        }
-
-        if (videoFileUrl != null && videoFileUrl.trim().isNotEmpty) {
-          final videoFile = File('$localPath/video_$trackId.mp4');
-          if (!await _hasNonEmptyFile(videoFile)) {
-            final resolvedUrl = _resolveAbsoluteUrl(videoFileUrl);
+        if (_stateDisposing) return;
+        // Optional components must not prevent a valid MP3 from being saved.
+        try {
+          if (!await _hasNonEmptyFile(audioFile)) {
+            final audioUrl = track['audio_file']?.toString().trim() ?? '';
+            if (audioUrl.isEmpty) throw StateError(tr('invalid_track'));
             await _mediaFileDownloader.download(
-              source: Uri.parse(resolvedUrl),
-              destination: videoFile,
+              source: Uri.parse(_resolveAbsoluteUrl(audioUrl)),
+              destination: audioFile,
             );
+          }
+          audioReady = await _hasNonEmptyFile(audioFile);
+          if (!audioReady) {
+            throw const FileSystemException('Downloaded audio is empty');
+          }
+        } catch (error) {
+          errors[DownloadComponent.audio] = _downloadError(error);
+        }
+        if (!audioReady || _stateDisposing) return;
+
+        try {
+          final coverUrl = track['album']?['cover']?.toString().trim() ?? '';
+          if (coverUrl.isNotEmpty && !await _isCoverValidAndSquare(coverFile)) {
+            if (!await _downloadAndCropCover(
+              _resolveAbsoluteUrl(coverUrl),
+              coverFile,
+            )) {
+              throw const FileSystemException('Cover download failed');
+            }
+            invalidateTrackCover(id);
+          }
+        } catch (error) {
+          errors[DownloadComponent.cover] = _downloadError(error);
+        }
+        try {
+          final lyrics = track['lyrics']?.toString() ?? '';
+          if (!await _hasNonEmptyFile(lrcFile) && lyrics.trim().isNotEmpty) {
+            await atomicFileStore.writeString(lrcFile, lyrics);
+          }
+        } catch (error) {
+          errors[DownloadComponent.lyrics] = _downloadError(error);
+        }
+        try {
+          await _trackUpdates?.registerDownload(track);
+        } catch (error) {
+          errors[DownloadComponent.library] = _downloadError(error);
+        }
+
+        // Existing local video remains usable even when the server is offline.
+        videoReady = await _hasNonEmptyFile(videoFile);
+        if (videoReady || _stateDisposing) return;
+        final signature = _videoAvailabilitySignature(track);
+        if (!retryUnavailableVideo && _isVideoUnavailable(id, track)) {
+          videoUnavailable = true;
+          return;
+        }
+        try {
+          var videoUrl = _knownVideoUrlForTrack(id, track);
+          videoUrl ??= await generateVideoUrl();
+          if (videoUrl != null && videoUrl.trim().isNotEmpty) {
+            var resolvedUrl = _resolveAbsoluteUrl(videoUrl);
+            try {
+              await _mediaFileDownloader.download(
+                source: Uri.parse(resolvedUrl),
+                destination: videoFile,
+              );
+            } on HttpException catch (error) {
+              // A DB URL may outlive its server file. Regenerate once, retaining
+              // the downloaded audio and any previous local video on failure.
+              if (error.message !=
+                  'Download failed with HTTP ${HttpStatus.notFound}.') {
+                rethrow;
+              }
+              final replacement = await generateVideoUrl();
+              if (replacement == null || replacement.isEmpty) {
+                if (videoUnavailable) {
+                  _unavailableVideoSignatures[id] = signature;
+                }
+                return;
+              }
+              resolvedUrl = _resolveAbsoluteUrl(replacement);
+              await _mediaFileDownloader.download(
+                source: Uri.parse(resolvedUrl),
+                destination: videoFile,
+              );
+            }
+            videoReady = await _hasNonEmptyFile(videoFile);
+            if (!videoReady) {
+              throw const FileSystemException('Downloaded video is empty');
+            }
             _downloadedVideoSources.add(
               _videoSourceKey(
-                _VideoRequest(trackId: parsedTrackId, videoUrl: resolvedUrl),
+                _VideoRequest(trackId: id, videoUrl: resolvedUrl),
               ),
             );
+            track['video_file'] = resolvedUrl;
+            for (final item in [...playingQueue, ...cachedTracks]) {
+              if (_VideoRequest.from(item).trackId == id) {
+                item['video_file'] = resolvedUrl;
+              }
+            }
+            final active = activeTrackNotifier.value;
+            if (_VideoRequest.from(active).trackId == id) {
+              active['video_file'] = resolvedUrl;
+            }
+            await _persistOfflineTracks();
+            await _trackUpdates?.registerDownload(track);
+            _unavailableVideoSignatures.remove(id);
           }
+          if (videoUnavailable) _unavailableVideoSignatures[id] = signature;
+        } catch (error) {
+          errors[DownloadComponent.video] = _downloadError(error);
         }
       });
-    } catch (e) {
-      debugPrint(e.toString());
+    } catch (error) {
+      errors[DownloadComponent.library] = _downloadError(error);
     } finally {
-      if (mounted) {
-        setState(() => downloadQueue.remove(trackId));
-      } else {
-        downloadQueue.remove(trackId);
-      }
+      downloadQueue.remove(id);
+      if (mounted && !_stateDisposing) setState(() {});
       _notifyArtistLibraryChanged();
     }
+    return TrackDownloadResult(
+      id: id,
+      title: track['title']?.toString() ?? '$id',
+      audioReady: audioReady,
+      videoReady: videoReady,
+      videoUnavailable: videoUnavailable,
+      errors: errors,
+    );
   }
 
-  Future<void> downloadAllTracks(List<dynamic> tracksToDownload) async {
-    for (var track in tracksToDownload) {
-      final trackId = track['id'];
-      if (!isTrackDownloadComplete(track) && !downloadQueue.contains(trackId)) {
-        downloadMediaFile(track);
-        await Future.delayed(const Duration(milliseconds: 200));
+  String _downloadError(Object error) {
+    if (error is TimeoutException) return tr('connection_timeout');
+    if (error is SocketException) return tr('server_unavailable');
+    if (error is HttpException) {
+      return error.message.replaceAll(RegExp(r'\x1B\[[0-?]*[ -/]*[@-~]'), '');
+    }
+    if (error is FileSystemException) return error.message;
+    return error.toString();
+  }
+
+  String _videoAvailabilitySignature(Map track) => json.encode([
+    track['title'],
+    track['album']?['artist']?['id'],
+    track['album']?['artist']?['name'],
+    track['artists'],
+    track['duration'],
+    track['video_file'],
+    track['content_versions']?['video'],
+    track['content_versions']?['metadata'],
+  ]);
+
+  void _recordClipFailure(int id, String signature, http.Response response) {
+    final data = _decodeApiResponse(response);
+    final retry = int.tryParse(data['retry_after']?.toString() ?? '');
+    final fallback = response.statusCode == HttpStatus.notFound
+        ? 21600
+        : response.statusCode == HttpStatus.tooManyRequests
+        ? 5
+        : 900;
+    final seconds = (retry ?? fallback).clamp(5, 21600);
+    _clipRetryGate.recordFailure(id, signature, Duration(seconds: seconds));
+    if (response.statusCode == HttpStatus.notFound) {
+      _unavailableVideoSignatures[id] = signature;
+    } else {
+      _unavailableVideoSignatures.remove(id);
+    }
+  }
+
+  bool _isVideoUnavailable(int id, Map track) {
+    final signature = _videoAvailabilitySignature(track);
+    if (_unavailableVideoSignatures[id] != signature) return false;
+    if (_clipRetryGate.canRequest(id, signature)) {
+      _unavailableVideoSignatures.remove(id);
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> downloadAllTracks(
+    List<dynamic> tracksToDownload, {
+    bool retryUnavailableVideo = false,
+  }) async {
+    while (_bulkDownloadActive && !_stateDisposing) {
+      await _bulkDownloadFinished?.future;
+    }
+    if (_stateDisposing || !mounted) return;
+    final tracks = tracksToDownload
+        .where((track) => downloadTrackId(track) != null)
+        .toList();
+    if (tracks.isEmpty) return;
+    setState(() => _bulkDownloadActive = true);
+    final finished = _bulkDownloadFinished = Completer<void>();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${tr('download_started')}: ${tracks.length}')),
+    );
+    try {
+      final result = await runDownloadBatch<dynamic>(
+        tracks: tracks,
+        trackId: downloadTrackId,
+        title: (track) => track['title']?.toString() ?? '',
+        download: (track) =>
+            _downloadMedia(track, retryUnavailableVideo: retryUnavailableVideo),
+        isCancelled: () => _stateDisposing,
+      );
+      if (mounted && !_stateDisposing) _showDownloadSummary(result, tracks);
+    } finally {
+      _bulkDownloadActive = false;
+      if (mounted && !_stateDisposing) setState(() {});
+      if (!finished.isCompleted) finished.complete();
+      if (identical(_bulkDownloadFinished, finished)) {
+        _bulkDownloadFinished = null;
       }
     }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Треки добавлены в очередь скачивания!'),
-          backgroundColor: Colors.green,
+  }
+
+  void _showDownloadSummary(DownloadBatchResult result, List<dynamic> tracks) {
+    final retryIds = result.incomplete.map((item) => item.id).toSet();
+    final retry = tracks
+        .where((track) => retryIds.contains(downloadTrackId(track)))
+        .toList();
+    final label = result.incomplete.isEmpty
+        ? 'download_complete'
+        : result.audioReady == 0
+        ? 'download_failed'
+        : 'download_partial';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${tr(label)}. ${tr('download_audio')}: ${result.audioReady}/${result.results.length}, ${tr('download_video')}: ${result.videoReady}/${result.results.length}',
         ),
-      );
+        backgroundColor: result.incomplete.isEmpty
+            ? Colors.green
+            : Colors.orange,
+        duration: Duration(seconds: result.incomplete.isEmpty ? 4 : 12),
+        action: result.incomplete.isEmpty
+            ? null
+            : SnackBarAction(
+                label: tr('download_details'),
+                onPressed: () => _showDownloadErrors(result, retry),
+              ),
+      ),
+    );
+  }
+
+  Future<void> _showDownloadErrors(
+    DownloadBatchResult result,
+    List<dynamic> retry,
+  ) async {
+    if (!mounted || _stateDisposing) return;
+    final retryRequested = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF202020),
+        title: Text(tr('download_partial')),
+        content: SizedBox(
+          width: 440,
+          child: SingleChildScrollView(
+            child: Text(
+              result.incomplete
+                  .map((item) {
+                    final failures = item.errors.entries
+                        .map(
+                          (error) =>
+                              '${tr('download_${error.key.name}')}: ${error.value}',
+                        )
+                        .toList();
+                    if (item.videoUnavailable) {
+                      failures.add(tr('video_not_found'));
+                    }
+                    return '${item.title}\n${failures.join('\n')}';
+                  })
+                  .join('\n\n'),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(tr('close')),
+          ),
+          if (retry.isNotEmpty)
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(tr('download_retry')),
+            ),
+        ],
+      ),
+    );
+    if (retryRequested == true && mounted && !_stateDisposing) {
+      await downloadAllTracks(retry, retryUnavailableVideo: true);
     }
   }
 
-  Future<void> clearAllCache() async {
-    clearCoverCache();
-    final cacheDirectory = Directory(localPath);
-    if (await cacheDirectory.exists()) {
-      for (var f in cacheDirectory.listSync()) {
-        if (f.path.endsWith('.jpg') ||
-            f.path.endsWith('.mp3') ||
-            f.path.endsWith('.lrc') ||
-            f.path.endsWith('.mp4') ||
-            f.path.contains('offline_') ||
-            f.path.contains('artist_')) {
-          try {
-            f.deleteSync();
-          } catch (e) {
-            debugPrint(e.toString());
+  Future<bool> clearAllCache() async {
+    if (downloadQueue.isNotEmpty || _coverDownloads.isNotEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(tr('wait_for_downloads'))));
+      }
+      return false;
+    }
+    if (localPath.isEmpty) return false;
+    final protectedTracks = <int>{};
+    final protectedArtists = <int>{};
+    for (final track in [...cachedTracks, ...playingQueue]) {
+      if (track is! Map || track['id'] is! int) continue;
+      final id = track['id'] as int;
+      final localLyrics =
+          _trackUpdates?.lyricsFile(id) ?? File('$localPath/track_$id.lrc');
+      if (isTrackDownloadComplete(track) ||
+          playingQueue.any((playing) => playing['id'] == id) ||
+          await (_trackUpdates?.videoFile(id) ??
+                  File('$localPath/video_$id.mp4'))
+              .exists() ||
+          await localLyrics.exists()) {
+        protectedTracks.add(id);
+        final albumArtistId = track['album']?['artist']?['id'];
+        if (albumArtistId is int) protectedArtists.add(albumArtistId);
+        for (final artist in track['artists'] as List? ?? const []) {
+          if (artist is Map && artist['id'] is int) {
+            protectedArtists.add(artist['id'] as int);
           }
         }
       }
     }
-    setState(() {
-      cachedTracks.clear();
-      cachedArtists.clear();
-      isLoading = true;
-    });
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Системный кэш успешно очищен.')),
-      );
+    for (final artist in cachedArtists) {
+      if (artist is Map && artist['id'] is int) {
+        protectedArtists.add(artist['id'] as int);
+      }
     }
-    await syncDatabase();
+    await clearDisposableArtwork(
+      Directory(localPath),
+      protectedTrackIds: protectedTracks,
+      protectedArtistIds: protectedArtists,
+    );
+    clearCoverCache();
+    PaintingBinding.instance.imageCache.clear();
+    if (mounted) {
+      setState(() {});
+      _notifyArtistLibraryChanged();
+    }
+    return true;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2622,7 +3498,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   ImageProvider getPlaylistImage(String pathOrUrl) {
     if (pathOrUrl.startsWith('http')) return NetworkImage(pathOrUrl);
-    return FileImage(File(pathOrUrl));
+    return FileImage(resolvePlaylistArtwork(Directory(localPath), pathOrUrl));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2743,7 +3619,7 @@ class MainAppScreenState extends State<MainAppScreen>
         MediaItem(
           id: targetTrack['id'].toString(),
           title: targetTrack['title'].toString(),
-          artist: targetTrack['album']['artist']['name'].toString(),
+          artist: trackArtistLabel(targetTrack),
           album: targetTrack['album']['title']?.toString(),
           artUri: getArtUri(targetTrack),
           duration: dur != null ? Duration(seconds: dur) : null,
@@ -2774,7 +3650,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }) async {
     if (!_isCurrentTrackRevision(trackRevision)) return;
     final trackId = targetTrack['id'] as int;
-    final localTrackPath = File('$localPath/track_$trackId.mp3');
+    final localTrackPath = _localAudioFile(trackId);
     final hasLocalTrack = await _hasNonEmptyFile(localTrackPath);
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
@@ -2837,7 +3713,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }) async {
     if (!_isCurrentTrackRevision(trackRevision)) return;
     final trackId = targetTrack['id'] as int;
-    final localTrackPath = File('$localPath/track_$trackId.mp3');
+    final localTrackPath = _localAudioFile(trackId);
     final hasLocalTrack = await _hasNonEmptyFile(localTrackPath);
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
@@ -2921,20 +3797,12 @@ class MainAppScreenState extends State<MainAppScreen>
   // ═══════════════════════════════════════════════════════════════════════════
 
   void checkLyrics(Duration pos) {
-    if (!isPlaying || globalLyrics.isEmpty) return;
-
-    int resolvedIndex = -1;
-    for (int i = 0; i < globalLyrics.length; i++) {
-      if (pos >= globalLyrics[i].time) {
-        resolvedIndex = i;
-      } else {
-        break;
-      }
-    }
+    if (globalLyrics.isEmpty) return;
+    final resolvedIndex = lyricLineIndexAt(globalLyrics, pos);
 
     if (resolvedIndex != currentLine) {
       currentLine = resolvedIndex;
-      updateRPC();
+      if (isPlaying) updateRPC();
       uiSignal.value++;
     }
   }
@@ -2988,40 +3856,24 @@ class MainAppScreenState extends State<MainAppScreen>
     uiSignal.value++;
 
     final artistName = trackObj['album']['artist']['name'].toString();
+    final artistCredits = trackArtistLabel(trackObj);
     final trackTitle = trackObj['title'].toString();
     final trackId = trackObj['id'] as int;
+    final recordingDuration =
+        int.tryParse(trackObj['duration']?.toString() ?? '') ?? 0;
+    // Capture before LRCLib/network awaits; the catalog map may change meanwhile.
+    final originalLyrics = trackObj['lyrics']?.toString() ?? '';
+    final expectedLyricsVersion = sha256
+        .convert(utf8.encode(originalLyrics))
+        .toString();
 
-    List<LyricLine> parseLrcString(String lrcContent) {
-      final parsed = <LyricLine>[];
-      final RegExp rx = RegExp(r'\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)');
-      for (var lineStr in lrcContent.split('\n')) {
-        final matchData = rx.firstMatch(lineStr);
-        if (matchData != null) {
-          final min = int.parse(matchData.group(1)!);
-          final sec = int.parse(matchData.group(2)!);
-          final msString = matchData.group(3)!;
-          final ms = msString.length == 2
-              ? int.parse(msString) * 10
-              : int.parse(msString);
-          final txt = matchData.group(4)!.trim();
-
-          if (txt.isNotEmpty) {
-            parsed.add(
-              LyricLine(
-                Duration(minutes: min, seconds: sec, milliseconds: ms),
-                txt,
-                txt,
-              ),
-            );
-          }
-        }
-      }
-      return parsed;
-    }
-
-    final localLrc = File('$localPath/track_$trackId.lrc');
+    final localLrc =
+        _trackUpdates?.lyricsFile(trackId) ??
+        File('$localPath/track_$trackId.lrc');
     try {
-      if (await _hasNonEmptyFile(localLrc)) {
+      if (await _hasNonEmptyFile(localLrc) ||
+          ((_trackUpdates?.hasManagedLyrics(trackId) ?? false) &&
+              await localLrc.exists())) {
         final fileContent = await localLrc.readAsString();
         _commitLyrics(
           revision: revision,
@@ -3050,20 +3902,33 @@ class MainAppScreenState extends State<MainAppScreen>
     }
 
     try {
-      final parsedUrl = Uri.parse(
-        'https://lrclib.net/api/get?artist_name=${Uri.encodeComponent(artistName)}&track_name=${Uri.encodeComponent(trackTitle)}',
-      );
+      final parsedUrl = Uri.https('lrclib.net', '/api/get', {
+        'artist_name': artistName,
+        'track_name': trackTitle,
+        if (recordingDuration > 0) 'duration': '$recordingDuration',
+      });
       final res = await http
           .get(parsedUrl)
           .timeout(const Duration(seconds: 15));
       if (!_isCurrentLyricsRequest(revision, trackId)) return;
       if (res.statusCode == HttpStatus.ok) {
         final jsonData = json.decode(utf8.decode(res.bodyBytes));
-        final syncedText = jsonData['syncedLyrics'];
-        final plainText = jsonData['plainLyrics'];
-
-        if (syncedText != null && syncedText.toString().isNotEmpty) {
-          final contents = syncedText.toString();
+        final metadataUnchanged = lyricsLookupUnchanged(
+          trackObj,
+          artists: artistCredits,
+          title: trackTitle,
+          duration: recordingDuration,
+          originalLyrics: originalLyrics,
+        );
+        final contents = metadataUnchanged
+            ? validatedLyricsText(
+                jsonData,
+                artists: artistCredits,
+                title: trackTitle,
+                duration: recordingDuration,
+              )
+            : '';
+        if (contents.trim().isNotEmpty) {
           _commitLyrics(
             revision: revision,
             trackId: trackId,
@@ -3071,18 +3936,9 @@ class MainAppScreenState extends State<MainAppScreen>
             plainText: contents,
           );
           unawaited(_writeLyricsFile(localLrc, contents));
-          unawaited(_saveLyricsToServer(trackId, contents));
-          return;
-        } else if (plainText != null && plainText.toString().isNotEmpty) {
-          final contents = plainText.toString();
-          _commitLyrics(
-            revision: revision,
-            trackId: trackId,
-            lyrics: const <LyricLine>[],
-            plainText: contents,
+          unawaited(
+            _saveLyricsToServer(trackId, contents, expectedLyricsVersion),
           );
-          unawaited(_writeLyricsFile(localLrc, contents));
-          unawaited(_saveLyricsToServer(trackId, contents));
           return;
         }
       }
@@ -3128,14 +3984,21 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
-  Future<void> _saveLyricsToServer(int trackId, String lyricsText) async {
+  Future<void> _saveLyricsToServer(
+    int trackId,
+    String lyricsText,
+    String expectedLyricsVersion,
+  ) async {
     try {
       final url = configuredServerUri('/api/tracks/$trackId/update_lyrics/');
       final res = await http
           .post(
             url,
             headers: {'Content-Type': 'application/json'},
-            body: json.encode({'lyrics': lyricsText}),
+            body: json.encode({
+              'lyrics': lyricsText,
+              'expected_lyrics_version': expectedLyricsVersion,
+            }),
           )
           .timeout(const Duration(seconds: 15));
       if (res.statusCode == 200) {
@@ -3150,6 +4013,10 @@ class MainAppScreenState extends State<MainAppScreen>
         }
         // Also update offline_tracks.json
         await _persistOfflineTracks();
+        await _trackUpdates?.acknowledgeLocalLyrics(trackId, lyricsText);
+      } else if (res.statusCode == HttpStatus.conflict) {
+        // A manual edit wins. Keep its server content and let normal polling offer it.
+        unawaited(_trackUpdates?.checkNow());
       } else {
         debugPrint('Failed to update lyrics on server: ${res.body}');
       }
@@ -3162,398 +4029,8 @@ class MainAppScreenState extends State<MainAppScreen>
   //  Discord RPC
   // ═══════════════════════════════════════════════════════════════════════════
 
-  final Map<int, String> _publicCoverCache = {};
-  final Map<String, String> _publicArtistPhotoCache = {};
-  final Map<int, Future<String?>> _publicCoverRequests = {};
-  final Map<int, DateTime> _publicCoverMisses = {};
-  static const Duration _publicCoverMissTtl = Duration(minutes: 30);
-
-  String _transliterate(String input) {
-    const rus = [
-      'а',
-      'б',
-      'в',
-      'г',
-      'д',
-      'е',
-      'ё',
-      'ж',
-      'з',
-      'и',
-      'й',
-      'к',
-      'л',
-      'м',
-      'н',
-      'о',
-      'п',
-      'р',
-      'с',
-      'т',
-      'у',
-      'ф',
-      'х',
-      'ц',
-      'ч',
-      'ш',
-      'щ',
-      'ъ',
-      'ы',
-      'ь',
-      'э',
-      'ю',
-      'я',
-    ];
-    const eng = [
-      'a',
-      'b',
-      'v',
-      'g',
-      'd',
-      'e',
-      'e',
-      'zh',
-      'z',
-      'i',
-      'y',
-      'k',
-      'l',
-      'm',
-      'n',
-      'o',
-      'p',
-      'r',
-      's',
-      't',
-      'u',
-      'f',
-      'h',
-      'ts',
-      'ch',
-      'sh',
-      'sh',
-      '',
-      'y',
-      '',
-      'e',
-      'yu',
-      'ya',
-    ];
-
-    String result = input.toLowerCase();
-    for (int i = 0; i < rus.length; i++) {
-      result = result.replaceAll(rus[i], eng[i]);
-    }
-    return result;
-  }
-
-  bool _isArtistMatch(String originalArtist, String resultArtist) {
-    final cleanOriginal = originalArtist.toLowerCase().replaceAll(
-      RegExp(r'[^a-z0-9а-яё]'),
-      '',
-    );
-    final cleanResult = resultArtist.toLowerCase().replaceAll(
-      RegExp(r'[^a-z0-9а-яё]'),
-      '',
-    );
-
-    if (cleanOriginal.isEmpty || cleanResult.isEmpty) return false;
-
-    if (cleanOriginal.contains(cleanResult) ||
-        cleanResult.contains(cleanOriginal)) {
-      return true;
-    }
-
-    final translitOriginal = _transliterate(cleanOriginal);
-    final translitResult = _transliterate(cleanResult);
-    if (translitOriginal.contains(translitResult) ||
-        translitResult.contains(translitOriginal)) {
-      return true;
-    }
-
-    return false;
-  }
-
-  Future<String?> _getPublicCoverUrl(dynamic trackData) async {
-    final id = trackData['id'] as int;
-    final cached = _publicCoverCache[id];
-    if (cached != null) return cached;
-
-    final now = DateTime.now();
-    final missedAt = _publicCoverMisses[id];
-    if (missedAt != null && now.difference(missedAt) < _publicCoverMissTtl) {
-      return null;
-    }
-    _publicCoverMisses.remove(id);
-
-    final inFlight = _publicCoverRequests[id];
-    if (inFlight != null) return inFlight;
-
-    final request = _fetchPublicCoverUrl(trackData);
-    _publicCoverRequests[id] = request;
-    try {
-      final result = await request;
-      if (result == null) {
-        _publicCoverMisses[id] = DateTime.now();
-      } else {
-        _publicCoverMisses.remove(id);
-      }
-      return result;
-    } finally {
-      if (identical(_publicCoverRequests[id], request)) {
-        _publicCoverRequests.remove(id);
-      }
-    }
-  }
-
-  Future<String?> _fetchPublicCoverUrl(dynamic trackData) async {
-    final id = trackData['id'] as int;
-
-    final title = trackData['title']?.toString() ?? '';
-    final artist = trackData['album']?['artist']?['name']?.toString() ?? '';
-    if (title.isEmpty) return null;
-
-    final artistKey = artist.toLowerCase().trim();
-
-    // 1. Try iTunes Search API (fast, high-res covers)
-    try {
-      final itunesUrl =
-          'https://itunes.apple.com/search?term=${Uri.encodeComponent('$artist $title')}&entity=song&limit=1';
-      final res = await http
-          .get(Uri.parse(itunesUrl))
-          .timeout(const Duration(seconds: 3));
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        final results = data['results'] as List<dynamic>?;
-        if (results != null && results.isNotEmpty) {
-          final first = results[0];
-          final resArtist = first['artistName']?.toString() ?? '';
-          if (_isArtistMatch(artist, resArtist)) {
-            String? cover = first['artworkUrl100']?.toString();
-            if (cover != null && cover.isNotEmpty) {
-              cover = cover.replaceAll('100x100bb.jpg', '600x600bb.jpg');
-              _publicCoverCache[id] = cover;
-              return cover;
-            }
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Error in iTunes search: $e');
-    }
-
-    // 2. Try Deezer Search API (superb coverage for Russian rap/indie/phonk)
-    try {
-      final deezerUrl =
-          'https://api.deezer.com/search?q=${Uri.encodeComponent('$artist $title')}&limit=1';
-      final res = await http
-          .get(Uri.parse(deezerUrl))
-          .timeout(const Duration(seconds: 3));
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        final results = data['data'] as List<dynamic>?;
-        if (results != null && results.isNotEmpty) {
-          final first = results[0];
-          final resArtist = first['artist']?['name']?.toString() ?? '';
-          if (_isArtistMatch(artist, resArtist)) {
-            final album = first['album'];
-            String? cover = album?['cover_big']?.toString() ??
-                album?['cover_medium']?.toString();
-            if (cover != null && cover.isNotEmpty) {
-              _publicCoverCache[id] = cover;
-              return cover;
-            }
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Error in Deezer track search: $e');
-    }
-
-    // 3. Try Last.fm track.getInfo to get exact album cover
-    try {
-      final infoRes = await http
-          .get(
-            Uri.parse(
-              'https://ws.audioscrobbler.com/2.0/?method=track.getInfo&artist=${Uri.encodeComponent(artist)}&track=${Uri.encodeComponent(title)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json',
-            ),
-          )
-          .timeout(const Duration(seconds: 3));
-
-      if (infoRes.statusCode == 200) {
-        final data = json.decode(infoRes.body);
-        final track = data['track'];
-        if (track != null) {
-          final album = track['album'];
-          if (album != null) {
-            final images = album['image'] as List<dynamic>?;
-            if (images != null && images.isNotEmpty) {
-              String? coverUrl;
-              for (var img in images) {
-                if (img['size'] == 'extralarge') {
-                  coverUrl = img['#text']?.toString();
-                }
-              }
-              coverUrl ??= images.last['#text']?.toString();
-              if (coverUrl != null &&
-                  coverUrl.isNotEmpty &&
-                  !coverUrl.contains('2a96cbd8b46e442fc41c2b86b821562f') &&
-                  !coverUrl.contains('182879f0815c4de88b3f2f24c0843114') &&
-                  !coverUrl.contains('noimage')) {
-                _publicCoverCache[id] = coverUrl;
-                return coverUrl;
-              }
-            }
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Error in track.getInfo: $e');
-    }
-
-    // 4. Try Last.fm track.search as a fallback
-    try {
-      final searchRes = await http
-          .get(
-            Uri.parse(
-              'https://ws.audioscrobbler.com/2.0/?method=track.search&artist=${Uri.encodeComponent(artist)}&track=${Uri.encodeComponent(title)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json',
-            ),
-          )
-          .timeout(const Duration(seconds: 3));
-
-      if (searchRes.statusCode == 200) {
-        final data = json.decode(searchRes.body);
-        final results = data['results'];
-        if (results != null) {
-          final trackmatches = results['trackmatches'];
-          if (trackmatches != null) {
-            final trackList = trackmatches['track'] as List<dynamic>;
-            if (trackList.isNotEmpty) {
-              final firstTrack = trackList[0];
-              final resultArtist = firstTrack['artist']?.toString() ?? '';
-
-              if (_isArtistMatch(artist, resultArtist)) {
-                final images = firstTrack['image'] as List<dynamic>;
-                if (images.isNotEmpty) {
-                  String? coverUrl;
-                  for (var img in images) {
-                    if (img['size'] == 'extralarge') {
-                      coverUrl = img['#text']?.toString();
-                    }
-                  }
-                  coverUrl ??= images.last['#text']?.toString();
-                  if (coverUrl != null &&
-                      coverUrl.isNotEmpty &&
-                      !coverUrl.contains('2a96cbd8b46e442fc41c2b86b821562f') &&
-                      !coverUrl.contains('182879f0815c4de88b3f2f24c0843114') &&
-                      !coverUrl.contains('noimage')) {
-                    _publicCoverCache[id] = coverUrl;
-                    return coverUrl;
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Error fetching public cover from Last.fm: $e');
-    }
-
-    // ── FALLBACK TO ARTIST AVATAR / PHOTO ──
-    if (_publicArtistPhotoCache.containsKey(artistKey)) {
-      final cachedArtistPhoto = _publicArtistPhotoCache[artistKey]!;
-      _publicCoverCache[id] = cachedArtistPhoto;
-      return cachedArtistPhoto;
-    }
-
-    // 5. Try Deezer artist photo
-    try {
-      final artistUrl =
-          'https://api.deezer.com/search/artist?q=${Uri.encodeComponent(artist)}&limit=1';
-      final res = await http
-          .get(Uri.parse(artistUrl))
-          .timeout(const Duration(seconds: 3));
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        final results = data['data'] as List<dynamic>?;
-        if (results != null && results.isNotEmpty) {
-          final first = results[0];
-          String? photo = first['picture_big']?.toString() ??
-              first['picture_medium']?.toString();
-          if (photo != null && photo.isNotEmpty) {
-            _publicArtistPhotoCache[artistKey] = photo;
-            _publicCoverCache[id] = photo;
-            return photo;
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Error in Deezer artist search: $e');
-    }
-
-    // 6. Try iTunes artist album artwork
-    try {
-      final itunesArtistUrl =
-          'https://itunes.apple.com/search?term=${Uri.encodeComponent(artist)}&entity=album&limit=1';
-      final res = await http
-          .get(Uri.parse(itunesArtistUrl))
-          .timeout(const Duration(seconds: 3));
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        final results = data['results'] as List<dynamic>?;
-        if (results != null && results.isNotEmpty) {
-          final first = results[0];
-          String? cover = first['artworkUrl100']?.toString();
-          if (cover != null && cover.isNotEmpty) {
-            cover = cover.replaceAll('100x100bb.jpg', '600x600bb.jpg');
-            _publicArtistPhotoCache[artistKey] = cover;
-            _publicCoverCache[id] = cover;
-            return cover;
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Error in iTunes artist search: $e');
-    }
-
-    // 7. Try Last.fm artist.getInfo
-    try {
-      final lastFmArtistUrl =
-          'https://ws.audioscrobbler.com/2.0/?method=artist.getInfo&artist=${Uri.encodeComponent(artist)}&api_key=b25b959554ed76058ac220b7b2e0a026&format=json';
-      final res = await http
-          .get(Uri.parse(lastFmArtistUrl))
-          .timeout(const Duration(seconds: 3));
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        final artistObj = data['artist'];
-        if (artistObj != null) {
-          final images = artistObj['image'] as List<dynamic>?;
-          if (images != null && images.isNotEmpty) {
-            String? photo;
-            for (var img in images) {
-              if (img['size'] == 'extralarge' || img['size'] == 'large') {
-                photo = img['#text']?.toString();
-              }
-            }
-            photo ??= images.last['#text']?.toString();
-            if (photo != null &&
-                photo.isNotEmpty &&
-                !photo.contains('2a96cbd8') &&
-                !photo.contains('noimage')) {
-              _publicArtistPhotoCache[artistKey] = photo;
-              _publicCoverCache[id] = photo;
-              return photo;
-            }
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Error in Last.fm artist search: $e');
-    }
-
-    return null;
-  }
+  DiscordAnimatedArtwork? _discordArtwork;
+  DiscordCoverLookup? _discordCovers;
 
   void updateRPC({bool force = false}) {
     if (PerformanceFrameMonitor.enabled ||
@@ -3576,27 +4053,21 @@ class MainAppScreenState extends State<MainAppScreen>
       }
       lastRpcTime = DateTime.now();
       final trackData = playingQueue[playingIndex];
-      final trackId = trackData['id'] as int;
       final title = trackData['title'];
       final art = trackData['album']['artist']['name'];
 
-      String coverUrl = trackData['album']?['cover']?.toString() ?? '';
-      if (coverUrl.contains('192.168.') ||
-          coverUrl.contains('localhost') ||
-          coverUrl.contains('127.0.0.1')) {
-        final publicUrl = await _getPublicCoverUrl(trackData);
-        if (_stateDisposing ||
-            activityRevision != _discordActivityRevision ||
-            playingQueue.isEmpty ||
-            playingIndex < 0 ||
-            playingIndex >= playingQueue.length ||
-            playingQueue[playingIndex]['id'] != trackId) {
-          return;
-        }
-        if (publicUrl != null) {
-          coverUrl = publicUrl;
-        }
+      final publicCover = _discordCovers?.imageFor(trackData);
+      String? animatedCover;
+      // Animation is a fallback, never an override of iTunes/Deezer/Last.fm.
+      if (_discordCovers?.isResolved(trackData) == true &&
+          publicCover?.isTrackCover != true) {
+        animatedCover = _discordArtwork?.imageFor(trackData);
       }
+      final coverUrl = selectDiscordCoverImage(
+        discovered: publicCover,
+        stored: trackData['album']?['cover']?.toString(),
+        animated: animatedCover,
+      );
 
       final dur = trackData['duration'];
       int? durationMs;
@@ -3604,15 +4075,12 @@ class MainAppScreenState extends State<MainAppScreen>
         durationMs = dur.toInt() * 1000;
       }
 
-      final largeImg =
-          (coverUrl.startsWith('http') &&
-              !coverUrl.contains('192.168.') &&
-              !coverUrl.contains('localhost') &&
-              !coverUrl.contains('127.0.0.1'))
-          ? coverUrl
-          : 'https://cdn.discordapp.com/app-icons/1480246072042590219/36573ffd3ca304580ed8968517090b0e.png';
+      final largeImg = coverUrl ??
+          'https://cdn.discordapp.com/app-icons/1480246072042590219/36573ffd3ca304580ed8968517090b0e.png';
 
-      if (_stateDisposing || activityRevision != _discordActivityRevision) return;
+      if (_stateDisposing || activityRevision != _discordActivityRevision) {
+        return;
+      }
 
       final currentLyric = currentLine >= 0 && currentLine < globalLyrics.length
           ? globalLyrics[currentLine].txt
@@ -3864,17 +4332,39 @@ class MainAppScreenState extends State<MainAppScreen>
                   ),
                 ),
                 TextButton(
-                  onPressed: () {
+                  onPressed: () async {
                     if (pName.isNotEmpty) {
+                      final playlistId = DateTime.now().microsecondsSinceEpoch;
+                      var image = pImg;
+                      if (useLocalImage) {
+                        try {
+                          image = await copyPlaylistArtwork(
+                            Directory(localPath),
+                            pImg,
+                            playlistId,
+                          );
+                        } catch (error) {
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(tr('playlist_image_failed')),
+                              ),
+                            );
+                          }
+                          return;
+                        }
+                      }
+                      if (!mounted || !ctx.mounted) return;
                       setState(() {
                         myPlaylists.add({
-                          "id": DateTime.now().millisecondsSinceEpoch,
+                          "id": playlistId,
                           "name": pName,
-                          "image": pImg,
+                          "image": image,
                           "tracks": [],
                         });
                       });
-                      savePlaylists();
+                      await savePlaylists();
+                      if (!ctx.mounted) return;
                       Navigator.pop(ctx);
                     }
                   },
@@ -3949,8 +4439,11 @@ class MainAppScreenState extends State<MainAppScreen>
             horizontal: 20,
             vertical: 10,
           ),
-          suffixIcon: searchQuery.isNotEmpty
-              ? IconButton(
+          suffixIcon: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (searchQuery.isNotEmpty)
+                IconButton(
                   icon: const Icon(
                     Icons.clear,
                     color: Colors.white54,
@@ -3960,10 +4453,30 @@ class MainAppScreenState extends State<MainAppScreen>
                     searchInput.clear();
                     setState(() => searchQuery = "");
                   },
-                )
-              : null,
+                ),
+              IconButton(
+                key: const ValueKey('import_album_link'),
+                tooltip: _albumImportProgress == null
+                    ? tr('import_album')
+                    : '${tr('import_album')}: $_albumImportProgress',
+                onPressed: isSearchLoading ? null : _showAlbumImport,
+                icon: isSearchLoading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(
+                        Icons.album_outlined,
+                        color: Colors.white54,
+                        size: 18,
+                      ),
+              ),
+            ],
+          ),
         ),
         onChanged: (val) => setState(() => searchQuery = val),
+        onSubmitted: (_) => downloadFromNetwork(),
       ),
     );
   }
@@ -4305,7 +4818,11 @@ class MainAppScreenState extends State<MainAppScreen>
                   ClipRRect(
                     borderRadius: BorderRadius.circular(8),
                     child: Image(
-                      image: getPictureProvider(playingQueue[playingIndex]),
+                      image: coverThumbnail(
+                        context,
+                        getPictureProvider(playingQueue[playingIndex]),
+                        52,
+                      ),
                       width: 52,
                       height: 52,
                       fit: BoxFit.cover,
@@ -4329,7 +4846,7 @@ class MainAppScreenState extends State<MainAppScreen>
                         ),
                         const SizedBox(height: 3),
                         Text(
-                          playingQueue[playingIndex]['album']['artist']['name'],
+                          trackArtistLabel(playingQueue[playingIndex]),
                           style: const TextStyle(
                             color: Colors.white54,
                             fontSize: 13,
@@ -4533,7 +5050,7 @@ class MainAppScreenState extends State<MainAppScreen>
                 ),
                 const SizedBox(height: 5),
                 Text(
-                  playingQueue[playingIndex]['album']['artist']['name'],
+                  trackArtistLabel(playingQueue[playingIndex]),
                   style: const TextStyle(fontSize: 16, color: Colors.white54),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -4775,7 +5292,9 @@ class MainAppScreenState extends State<MainAppScreen>
           };
         } else {
           final existing = artistMap[key]!;
-          if ((existing['photo'] == null || existing['photo'].toString().isEmpty) && a['photo'] != null) {
+          if ((existing['photo'] == null ||
+                  existing['photo'].toString().isEmpty) &&
+              a['photo'] != null) {
             existing['photo'] = a['photo'];
           }
           if (a['id'] != null && existing['id'] == 0) {
@@ -4827,10 +5346,12 @@ class MainAppScreenState extends State<MainAppScreen>
         final aName = artist['name'] as String;
         final aTracks = artist['tracks'] as List;
         final aAlbums = artist['albums'] as Set;
-        final tracksCount = artist['tracks_count'] is int && artist['tracks_count'] > 0
+        final tracksCount =
+            artist['tracks_count'] is int && artist['tracks_count'] > 0
             ? artist['tracks_count'] as int
             : aTracks.length;
-        final albumsCount = artist['albums_count'] is int && artist['albums_count'] > 0
+        final albumsCount =
+            artist['albums_count'] is int && artist['albums_count'] > 0
             ? artist['albums_count'] as int
             : aAlbums.length;
 
@@ -4868,7 +5389,11 @@ class MainAppScreenState extends State<MainAppScreen>
                           : null,
                     ),
                     child: photoProvider == null
-                        ? const Icon(Icons.person, size: 48, color: Colors.white54)
+                        ? const Icon(
+                            Icons.person,
+                            size: 48,
+                            color: Colors.white54,
+                          )
                         : null,
                   ),
                   const SizedBox(height: 12),
@@ -4886,10 +5411,7 @@ class MainAppScreenState extends State<MainAppScreen>
                   const SizedBox(height: 4),
                   Text(
                     '$tracksCount ${tr('artist_tracks_count')} • $albumsCount ${tr('artist_albums_count')}',
-                    style: const TextStyle(
-                      color: Colors.white38,
-                      fontSize: 11,
-                    ),
+                    style: const TextStyle(color: Colors.white38, fontSize: 11),
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -4945,16 +5467,9 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     }
 
-    List<dynamic> finalList = finalListToRender.where((n) {
-      if (searchQuery.isEmpty) return true;
-      final queryLower = searchQuery.toLowerCase();
-      final nodeTitle = n['title'].toString().toLowerCase();
-      final nodeArtist = n['album']['artist']['name'].toString().toLowerCase();
-      final nodeAlbum = n['album']['title'].toString().toLowerCase();
-      return nodeTitle.contains(queryLower) ||
-          nodeArtist.contains(queryLower) ||
-          nodeAlbum.contains(queryLower);
-    }).toList();
+    List<dynamic> finalList = finalListToRender
+        .where((track) => matchesTrackSearch(track, searchQuery))
+        .toList();
 
     Widget mainContent = Expanded(
       child: Padding(
@@ -4969,13 +5484,20 @@ class MainAppScreenState extends State<MainAppScreen>
                 ? Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        headText,
-                        style: const TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              headText,
+                              style: const TextStyle(
+                                fontSize: 26,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                          _buildTrackUpdatesButton(),
+                        ],
                       ),
                       if (finalList.isNotEmpty)
                         Padding(
@@ -5003,7 +5525,9 @@ class MainAppScreenState extends State<MainAppScreen>
                               foregroundColor: Colors.white,
                               elevation: 0,
                             ),
-                            onPressed: () => downloadAllTracks(finalList),
+                            onPressed: _bulkDownloadActive
+                                ? null
+                                : () => downloadAllTracks(finalList),
                           ),
                         ),
                       const SizedBox(height: 10),
@@ -5039,6 +5563,7 @@ class MainAppScreenState extends State<MainAppScreen>
                       ),
                       Row(
                         children: [
+                          _buildTrackUpdatesButton(),
                           if (finalList.isNotEmpty)
                             ElevatedButton.icon(
                               icon: const Icon(
@@ -5051,7 +5576,9 @@ class MainAppScreenState extends State<MainAppScreen>
                                 foregroundColor: Colors.white,
                                 elevation: 0,
                               ),
-                              onPressed: () => downloadAllTracks(finalList),
+                              onPressed: _bulkDownloadActive
+                                  ? null
+                                  : () => downloadAllTracks(finalList),
                             ),
                           const SizedBox(width: 15),
                           buildSearchField(),
@@ -5070,16 +5597,18 @@ class MainAppScreenState extends State<MainAppScreen>
                   : finalList.isEmpty
                   ? Center(
                       child: isSearchLoading
-                          ? const Column(
+                          ? Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                CircularProgressIndicator(
+                                const CircularProgressIndicator(
                                   color: Colors.redAccent,
                                 ),
-                                SizedBox(height: 20),
+                                const SizedBox(height: 20),
                                 Text(
-                                  "Ожидайте скачки секунд 5-10 если песня найдется в интернете",
-                                  style: TextStyle(
+                                  _albumImportProgress != null
+                                      ? '${tr('import_album')}: $_albumImportProgress'
+                                      : tr('import_progress'),
+                                  style: const TextStyle(
                                     color: Colors.white54,
                                     fontSize: 16,
                                   ),
@@ -5157,7 +5686,11 @@ class MainAppScreenState extends State<MainAppScreen>
                             leading: ClipRRect(
                               borderRadius: BorderRadius.circular(8),
                               child: Image(
-                                image: getPictureProvider(currentObject),
+                                image: coverThumbnail(
+                                  context,
+                                  getPictureProvider(currentObject),
+                                  50,
+                                ),
                                 width: 50,
                                 height: 50,
                                 fit: BoxFit.cover,
@@ -5179,14 +5712,16 @@ class MainAppScreenState extends State<MainAppScreen>
                               child: GestureDetector(
                                 onTap: () {
                                   final a = currentObject['album']?['artist'];
-                                  final aId = a?['id'] is int ? a['id'] as int : 0;
+                                  final aId = a?['id'] is int
+                                      ? a['id'] as int
+                                      : 0;
                                   final aName = a?['name']?.toString() ?? '';
                                   if (aName.isNotEmpty) {
                                     _openArtistScreen(aId, aName);
                                   }
                                 },
                                 child: Text(
-                                  currentObject['album']['artist']['name'],
+                                  trackArtistLabel(currentObject),
                                   style: const TextStyle(color: Colors.white54),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,

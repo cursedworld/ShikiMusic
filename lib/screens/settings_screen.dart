@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -11,6 +12,8 @@ import '../app_paths.dart';
 import '../atomic_file_store.dart';
 import '../globals.dart';
 import '../localization.dart';
+import '../server_config.dart';
+import '../widgets/server_address_setting.dart';
 
 /// Available accent color themes (key → localization key + color).
 const Map<String, Color> themeColors = {
@@ -110,7 +113,7 @@ bool _isSafeCustomBackgroundSize(int width, int height) =>
     width * height <= _maxCustomBackgroundPixels;
 
 class SettingsScreen extends StatefulWidget {
-  final VoidCallback onClearCache;
+  final FutureOr<bool?> Function() onClearCache;
   final Future<Directory> Function() dataDirectoryProvider;
   const SettingsScreen({
     super.key,
@@ -134,6 +137,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       SettingsPersistenceQueue();
   static Future<void> _backgroundMutation = Future<void>.value();
   bool _isDisposed = false;
+  bool _isClearingCache = false;
+  String _serverBaseUrl = configuredServerBaseUrl;
 
   @override
   void initState() {
@@ -169,6 +174,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _playVideoClip = data['playVideoClip'] ?? false;
           _discordShowGitHubButton = data['discordShowGitHubButton'] ?? true;
           _discordLyricsStatus = data['discordLyricsStatus'] == true;
+          final server = data['serverBaseUrl'];
+          if (server is String && isValidServerBaseUrl(server)) {
+            _serverBaseUrl = normalizeServerBaseUrl(server);
+          }
         });
 
         customBackgroundNotifier.value = availableBackground;
@@ -196,6 +205,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'playVideoClip': _playVideoClip,
       'discordShowGitHubButton': _discordShowGitHubButton,
       'discordLyricsStatus': _discordLyricsStatus,
+      'serverBaseUrl': _serverBaseUrl,
       'customBackground': customBackgroundNotifier.value,
       'accentColor': _selectedColorKey == 'custom'
           ? accentColorNotifier.value.toARGB32()
@@ -545,6 +555,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                     const SizedBox(height: 32),
 
+                    ServerAddressSetting(
+                      value: _serverBaseUrl,
+                      onSave: (value) async {
+                        final previous = _serverBaseUrl;
+                        setState(() => _serverBaseUrl = value);
+                        final saved = await _saveSettings();
+                        if (!saved && mounted) {
+                          setState(() => _serverBaseUrl = previous);
+                        }
+                        return saved;
+                      },
+                    ),
+                    const SizedBox(height: 24),
                     // ── Clear Cache ──
                     _buildSectionHeader(Icons.cleaning_services, tr('storage')),
                     const SizedBox(height: 12),
@@ -569,49 +592,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             fontSize: 12,
                           ),
                         ),
-                        onTap: () {
-                          showDialog(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              backgroundColor: gradColors[1],
-                              title: Text(
-                                tr('clear_cache_confirm'),
-                                style: const TextStyle(color: Colors.white),
-                              ),
-                              content: Text(
-                                tr('clear_cache_body'),
-                                style: const TextStyle(color: Colors.white70),
-                              ),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx),
-                                  child: Text(
-                                    tr('cancel'),
-                                    style: const TextStyle(
-                                      color: Colors.white54,
-                                    ),
-                                  ),
-                                ),
-                                TextButton(
-                                  onPressed: () {
-                                    Navigator.pop(ctx);
-                                    widget.onClearCache();
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                        content: Text(tr('cache_cleared')),
-                                        backgroundColor: Colors.black87,
+                        onTap: _isClearingCache
+                            ? null
+                            : () {
+                                showDialog(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    backgroundColor: gradColors[1],
+                                    title: Text(
+                                      tr('clear_cache_confirm'),
+                                      style: const TextStyle(
+                                        color: Colors.white,
                                       ),
-                                    );
-                                  },
-                                  child: Text(
-                                    tr('clear'),
-                                    style: TextStyle(color: accent),
+                                    ),
+                                    content: Text(
+                                      tr('clear_cache_body'),
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(ctx),
+                                        child: Text(
+                                          tr('cancel'),
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                          ),
+                                        ),
+                                      ),
+                                      TextButton(
+                                        onPressed: () async {
+                                          final messenger =
+                                              ScaffoldMessenger.of(context);
+                                          Navigator.pop(ctx);
+                                          setState(
+                                            () => _isClearingCache = true,
+                                          );
+                                          try {
+                                            final cleared = await widget
+                                                .onClearCache();
+                                            if (!mounted || cleared != true) {
+                                              return;
+                                            }
+                                            messenger.showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  tr('cache_cleared'),
+                                                ),
+                                                backgroundColor: Colors.black87,
+                                              ),
+                                            );
+                                          } catch (error) {
+                                            debugPrint(
+                                              'Cache clear failed: $error',
+                                            );
+                                            if (!mounted) return;
+                                            messenger.showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  tr('cache_clear_failed'),
+                                                ),
+                                              ),
+                                            );
+                                          } finally {
+                                            if (mounted) {
+                                              setState(
+                                                () => _isClearingCache = false,
+                                              );
+                                            }
+                                          }
+                                        },
+                                        child: Text(
+                                          tr('clear'),
+                                          style: TextStyle(color: accent),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
+                                );
+                              },
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),

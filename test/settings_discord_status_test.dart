@@ -53,7 +53,7 @@ void main() {
   Widget screen({Key? key}) => MaterialApp(
     home: SettingsScreen(
       key: key,
-      onClearCache: () {},
+      onClearCache: () => true,
       dataDirectoryProvider: () async => directory,
     ),
   );

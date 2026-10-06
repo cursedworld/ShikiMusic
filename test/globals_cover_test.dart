@@ -29,7 +29,7 @@ void main() {
 
   Map<String, dynamic> track(int id, String? cover) => {
     'id': id,
-    'album': {'cover': cover},
+    'album': <String, dynamic>{'cover': cover},
   };
 
   test(
@@ -86,5 +86,42 @@ void main() {
       track(1, 'http://new.local/covers/a.jpg'),
     );
     expect((current as NetworkImage).url, 'http://new.local/covers/a.jpg');
+  });
+
+  test('artist photo fills missing cover and refreshes when photo changes', () {
+    final song = track(1, null);
+    song['album']['artist'] = {'id': 7, 'photo': 'http://local/photo.jpg'};
+    expect(
+      (getPictureProvider(song) as NetworkImage).url,
+      'http://local/photo.jpg',
+    );
+    expect(getArtUri(song), Uri.parse('http://local/photo.jpg'));
+    song['album']['artist']['photo'] = 'http://local/new.jpg';
+    expect(
+      (getPictureProvider(song) as NetworkImage).url,
+      'http://local/new.jpg',
+    );
+    song['album']['cover'] = 'http://local/cover.jpg';
+    expect(
+      (getPictureProvider(song) as NetworkImage).url,
+      'http://local/cover.jpg',
+    );
+  });
+
+  test('local artist photo fallback also works without the server', () {
+    final song = track(1, null);
+    song['album']['artist'] = {'id': 7};
+    final photo = File('${directory.path}/artist_7.jpg')..writeAsBytesSync([1]);
+    expect((getPictureProvider(song) as FileImage).file.path, photo.path);
+    expect(getArtUri(song), Uri.file(photo.path));
+  });
+
+  test('downloaded artist photo replaces a cached network fallback', () {
+    final song = track(1, null);
+    song['album']['artist'] = {'id': 7, 'photo': 'http://local/photo.jpg'};
+    expect(getPictureProvider(song), isA<NetworkImage>());
+    final photo = File('${directory.path}/artist_7.jpg')..writeAsBytesSync([1]);
+    invalidateArtistPhoto(7);
+    expect((getPictureProvider(song) as FileImage).file.path, photo.path);
   });
 }

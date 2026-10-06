@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../globals.dart';
 import '../atomic_file_store.dart';
+import '../cover_processing.dart';
 import '../localization.dart';
 import '../server_config.dart';
 
@@ -16,6 +17,7 @@ class ArtistScreen extends StatefulWidget {
   final Function(List<dynamic> queue, int index) onPlayTrack;
   final Function(int trackId) onToggleFavorite;
   final Function(dynamic track) onDownloadTrack;
+  final Future<void> Function(List<dynamic> tracks)? onDownloadAlbum;
   final Function(dynamic track) onDeleteDownloadedTrack;
   final bool Function(dynamic track) isTrackDownloaded;
   final bool Function(int trackId) isTrackFavorited;
@@ -33,6 +35,7 @@ class ArtistScreen extends StatefulWidget {
     required this.onPlayTrack,
     required this.onToggleFavorite,
     required this.onDownloadTrack,
+    this.onDownloadAlbum,
     required this.onDeleteDownloadedTrack,
     required this.isTrackDownloaded,
     required this.isTrackFavorited,
@@ -52,6 +55,25 @@ class _ArtistScreenState extends State<ArtistScreen> {
   int? _selectedAlbumId; // null = all albums
   late final http.Client _httpClient;
   late final bool _ownsHttpClient;
+  bool _hasFreshCatalog = false;
+  int _cacheReloadRevision = 0;
+  final Set<Future<void>> _metadataWork = {};
+
+  @visibleForTesting
+  Future<void> get metadataIdle =>
+      Future.wait(_metadataWork.toList()).then((_) {});
+
+  void _startMetadataWork(Future<void> operation) {
+    _metadataWork.add(operation);
+    unawaited(
+      operation.then<void>(
+        (_) => _metadataWork.remove(operation),
+        onError: (Object error, StackTrace stackTrace) {
+          _metadataWork.remove(operation);
+        },
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -61,31 +83,65 @@ class _ArtistScreenState extends State<ArtistScreen> {
     activeTrackNotifier.addListener(_onLibraryChanged);
     isPlayingNotifier.addListener(_onLibraryChanged);
     accentColorNotifier.addListener(_onLibraryChanged);
-    widget.libraryChanges?.addListener(_onLibraryChanged);
-    unawaited(_loadArtistDetails());
+    widget.libraryChanges?.addListener(_onCatalogChanged);
+    _startMetadataWork(_loadArtistDetails());
   }
 
   @override
   void didUpdateWidget(covariant ArtistScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.libraryChanges != widget.libraryChanges) {
-      oldWidget.libraryChanges?.removeListener(_onLibraryChanged);
-      widget.libraryChanges?.addListener(_onLibraryChanged);
+      oldWidget.libraryChanges?.removeListener(_onCatalogChanged);
+      widget.libraryChanges?.addListener(_onCatalogChanged);
     }
   }
 
   @override
   void dispose() {
+    _cacheReloadRevision++;
     activeTrackNotifier.removeListener(_onLibraryChanged);
     isPlayingNotifier.removeListener(_onLibraryChanged);
     accentColorNotifier.removeListener(_onLibraryChanged);
-    widget.libraryChanges?.removeListener(_onLibraryChanged);
+    widget.libraryChanges?.removeListener(_onCatalogChanged);
     if (_ownsHttpClient) _httpClient.close();
     super.dispose();
   }
 
   void _onLibraryChanged() {
     if (mounted) setState(() {});
+  }
+
+  void _onCatalogChanged() {
+    if (!mounted) return;
+    setState(() => _hasFreshCatalog = true);
+    _startMetadataWork(_reloadCachedMetadata());
+  }
+
+  Future<void> _reloadCachedMetadata() async {
+    if (globalLocalPath.isEmpty) return;
+    final revision = ++_cacheReloadRevision;
+    try {
+      final file = File(
+        '$globalLocalPath/artist_details_${widget.artistId}.json',
+      );
+      if (!await file.exists()) return;
+      if (!mounted || revision != _cacheReloadRevision) return;
+      final data = jsonDecode(await file.readAsString());
+      if (!mounted ||
+          revision != _cacheReloadRevision ||
+          data is! Map<String, dynamic>) {
+        return;
+      }
+      setState(() {
+        // Tracks/albums below come from the live catalog, not this snapshot.
+        _artistData = {...?_artistData, ...data};
+        _isLoading = false;
+      });
+    } on FileSystemException {
+      // Offline metadata remains usable during an atomic cache replacement.
+    } on FormatException {
+      // A malformed optional metadata cache must not hide the music library.
+    }
   }
 
   Future<void> _loadArtistDetails() async {
@@ -96,14 +152,18 @@ class _ArtistScreenState extends State<ArtistScreen> {
   }
 
   Future<void> _loadOfflineArtistDetails() async {
+    final revision = _cacheReloadRevision;
     try {
       if (globalLocalPath.isNotEmpty) {
         final file = File(
           '$globalLocalPath/artist_details_${widget.artistId}.json',
         );
         if (await file.exists()) {
+          if (!mounted || revision != _cacheReloadRevision) return;
           final data = jsonDecode(await file.readAsString());
-          if (data is Map<String, dynamic> && mounted) {
+          if (data is Map<String, dynamic> &&
+              mounted &&
+              revision == _cacheReloadRevision) {
             setState(() {
               _artistData = data;
               _isLoading = false;
@@ -115,6 +175,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
   }
 
   Future<void> _fetchArtistDetails() async {
+    final revision = _cacheReloadRevision;
     try {
       final uri = configuredServerUri('/api/artists/${widget.artistId}/');
       final res = await _httpClient
@@ -123,7 +184,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
       if (res.statusCode == 200) {
         final data = jsonDecode(utf8.decode(res.bodyBytes));
         if (data is Map<String, dynamic>) {
-          if (!mounted) return;
+          if (!mounted || revision != _cacheReloadRevision) return;
           // Metadata is ready; do not hold the screen behind a photo download.
           setState(() {
             _artistData = data;
@@ -134,15 +195,24 @@ class _ArtistScreenState extends State<ArtistScreen> {
               final file = File(
                 '$globalLocalPath/artist_details_${widget.artistId}.json',
               );
-              await atomicFileStore.writeString(
-                file,
-                utf8.decode(res.bodyBytes),
-              );
+              await atomicFileStore.writeStringLazy(file, () {
+                if (!mounted || revision != _cacheReloadRevision) {
+                  throw StateError('Artist metadata response became stale');
+                }
+                return utf8.decode(res.bodyBytes);
+              });
+              if (!mounted || revision != _cacheReloadRevision) return;
 
               final photoUrl = data['photo']?.toString();
               if (photoUrl != null && photoUrl.isNotEmpty) {
+                final version = data['photo_version']?.toString();
+                final suffix =
+                    version != null &&
+                        RegExp(r'^[a-f0-9]{64}$').hasMatch(version)
+                    ? '_$version'
+                    : '';
                 final photoFile = File(
-                  '$globalLocalPath/artist_${widget.artistId}.jpg',
+                  '$globalLocalPath/artist_${widget.artistId}$suffix.jpg',
                 );
                 if (!await photoFile.exists() ||
                     await photoFile.length() == 0) {
@@ -152,6 +222,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
                   final photoRes = await _httpClient
                       .get(photoUri)
                       .timeout(const Duration(seconds: 10));
+                  if (!mounted || revision != _cacheReloadRevision) return;
                   if (photoRes.statusCode == 200 &&
                       photoRes.bodyBytes.length > 500) {
                     await atomicFileStore.writeBytes(
@@ -164,7 +235,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
             } catch (_) {}
           }
 
-          if (!mounted) return;
+          if (!mounted || revision != _cacheReloadRevision) return;
           setState(() {
             // Rebuild after a local photo becomes available.
           });
@@ -173,42 +244,72 @@ class _ArtistScreenState extends State<ArtistScreen> {
       }
     } catch (_) {}
 
-    if (mounted) {
+    if (mounted && revision == _cacheReloadRevision) {
       setState(() => _isLoading = false);
     }
   }
 
   List<dynamic> _getArtistTracks() {
-    final serverTracks = _artistData?['tracks'] as List<dynamic>?;
-    if (serverTracks != null && serverTracks.isNotEmpty) {
-      return serverTracks;
+    final catalog = widget.getAllTracks();
+    final serverTracks = _artistData?['tracks'] as List<dynamic>? ?? const [];
+    final source = catalog.isNotEmpty || _hasFreshCatalog
+        ? catalog
+        : serverTracks;
+    return source.where(_belongsToArtist).toList();
+  }
+
+  bool _belongsToArtist(dynamic track) {
+    if (track is! Map) return false;
+    if (_asId(track['album']?['artist']?['id']) == widget.artistId) return true;
+    for (final artist in track['artists'] as List? ?? const []) {
+      if (artist is Map && _asId(artist['id']) == widget.artistId) return true;
     }
-    // Fallback to filtering local/cached tracks by artist name
-    final queryName = widget.artistName.toLowerCase().trim();
-    return widget.getAllTracks().where((t) {
-      final aName =
-          t['album']?['artist']?['name']?.toString().toLowerCase().trim() ?? '';
-      if (aName == queryName || aName.contains(queryName)) return true;
-      final artists = t['artists'] as List<dynamic>?;
-      if (artists != null) {
-        for (final a in artists) {
-          final n = a['name']?.toString().toLowerCase().trim() ?? '';
-          if (n == queryName || n.contains(queryName)) return true;
+    return false;
+  }
+
+  int? _asId(dynamic value) => value is int ? value : int.tryParse('$value');
+
+  List<dynamic> _albumDownloadTracks(int albumId) {
+    final catalog = widget.getAllTracks();
+    if (catalog.isNotEmpty || _hasFreshCatalog) {
+      return catalog
+          .where((track) => _asId(track['album']?['id']) == albumId)
+          .toList();
+    }
+    // Initial offline/detail fallback only. A confirmed empty catalog wins.
+    for (final album in _artistData?['albums'] as List? ?? const []) {
+      if (album is Map &&
+          _asId(album['id']) == albumId &&
+          album['tracks'] is List) {
+        return List<dynamic>.from(album['tracks'] as List);
+      }
+    }
+    return _getArtistTracks()
+        .where((track) => _asId(track['album']?['id']) == albumId)
+        .toList();
+  }
+
+  String _currentArtistName(List<dynamic> tracks) {
+    for (final track in tracks) {
+      final albumArtist = track['album']?['artist'];
+      if (albumArtist is Map && _asId(albumArtist['id']) == widget.artistId) {
+        final name = albumArtist['name']?.toString().trim() ?? '';
+        if (name.isNotEmpty) return name;
+      }
+      for (final artist in track['artists'] as List? ?? const []) {
+        if (artist is Map && _asId(artist['id']) == widget.artistId) {
+          final name = artist['name']?.toString().trim() ?? '';
+          if (name.isNotEmpty) return name;
         }
       }
-      final title = t['title']?.toString().toLowerCase() ?? '';
-      if (title.contains(queryName)) return true;
-      return false;
-    }).toList();
+    }
+    final name = _artistData?['name']?.toString().trim() ?? '';
+    return name.isEmpty ? widget.artistName : name;
   }
 
   List<dynamic> _getArtistAlbums() {
-    final serverAlbums = _artistData?['albums'] as List<dynamic>?;
-    if (serverAlbums != null && serverAlbums.isNotEmpty) {
-      return serverAlbums;
-    }
-
-    // Extract unique albums from cached tracks
+    // Derive the discography from fresh tracks so old album snapshots cannot
+    // keep renamed or reassigned songs on the open artist screen.
     final tracks = _getArtistTracks();
     final Map<int, Map<String, dynamic>> albumMap = {};
     for (final t in tracks) {
@@ -220,12 +321,16 @@ class _ArtistScreenState extends State<ArtistScreen> {
             'id': aId,
             'title': album['title'] ?? '',
             'cover': album['cover'],
+            'cover_version': album['cover_version'],
             'tracks': [t],
           };
         } else {
           albumMap[aId]!['tracks'].add(t);
         }
       }
+    }
+    for (final album in albumMap.values) {
+      album['tracks'] = _albumDownloadTracks(album['id'] as int);
     }
     return albumMap.values.toList();
   }
@@ -241,6 +346,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
     final filteredTracks = _selectedAlbumId == null
         ? tracks
         : tracks.where((t) => t['album']?['id'] == _selectedAlbumId).toList();
+    final downloadSelection = _selectedAlbumId == null
+        ? tracks
+        : _albumDownloadTracks(_selectedAlbumId!);
 
     final photoUrl = _artistData?['photo'];
     final bio = _artistData?['bio']?.toString().trim() ?? '';
@@ -318,7 +426,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
                         const SizedBox(height: 16),
                         // Artist Name
                         Text(
-                          widget.artistName,
+                          _currentArtistName(tracks),
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 28,
@@ -660,22 +768,55 @@ class _ArtistScreenState extends State<ArtistScreen> {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          _selectedAlbumId == null
-                              ? tr('artist_all_tracks')
-                              : '${tr('albums_title')}: ${_getAlbumTitle(_selectedAlbumId, albums)}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
+                        Expanded(
+                          child: Text(
+                            _selectedAlbumId == null
+                                ? tr('artist_all_tracks')
+                                : '${tr('albums_title')}: ${_getAlbumTitle(_selectedAlbumId, albums)}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        Text(
-                          '${filteredTracks.length} ${tr('artist_tracks_count')}',
-                          style: const TextStyle(
-                            color: Colors.white38,
-                            fontSize: 13,
-                          ),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              '${filteredTracks.length} ${tr('artist_tracks_count')}',
+                              style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 13,
+                              ),
+                            ),
+                            if (widget.onDownloadAlbum != null)
+                              IconButton(
+                                key: const ValueKey(
+                                  'download_artist_selection',
+                                ),
+                                tooltip: _selectedAlbumId == null
+                                    ? tr('download_all_tracks')
+                                    : '${tr('download_album')} (${downloadSelection.length})',
+                                icon: const Icon(
+                                  Icons.download,
+                                  color: Colors.white54,
+                                ),
+                                onPressed: downloadSelection.isEmpty
+                                    ? null
+                                    : () {
+                                        unawaited(
+                                          widget.onDownloadAlbum!(
+                                            List<dynamic>.from(
+                                              downloadSelection,
+                                            ),
+                                          ),
+                                        );
+                                      },
+                              ),
+                          ],
                         ),
                       ],
                     ),
@@ -710,7 +851,11 @@ class _ArtistScreenState extends State<ArtistScreen> {
                           leading: ClipRRect(
                             borderRadius: BorderRadius.circular(8),
                             child: Image(
-                              image: getPictureProvider(track),
+                              image: coverThumbnail(
+                                context,
+                                getPictureProvider(track),
+                                48,
+                              ),
                               width: 48,
                               height: 48,
                               fit: BoxFit.cover,
@@ -814,10 +959,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
 
   String _getAlbumTitle(int? albumId, List<dynamic> albums) {
     if (albumId == null) return '';
-    final a = albums.firstWhere(
-      (al) => al['id'] == albumId,
-      orElse: () => null,
-    );
-    return a != null ? a['title'] ?? '' : '';
+    for (final album in albums) {
+      if (album['id'] == albumId) return album['title']?.toString() ?? '';
+    }
+    return '';
   }
 }

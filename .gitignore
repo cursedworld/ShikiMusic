@@ -45,6 +45,10 @@ migrate_working_dir/
 .env.*
 !.env.example
 
+# Private runtime track revision index (for custom data directories)
+track_versions.json
+track_versions.json.tmp.*
+
 # Symbolication related
 app.*.symbols
 

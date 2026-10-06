@@ -32,7 +32,9 @@ String globalLocalPath = "";
 ValueNotifier<bool> isPlayingNotifier = ValueNotifier(false);
 ValueNotifier<bool> isShuffledNotifier = ValueNotifier(false);
 ValueNotifier<LoopMode> loopModeNotifier = ValueNotifier(LoopMode.off);
-ValueNotifier<Color> accentColorNotifier = ValueNotifier(const Color(0xFFFF5252));
+ValueNotifier<Color> accentColorNotifier = ValueNotifier(
+  const Color(0xFFFF5252),
+);
 ValueNotifier<String> languageNotifier = ValueNotifier('ru');
 ValueNotifier<bool> vinylRotationNotifier = ValueNotifier(true);
 ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
@@ -62,7 +64,9 @@ final ImageProvider _emptyCover = MemoryImage(
 );
 
 String getCoverFileName(dynamic currentObject) {
-  if (currentObject == null || currentObject['album'] == null || currentObject['album']['cover'] == null) {
+  if (currentObject == null ||
+      currentObject['album'] == null ||
+      currentObject['album']['cover'] == null) {
     return 'default.jpg';
   }
   final coverUrl = currentObject['album']['cover'].toString();
@@ -75,33 +79,52 @@ String getCoverFileName(dynamic currentObject) {
   return 'default.jpg';
 }
 
+String? getVersionedCoverName(dynamic track) {
+  final version = track['album']?['cover_version']?.toString();
+  if (version == null || !RegExp(r'^[a-f0-9]{64}$').hasMatch(version)) {
+    return null;
+  }
+  return 'cover_${track['id']}_$version.jpg';
+}
+
 /// Returns [FileImage] if a local cover exists, otherwise [NetworkImage].
 /// Results are cached to avoid rebuilding the provider on every frame.
 ImageProvider getPictureProvider(dynamic currentObject) {
   final id = currentObject['id'] as int;
   final coverFileName = getCoverFileName(currentObject);
   final coverUrl = currentObject['album']?['cover']?.toString().trim() ?? '';
-  final cacheKey = '$id-$coverFileName|$globalLocalPath|$coverUrl';
+  final versionedName = getVersionedCoverName(currentObject);
+  final artist = currentObject['album']?['artist'];
+  final cacheKey =
+      '$id-$coverFileName|$versionedName|$globalLocalPath|$coverUrl|'
+      'artist:${artist?['id']}|${artist?['photo']}|${artist?['photo_version']}';
   final cached = _coverCache[cacheKey];
   if (cached != null) return cached;
 
   ImageProvider provider;
   if (globalLocalPath.isNotEmpty) {
-    final localImage = File(
-      '$globalLocalPath/cover_${id}_$coverFileName',
-    );
-    final fallbackImage = File(
-      '$globalLocalPath/cover_$id.jpg',
-    );
-    if (localImage.existsSync() && localImage.lengthSync() > 0) {
+    final localImage = File('$globalLocalPath/cover_${id}_$coverFileName');
+    final fallbackImage = File('$globalLocalPath/cover_$id.jpg');
+    final versionedImage = versionedName == null
+        ? null
+        : File('$globalLocalPath/$versionedName');
+    if (versionedImage != null &&
+        versionedImage.existsSync() &&
+        versionedImage.lengthSync() > 0) {
+      provider = FileImage(versionedImage);
+    } else if (localImage.existsSync() && localImage.lengthSync() > 0) {
       provider = FileImage(localImage);
     } else if (fallbackImage.existsSync() && fallbackImage.lengthSync() > 0) {
       provider = FileImage(fallbackImage);
     } else {
-      provider = coverUrl.isEmpty ? _emptyCover : NetworkImage(coverUrl);
+      provider = coverUrl.isEmpty
+          ? getArtistPhotoProvider(artist) ?? _emptyCover
+          : NetworkImage(coverUrl);
     }
   } else {
-    provider = coverUrl.isEmpty ? _emptyCover : NetworkImage(coverUrl);
+    provider = coverUrl.isEmpty
+        ? getArtistPhotoProvider(artist) ?? _emptyCover
+        : NetworkImage(coverUrl);
   }
 
   // Simple LRU-like eviction when cache grows too large
@@ -119,6 +142,13 @@ Uri? getArtUri(dynamic track) {
   final id = track['id'] as int;
   final coverFileName = getCoverFileName(track);
   if (globalLocalPath.isNotEmpty) {
+    final versionedName = getVersionedCoverName(track);
+    if (versionedName != null) {
+      final versioned = File('$globalLocalPath/$versionedName');
+      if (versioned.existsSync() && versioned.lengthSync() > 0) {
+        return Uri.file(versioned.path);
+      }
+    }
     final localCover = File('$globalLocalPath/cover_${id}_$coverFileName');
     if (localCover.existsSync() && localCover.lengthSync() > 0) {
       return Uri.file(localCover.path);
@@ -129,7 +159,11 @@ Uri? getArtUri(dynamic track) {
     }
   }
   final coverUrl = track['album']?['cover']?.toString().trim() ?? '';
-  return coverUrl.isEmpty ? null : Uri.parse(coverUrl);
+  if (coverUrl.isNotEmpty) return Uri.parse(coverUrl);
+  final artistPhoto = getArtistPhotoProvider(track['album']?['artist']);
+  if (artistPhoto is FileImage) return Uri.file(artistPhoto.file.path);
+  if (artistPhoto is NetworkImage) return Uri.tryParse(artistPhoto.url);
+  return null;
 }
 
 /// Returns an [ImageProvider] for an artist avatar/photo.
@@ -137,6 +171,15 @@ ImageProvider? getArtistPhotoProvider(dynamic artistData) {
   if (artistData == null) return null;
   final artistId = artistData is Map ? artistData['id'] : null;
   if (artistId != null && globalLocalPath.isNotEmpty) {
+    final version = artistData['photo_version']?.toString();
+    if (version != null && RegExp(r'^[a-f0-9]{64}$').hasMatch(version)) {
+      final versioned = File(
+        '$globalLocalPath/artist_${artistId}_$version.jpg',
+      );
+      if (versioned.existsSync() && versioned.lengthSync() > 0) {
+        return FileImage(versioned);
+      }
+    }
     final localPhoto = File('$globalLocalPath/artist_$artistId.jpg');
     if (localPhoto.existsSync() && localPhoto.lengthSync() > 0) {
       return FileImage(localPhoto);
@@ -155,3 +198,6 @@ void clearCoverCache() => _coverCache.clear();
 /// Refresh only the provider whose local cover was written or removed.
 void invalidateTrackCover(int trackId) =>
     _coverCache.removeWhere((key, _) => key.startsWith('$trackId-'));
+
+void invalidateArtistPhoto(int artistId) =>
+    _coverCache.removeWhere((key, _) => key.contains('|artist:$artistId|'));

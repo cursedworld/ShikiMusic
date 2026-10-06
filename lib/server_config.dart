@@ -6,11 +6,23 @@ const String serverBaseUrlSetting = String.fromEnvironment(
   defaultValue: defaultServerBaseUrl,
 );
 
-final String configuredServerBaseUrl = normalizeServerBaseUrl(
-  serverBaseUrlSetting,
-);
+String? _savedServerBaseUrl;
+String get configuredServerBaseUrl =>
+    _savedServerBaseUrl ?? normalizeServerBaseUrl(serverBaseUrlSetting);
 
-final Uri configuredServerBaseUri = Uri.parse(configuredServerBaseUrl);
+Uri get configuredServerBaseUri => Uri.parse(configuredServerBaseUrl);
+
+bool isValidServerBaseUrl(String value) {
+  final uri = _validServerBaseUri(value.trim());
+  return uri != null && uri.userInfo.isEmpty;
+}
+
+/// Set only at startup. Changing settings must not redirect a running download.
+void restoreSavedServerBaseUrl(String? value) {
+  _savedServerBaseUrl = value != null && isValidServerBaseUrl(value)
+      ? normalizeServerBaseUrl(value)
+      : null;
+}
 
 String normalizeServerBaseUrl(String? rawBaseUrl) =>
     normalizeServerBaseUri(rawBaseUrl).toString();

@@ -2,6 +2,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/server_config.dart';
 
 void main() {
+  tearDown(() => restoreSavedServerBaseUrl(null));
+  test('saved server override is validated and wrappers follow it', () {
+    restoreSavedServerBaseUrl('http://127.0.0.1:8001/');
+    expect(configuredServerBaseUrl, 'http://127.0.0.1:8001');
+    expect(configuredServerUri('/api/tracks/').host, '127.0.0.1');
+    restoreSavedServerBaseUrl('http://user:password@127.0.0.1:8000');
+    expect(
+      configuredServerBaseUrl,
+      normalizeServerBaseUrl(serverBaseUrlSetting),
+    );
+    expect(isValidServerBaseUrl('file:///tmp/library'), isFalse);
+    expect(isValidServerBaseUrl('http://localhost:8000'), isTrue);
+  });
   group('normalizeServerBaseUrl', () {
     test('removes whitespace, trailing slash, query, and fragment', () {
       expect(
