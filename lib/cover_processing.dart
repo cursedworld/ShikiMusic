@@ -114,11 +114,21 @@ class CoverThumbnailProvider extends ImageProvider<CoverThumbnailKey> {
   final int pixelSize;
 
   @override
-  Future<CoverThumbnailKey> obtainKey(ImageConfiguration configuration) async =>
-      CoverThumbnailKey(
-        await imageProvider.obtainKey(configuration),
-        pixelSize,
-      );
+  Future<CoverThumbnailKey> obtainKey(ImageConfiguration configuration) =>
+      // Preserve SynchronousFuture: cached images must resolve in this frame.
+      imageProvider
+          .obtainKey(configuration)
+          .then<CoverThumbnailKey>((key) => CoverThumbnailKey(key, pixelSize));
+
+  @override
+  bool operator ==(Object other) =>
+      other.runtimeType == runtimeType &&
+      other is CoverThumbnailProvider &&
+      other.imageProvider == imageProvider &&
+      other.pixelSize == pixelSize;
+
+  @override
+  int get hashCode => Object.hash(imageProvider, pixelSize);
 
   @override
   ImageStreamCompleter loadImage(
