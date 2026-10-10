@@ -44,6 +44,7 @@ import '../track_updates.dart';
 import '../widgets/track_updates_dialog.dart';
 import '../widgets/track_metadata_dialog.dart';
 import '../widgets/playlist_crop_dialog.dart';
+import '../widgets/artist_library_view.dart';
 import 'artist_screen.dart';
 import 'lyrics_screen.dart';
 import 'settings_screen.dart';
@@ -5295,193 +5296,12 @@ class MainAppScreenState extends State<MainAppScreen>
     );
   }
 
-  Widget _buildArtistsView(bool isMobile) {
-    final accent = accentColorNotifier.value;
-
-    final Map<String, Map<String, dynamic>> artistMap = {};
-
-    // 1. Populate from cachedArtists (offline_artists.json or server API)
-    for (final a in cachedArtists) {
-      if (a == null || a['name'] == null) continue;
-      final name = a['name'].toString().trim();
-      if (name.isEmpty) continue;
-      final key = name.toLowerCase();
-      artistMap[key] = {
-        'id': a['id'] ?? 0,
-        'name': name,
-        'photo': a['photo'],
-        'bio': a['bio'] ?? '',
-        'tracks_count': a['tracks_count'] ?? 0,
-        'albums_count': a['albums_count'] ?? 0,
-        'tracks': <dynamic>[],
-        'albums': <String>{},
-      };
-    }
-
-    // 2. Associate cached tracks and any extra offline tracks
-    for (final t in cachedTracks) {
-      final trackArtists = t['artists'] as List<dynamic>?;
-      final mainArtist = t['album']?['artist'];
-      final albumId = t['album']?['id'];
-      final albumKey = albumId != null
-          ? 'id:$albumId'
-          : 'title:${t['album']?['title'] ?? ''}';
-
-      final List<dynamic> artistsToProcess = [];
-      if (mainArtist != null) artistsToProcess.add(mainArtist);
-      if (trackArtists != null && trackArtists.isNotEmpty) {
-        artistsToProcess.addAll(trackArtists);
-      }
-
-      for (final a in artistsToProcess) {
-        if (a == null || a['name'] == null) continue;
-        final name = a['name'].toString().trim();
-        if (name.isEmpty) continue;
-        final key = name.toLowerCase();
-
-        if (!artistMap.containsKey(key)) {
-          artistMap[key] = {
-            'id': a['id'] ?? 0,
-            'name': name,
-            'photo': a['photo'],
-            'bio': a['bio'] ?? '',
-            'tracks_count': 0,
-            'albums_count': 0,
-            'tracks': [t],
-            'albums': {albumKey},
-          };
-        } else {
-          final existing = artistMap[key]!;
-          if ((existing['photo'] == null ||
-                  existing['photo'].toString().isEmpty) &&
-              a['photo'] != null) {
-            existing['photo'] = a['photo'];
-          }
-          if (a['id'] != null && existing['id'] == 0) {
-            existing['id'] = a['id'];
-          }
-          final tracksList = existing['tracks'] as List;
-          if (!tracksList.any((item) => item['id'] == t['id'])) {
-            tracksList.add(t);
-          }
-          if (albumId != null || t['album']?['title'] != null) {
-            (existing['albums'] as Set).add(albumKey);
-          }
-        }
-      }
-    }
-
-    var artists = artistMap.values.toList();
-    if (searchQuery.isNotEmpty) {
-      final q = searchQuery.toLowerCase();
-      artists = artists
-          .where((a) => a['name'].toString().toLowerCase().contains(q))
-          .toList();
-    }
-
-    if (artists.isEmpty) {
-      return Center(
-        child: Text(
-          tr('no_data'),
-          style: const TextStyle(color: Colors.white38, fontSize: 18),
-        ),
-      );
-    }
-
-    return GridView.builder(
-      physics: const BouncingScrollPhysics(
-        parent: AlwaysScrollableScrollPhysics(),
-      ),
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: isMobile ? 2 : 4,
-        crossAxisSpacing: 16,
-        mainAxisSpacing: 16,
-        childAspectRatio: 0.85,
-      ),
-      itemCount: artists.length,
-      itemBuilder: (ctx, idx) {
-        final artist = artists[idx];
-        final aId = artist['id'] is int ? artist['id'] as int : 0;
-        final aName = artist['name'] as String;
-        final aTracks = artist['tracks'] as List;
-        final aAlbums = artist['albums'] as Set;
-        final tracksCount =
-            artist['tracks_count'] is int && artist['tracks_count'] > 0
-            ? artist['tracks_count'] as int
-            : aTracks.length;
-        final albumsCount =
-            artist['albums_count'] is int && artist['albums_count'] > 0
-            ? artist['albums_count'] as int
-            : aAlbums.length;
-
-        final photoProvider = getArtistPhotoProvider(artist);
-
-        return MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: GestureDetector(
-            onTap: () => _openArtistScreen(aId, aName),
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.05),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white12),
-              ),
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 90,
-                    height: 90,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.white10,
-                      border: Border.all(
-                        color: accent.withValues(alpha: 0.5),
-                        width: 2,
-                      ),
-                      image: photoProvider != null
-                          ? DecorationImage(
-                              image: photoProvider,
-                              fit: BoxFit.cover,
-                            )
-                          : null,
-                    ),
-                    child: photoProvider == null
-                        ? const Icon(
-                            Icons.person,
-                            size: 48,
-                            color: Colors.white54,
-                          )
-                        : null,
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    aName,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '$tracksCount ${tr('artist_tracks_count')} • $albumsCount ${tr('artist_albums_count')}',
-                    style: const TextStyle(color: Colors.white38, fontSize: 11),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
+  Widget _buildArtistsView(bool isMobile) => ArtistLibraryView(
+    catalog: cachedArtists,
+    tracks: cachedTracks,
+    query: searchQuery,
+    onOpen: _openArtistScreen,
+  );
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  Build

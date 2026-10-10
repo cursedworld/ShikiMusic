@@ -529,6 +529,8 @@ const Map<String, Map<String, String>> _translations = {
 
   // ── Artists & Albums ──
   'sidebar_artists': {'ru': 'Исполнители', 'en': 'Artists', 'ja': 'アーティスト'},
+  'artists_empty': {'ru': 'Здесь появятся исполнители из твоей музыки.', 'en': 'Artists from your music library will appear here.', 'ja': 'ライブラリのアーティストがここに表示されます。'},
+  'artists_search_empty': {'ru': 'Исполнители не найдены. Попробуй другое имя.', 'en': 'No matching artists. Try another name.', 'ja': 'アーティストが見つかりません。別の名前を試してください。'},
   'artist_bio': {'ru': 'Биография', 'en': 'Biography', 'ja': 'バイオグラフィー'},
   'artist_albums': {'ru': 'Альбомы', 'en': 'Albums', 'ja': 'アルバム'},
   'artist_all_tracks': {'ru': 'Все треки', 'en': 'All Tracks', 'ja': 'すべての曲'},
