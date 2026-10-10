@@ -17,6 +17,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   VoidCallback? onPauseCustom;
   VoidCallback? onPlayCustom;
   VoidCallback? onStopCustom;
+  ValueChanged<bool>? onSeekStateChanged;
 
   bool _isAttached = false;
   Duration _lastPosition = Duration.zero;
@@ -120,7 +121,12 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   @override
   Future<void> seek(Duration position) async {
     if (!_isAttached) return;
-    await _player!.seek(position);
+    onSeekStateChanged?.call(true);
+    try {
+      await _player!.seek(position);
+    } finally {
+      onSeekStateChanged?.call(false);
+    }
     _lastPosition = position;
     _lastPositionBroadcast = DateTime.now();
     playbackState.add(playbackState.value.copyWith(updatePosition: position));

@@ -29,16 +29,21 @@ import '../download_batch.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../lrc_parser.dart';
+import '../listening_statistics.dart';
+import '../statistics_store.dart';
 import '../media_file_downloader.dart';
 import '../music_import.dart';
 import '../clip_retry_gate.dart';
 import '../perf/frame_metrics.dart';
 import '../playlist_artwork.dart';
+import '../playlist_tracks.dart';
+import '../player_shortcuts.dart';
 import '../safe_file_migration.dart';
 import '../server_config.dart';
 import '../track_updates.dart';
 import '../widgets/track_updates_dialog.dart';
 import '../widgets/track_metadata_dialog.dart';
+import '../widgets/playlist_crop_dialog.dart';
 import 'artist_screen.dart';
 import 'lyrics_screen.dart';
 import 'settings_screen.dart';
@@ -364,6 +369,8 @@ class MainAppScreenState extends State<MainAppScreen>
   int _lyricsRevision = 0;
   StreamSubscription<Duration>? _audioDurationSubscription;
   StreamSubscription<Duration>? _audioPositionSubscription;
+  StreamSubscription<PlayerState>? _statisticsStateSubscription;
+  ListeningStatistics? _statistics;
   StreamSubscription<void>? _audioCompleteSubscription;
   final Set<String> _downloadedVideoSources = <String>{};
   final Set<String> _blockedVideoSources = <String>{};
@@ -486,8 +493,12 @@ class MainAppScreenState extends State<MainAppScreen>
         updateRPC(force: true);
         _saveState();
       };
+      audioHandler.onSeekStateChanged = (seeking) => _statistics?.setSeeking(seeking);
     }
 
+    _statisticsStateSubscription = audioPlayer.onPlayerStateChanged.listen((state) {
+      if (!_stateDisposing) _statistics?.setPlaying(state == PlayerState.playing);
+    });
     audioPlayer.setVolume(volume);
     _audioDurationSubscription = audioPlayer.onDurationChanged.listen((d) {
       // Cache track duration for playlist stats
@@ -497,6 +508,7 @@ class MainAppScreenState extends State<MainAppScreen>
       }
       if (_settledTrackRevision == _trackRevision &&
           sourceTrackId == activeTrackNotifier.value?['id']) {
+        _statistics?.setDuration(d);
         fullDurationNotifier.value = d;
         _syncMediaSessionMetadata();
       }
@@ -505,6 +517,7 @@ class MainAppScreenState extends State<MainAppScreen>
       if (mounted &&
           _settledTrackRevision == _trackRevision &&
           _audioSourceTrackId == activeTrackNotifier.value?['id']) {
+        _statistics?.position(p);
         currentPositionNotifier.value = p;
       }
     });
@@ -514,6 +527,7 @@ class MainAppScreenState extends State<MainAppScreen>
           _audioSourceTrackId != activeTrackNotifier.value?['id']) {
         return;
       }
+      _statistics?.endTrack();
       if (loopMode == LoopMode.one) {
         _playIndex(playingIndex);
       } else {
@@ -524,6 +538,7 @@ class MainAppScreenState extends State<MainAppScreen>
     backgroundPollingTimer = Timer.periodic(
       const Duration(milliseconds: 1000),
       (_) async {
+        _statistics?.tick();
         if (!isPlaying ||
             globalLyrics.isEmpty ||
             _settledTrackRevision != _trackRevision ||
@@ -556,6 +571,11 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void dispose() {
     _stateDisposing = true;
+    unawaited(_statisticsStateSubscription?.cancel());
+    unawaited(_statistics?.close().catchError((Object error) {
+      debugPrint('Listening statistics close failed: $error');
+    }));
+    if (isAudioServiceActive) audioHandler.onSeekStateChanged = null;
     _discordArtwork?.dispose();
     _discordCovers?.dispose();
     _artistArtworkClient.close();
@@ -637,6 +657,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _statistics?.setForeground(state == AppLifecycleState.resumed);
     final restoredWithoutActivation =
         isDesktop &&
         state == AppLifecycleState.inactive &&
@@ -1563,14 +1584,8 @@ class MainAppScreenState extends State<MainAppScreen>
     return tr('track_many');
   }
 
-  bool _handleGlobalKeys(KeyEvent event) {
-    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.space) {
-      if (searchFocusNode.hasFocus) return false;
-      pauseTrack();
-      return true;
-    }
-    return false;
-  }
+  bool _handleGlobalKeys(KeyEvent event) =>
+      handlePlaybackSpace(event, onToggle: pauseTrack);
 
   String formatDuration(Duration d) {
     return "${d.inMinutes.remainder(60).toString().padLeft(2, '0')}:${d.inSeconds.remainder(60).toString().padLeft(2, '0')}";
@@ -2007,6 +2022,13 @@ class MainAppScreenState extends State<MainAppScreen>
     if (_stateDisposing) return;
     localPath = appDir.path;
     globalLocalPath = localPath;
+    if (!PerformanceFrameMonitor.enabled) {
+      _statistics ??= ListeningStatistics(
+        StatisticsStore('$localPath/listening_statistics.sqlite'),
+        foreground: WidgetsBinding.instance.lifecycleState == null ||
+            WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
+      );
+    }
     if (isDesktop && !PerformanceFrameMonitor.enabled) {
       _discordCovers = DiscordCoverLookup(
         onResolved: (trackKey) {
@@ -3603,6 +3625,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _activateTrackForPlayback(dynamic targetTrack) {
+    _statistics?.endTrack();
     final trackRevision = ++_trackRevision;
     final transportRevision = ++_transportRevision;
     _seekRevision += 1;
@@ -3684,6 +3707,8 @@ class MainAppScreenState extends State<MainAppScreen>
         fullDurationNotifier.value = duration;
       }
 
+      _statistics?.beginTrack(targetTrack as Map, duration: duration);
+      _statistics?.setPlaying(audioPlayer.state == PlayerState.playing);
       if (isPlaying) {
         await audioPlayer.resume();
       } else {
@@ -3744,6 +3769,10 @@ class MainAppScreenState extends State<MainAppScreen>
       if (_isCurrentTrackRevision(trackRevision)) {
         currentPositionNotifier.value = targetPosition;
       }
+    }
+    if (_isCurrentTrackRevision(trackRevision)) {
+      _statistics?.beginTrack(targetTrack as Map, duration: duration);
+      _statistics?.setPlaying(audioPlayer.state == PlayerState.playing);
     }
   }
 
@@ -3824,7 +3853,12 @@ class MainAppScreenState extends State<MainAppScreen>
             seekRevision != _seekRevision) {
           return;
         }
-        await audioPlayer.seek(pos);
+        _statistics?.setSeeking(true);
+        try {
+          await audioPlayer.seek(pos);
+        } finally {
+          _statistics?.setSeeking(false);
+        }
         if (!_isCurrentTrackRevision(trackRevision) ||
             seekRevision != _seekRevision) {
           return;
@@ -4254,8 +4288,9 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void showCreatePlaylistDialog() {
     String pName = "";
-    String pImg = "";
-    bool useLocalImage = false;
+    CroppedPlaylistArtwork? selectedArtwork;
+    bool selectingImage = false;
+    bool saving = false;
 
     showDialog(
       context: context,
@@ -4276,6 +4311,8 @@ class MainAppScreenState extends State<MainAppScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   TextField(
+                    key: const ValueKey('playlist_name'),
+                    autofocus: true,
                     style: const TextStyle(color: Colors.white),
                     decoration: const InputDecoration(
                       hintText: "Название",
@@ -4290,29 +4327,45 @@ class MainAppScreenState extends State<MainAppScreen>
                     onChanged: (v) => pName = v,
                   ),
                   const SizedBox(height: 25),
+                  if (selectedArtwork != null) ...[
+                    CircleAvatar(
+                      radius: 32,
+                      backgroundImage: MemoryImage(selectedArtwork!.bytes),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
-                      onPressed: () async {
-                        FilePickerResult? result = await FilePicker.platform
-                            .pickFiles(type: FileType.image);
-                        if (result != null &&
-                            result.files.single.path != null) {
-                          setStateDialog(() {
-                            pImg = result.files.single.path!;
-                            useLocalImage = true;
-                          });
+                      onPressed: selectingImage || saving ? null : () async {
+                        setStateDialog(() => selectingImage = true);
+                        try {
+                          final result = await FilePicker.platform
+                              .pickFiles(type: FileType.image);
+                          final path = result?.files.single.path;
+                          if (path == null || !ctx.mounted) return;
+                          final artwork = await showPlaylistCropDialog(ctx, path);
+                          if (artwork == null || !ctx.mounted) return;
+                          setStateDialog(() => selectedArtwork = artwork);
+                        } catch (_) {
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text(tr('playlist_image_failed'))),
+                            );
+                          }
+                        } finally {
+                          if (ctx.mounted) setStateDialog(() => selectingImage = false);
                         }
                       },
                       icon: const Icon(Icons.folder_open),
                       label: Text(
-                        useLocalImage
+                        selectedArtwork != null
                             ? "Картинка выбрана ✓"
                             : "Выбрать картинку",
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: useLocalImage
+                        backgroundColor: selectedArtwork != null
                             ? Colors.green.withValues(alpha: 0.5)
                             : Colors.white10,
                         foregroundColor: Colors.white,
@@ -4332,19 +4385,21 @@ class MainAppScreenState extends State<MainAppScreen>
                   ),
                 ),
                 TextButton(
-                  onPressed: () async {
-                    if (pName.isNotEmpty) {
+                  onPressed: saving || selectingImage ? null : () async {
+                    if (pName.trim().isNotEmpty) {
+                      setStateDialog(() => saving = true);
                       final playlistId = DateTime.now().microsecondsSinceEpoch;
-                      var image = pImg;
-                      if (useLocalImage) {
+                      var image = '';
+                      if (selectedArtwork != null) {
                         try {
-                          image = await copyPlaylistArtwork(
+                          image = await saveCroppedPlaylistArtwork(
                             Directory(localPath),
-                            pImg,
+                            selectedArtwork!,
                             playlistId,
                           );
                         } catch (error) {
                           if (ctx.mounted) {
+                            setStateDialog(() => saving = false);
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text(tr('playlist_image_failed')),
@@ -4358,7 +4413,7 @@ class MainAppScreenState extends State<MainAppScreen>
                       setState(() {
                         myPlaylists.add({
                           "id": playlistId,
-                          "name": pName,
+                          "name": pName.trim(),
                           "image": image,
                           "tracks": [],
                         });
@@ -4559,20 +4614,24 @@ class MainAppScreenState extends State<MainAppScreen>
                       ),
                       child: MouseRegion(
                         cursor: SystemMouseCursors.click,
-                        child: CircleAvatar(
-                          backgroundColor: Colors.white10,
-                          backgroundImage:
-                              myPlaylists[i]['image']?.isNotEmpty == true
-                              ? getPlaylistImage(myPlaylists[i]['image'])
-                              : null,
-                          radius: navId == i + 3 ? 18 : 14,
-                          child: myPlaylists[i]['image']?.isNotEmpty != true
-                              ? const Icon(
-                                  Icons.music_note,
-                                  color: Colors.white54,
-                                  size: 16,
-                                )
-                              : null,
+                        // ListView gives the row a tight width; keep the image
+                        // square so BoxFit.cover does not crop it a second time.
+                        child: Center(
+                          child: CircleAvatar(
+                            backgroundColor: Colors.white10,
+                            backgroundImage:
+                                myPlaylists[i]['image']?.isNotEmpty == true
+                                ? getPlaylistImage(myPlaylists[i]['image'])
+                                : null,
+                            radius: navId == i + 3 ? 18 : 14,
+                            child: myPlaylists[i]['image']?.isNotEmpty != true
+                                ? const Icon(
+                                    Icons.music_note,
+                                    color: Colors.white54,
+                                    size: 16,
+                                  )
+                                : null,
+                          ),
                         ),
                       ),
                     ),
@@ -4660,9 +4719,10 @@ class MainAppScreenState extends State<MainAppScreen>
               itemCount: myPlaylists.length,
               itemBuilder: (ctx, i) {
                 final pl = myPlaylists[i];
-                final plTracks = cachedTracks
-                    .where((t) => (pl['tracks'] as List).contains(t['id']))
-                    .toList();
+                final plTracks = playlistTracksInOrder(
+                  cachedTracks,
+                  pl['tracks'] as List,
+                );
                 final isActive = navId == i + 3;
                 return ListTile(
                   dense: true,
@@ -4782,7 +4842,7 @@ class MainAppScreenState extends State<MainAppScreen>
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => SettingsScreen(onClearCache: clearAllCache),
+        builder: (context) => SettingsScreen(onClearCache: clearAllCache, statistics: _statistics, statisticsTracks: cachedTracks, statisticsArtists: cachedArtists),
       ),
     ).then((_) {
       if (mounted) setState(() {});
@@ -5454,9 +5514,7 @@ class MainAppScreenState extends State<MainAppScreen>
       int pIndex = navId - 3;
       if (pIndex >= 0 && pIndex < myPlaylists.length) {
         List<dynamic> pTracks = myPlaylists[pIndex]['tracks'];
-        finalListToRender = cachedTracks
-            .where((t) => pTracks.contains(t['id']))
-            .toList();
+        finalListToRender = playlistTracksInOrder(cachedTracks, pTracks);
         headText = myPlaylists[pIndex]['name'];
       } else {
         WidgetsBinding.instance.addPostFrameCallback((_) {

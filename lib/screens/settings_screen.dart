@@ -12,6 +12,8 @@ import '../app_paths.dart';
 import '../atomic_file_store.dart';
 import '../globals.dart';
 import '../localization.dart';
+import '../listening_statistics.dart';
+import 'statistics_screen.dart';
 import '../server_config.dart';
 import '../widgets/server_address_setting.dart';
 
@@ -113,12 +115,17 @@ bool _isSafeCustomBackgroundSize(int width, int height) =>
     width * height <= _maxCustomBackgroundPixels;
 
 class SettingsScreen extends StatefulWidget {
+  final ListeningStatistics? statistics;
+  final List<dynamic> statisticsTracks, statisticsArtists;
   final FutureOr<bool?> Function() onClearCache;
   final Future<Directory> Function() dataDirectoryProvider;
   const SettingsScreen({
     super.key,
     required this.onClearCache,
     this.dataDirectoryProvider = getShikiDataDirectory,
+    this.statistics,
+    this.statisticsTracks = const [],
+    this.statisticsArtists = const [],
   });
 
   @override
@@ -126,11 +133,11 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  String _selectedColorKey = 'color_red';
-  String _selectedLang = 'ru';
-  bool _vinylRotation = true;
-  bool _playVideoClip = false;
-  bool _discordShowGitHubButton = true;
+  late String _selectedColorKey;
+  String _selectedLang = languageNotifier.value;
+  bool _vinylRotation = vinylRotationNotifier.value;
+  bool _playVideoClip = playVideoClipNotifier.value;
+  bool _discordShowGitHubButton = discordShowGitHubButtonNotifier.value;
   bool _discordLyricsStatus = discordLyricsStatusNotifier.value;
   late final Future<Directory> Function() _getDataDirectory;
   static final SettingsPersistenceQueue _settingsPersistence =
@@ -139,10 +146,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isDisposed = false;
   bool _isClearingCache = false;
   String _serverBaseUrl = configuredServerBaseUrl;
+  bool _settingsReady = false;
+  bool _settingsLoadFailed = false;
 
   @override
   void initState() {
     super.initState();
+    _selectedColorKey =
+        themeColors.entries
+            .where((entry) => entry.value == accentColorNotifier.value)
+            .map((entry) => entry.key)
+            .firstOrNull ??
+        'custom';
     _getDataDirectory = widget.dataDirectoryProvider;
     _loadSettings();
   }
@@ -154,6 +169,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadSettings() async {
+    setState(() {
+      _settingsReady = false;
+      _settingsLoadFailed = false;
+    });
     try {
       final appDir = await _getDataDirectory();
       final file = File('${appDir.path}/shiki_settings.json');
@@ -168,8 +187,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             : null;
         if (!mounted) return;
         setState(() {
-          _selectedColorKey = data['themeColor'] ?? 'color_red';
-          _selectedLang = data['language'] ?? 'ru';
+          final savedColor = data['themeColor'];
+          if (themeColors.containsKey(savedColor) || savedColor == 'custom') {
+            _selectedColorKey = savedColor as String;
+          }
+          _selectedLang = data['language'] ?? _selectedLang;
           _vinylRotation = data['vinylRotation'] ?? true;
           _playVideoClip = data['playVideoClip'] ?? false;
           _discordShowGitHubButton = data['discordShowGitHubButton'] ?? true;
@@ -194,7 +216,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         discordShowGitHubButtonNotifier.value = _discordShowGitHubButton;
         discordLyricsStatusNotifier.value = _discordLyricsStatus;
       }
-    } catch (_) {}
+      if (mounted) setState(() => _settingsReady = true);
+    } catch (_) {
+      if (mounted) setState(() => _settingsLoadFailed = true);
+    }
   }
 
   Future<bool> _saveSettings() {
@@ -224,33 +249,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
-  List<Color> _gradientFromAccent(Color accent) {
-    if (accent.r < 0.24 && accent.g < 0.24 && accent.b < 0.24) {
-      return [
-        const Color(0xFF0A0A0A),
-        const Color(0xFF000000),
-        const Color(0xFF000000),
-      ];
-    }
-    final hsl = HSLColor.fromColor(accent);
-    return [
-      hsl.withLightness(0.18).withSaturation(0.6).toColor(),
-      hsl.withLightness(0.08).withSaturation(0.5).toColor(),
-      hsl.withLightness(0.03).withSaturation(0.3).toColor(),
-    ];
-  }
+  static const _background = Color(0xFF161416);
+  static const _surface = Color(0xFF242024);
+  static const _text = Color(0xFFF3EFF1);
+  static const _muted = Color(0xFFB9B0B5);
 
   @override
   Widget build(BuildContext context) {
-    final accent = accentColorNotifier.value;
-    final gradColors = _gradientFromAccent(accent);
-
     return Scaffold(
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.transparent,
+      backgroundColor: _background,
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
+        backgroundColor: _background,
+        foregroundColor: _text,
+        surfaceTintColor: Colors.transparent,
         title: Text(tr('settings_title')),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
@@ -259,577 +270,482 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       body: ValueListenableBuilder<String?>(
         valueListenable: customBackgroundNotifier,
-        builder: (context, customBg, _) {
-          return Container(
-            decoration: customBg != null && globalLocalPath.isNotEmpty
-                ? BoxDecoration(
-                    image: DecorationImage(
-                      image: FileImage(File('$globalLocalPath/$customBg')),
-                      fit: BoxFit.cover,
-                      colorFilter: ColorFilter.mode(
-                        Colors.black.withValues(alpha: 0.65),
-                        BlendMode.srcOver,
-                      ),
-                    ),
-                  )
-                : BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: gradColors,
-                    ),
-                  ),
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 600),
-                child: ListView(
-                  physics: const BouncingScrollPhysics(),
-                  padding: EdgeInsets.fromLTRB(
-                    20,
-                    20 + MediaQuery.of(context).padding.top + kToolbarHeight,
-                    20,
-                    20,
-                  ),
-                  children: [
-                    // ── Theme Color ──
-                    _buildSectionHeader(Icons.palette, tr('color_theme')),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: themeColors.entries.map((entry) {
-                        final isSelected = entry.key == _selectedColorKey;
-                        return GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              _selectedColorKey = entry.key;
-                            });
-                            accentColorNotifier.value = entry.value;
-                            _saveSettings();
-                          },
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            width: 72,
-                            height: 72,
-                            decoration: BoxDecoration(
-                              color: entry.value.withValues(alpha: 0.2),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: isSelected
-                                    ? entry.value
-                                    : Colors.white12,
-                                width: isSelected ? 3 : 1,
-                              ),
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Container(
-                                  width: 28,
-                                  height: 28,
-                                  decoration: BoxDecoration(
-                                    color: entry.value,
-                                    shape: BoxShape.circle,
-                                    boxShadow: isSelected
-                                        ? [
-                                            BoxShadow(
-                                              color: entry.value.withValues(
-                                                alpha: 0.5,
-                                              ),
-                                              blurRadius: 10,
-                                            ),
-                                          ]
-                                        : null,
-                                  ),
-                                  child: isSelected
-                                      ? const Icon(
-                                          Icons.check,
-                                          color: Colors.white,
-                                          size: 18,
-                                        )
-                                      : null,
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  tr(entry.key),
-                                  style: TextStyle(
-                                    color: isSelected
-                                        ? Colors.white
-                                        : Colors.white54,
-                                    fontSize: 9,
-                                    fontWeight: isSelected
-                                        ? FontWeight.bold
-                                        : FontWeight.normal,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-
-                    const SizedBox(height: 16),
-                    _buildCustomBackgroundOption(accent),
-
-                    const SizedBox(height: 32),
-
-                    // ── Language ──
-                    _buildSectionHeader(Icons.language, tr('language')),
-                    const SizedBox(height: 12),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        children: availableLanguages.entries.map((entry) {
-                          final isSelected = entry.key == _selectedLang;
-                          return ListTile(
-                            title: Text(
-                              entry.value,
-                              style: TextStyle(
-                                color: isSelected ? accent : Colors.white70,
-                                fontWeight: isSelected
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            trailing: isSelected
-                                ? Icon(
-                                    Icons.check_circle,
-                                    color: accent,
-                                    size: 22,
-                                  )
-                                : const Icon(
-                                    Icons.circle_outlined,
-                                    color: Colors.white24,
-                                    size: 22,
-                                  ),
-                            onTap: () {
-                              setState(() => _selectedLang = entry.key);
-                              languageNotifier.value = entry.key;
-                              _saveSettings();
-                            },
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    ),
-
-                    const SizedBox(height: 32),
-
-                    // ── Vinyl Rotation ──
-                    _buildSectionHeader(Icons.album, tr('vinyl_rotation')),
-                    const SizedBox(height: 12),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: SwitchListTile(
-                        title: Text(
-                          tr('vinyl_rotation_desc'),
-                          style: const TextStyle(color: Colors.white),
+        builder: (context, customBg, _) => Stack(
+          fit: StackFit.expand,
+          children: [
+            if (customBg != null && globalLocalPath.isNotEmpty)
+              Image.file(
+                File('$globalLocalPath/$customBg'),
+                fit: BoxFit.cover,
+                color: Colors.black.withValues(alpha: 0.82),
+                colorBlendMode: BlendMode.srcOver,
+                excludeFromSemantics: true,
+                errorBuilder: (_, _, _) => const ColoredBox(color: _background),
+              ),
+            SafeArea(
+              top: false,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(24, 12, 24, 36),
+                    children: [
+                      if (_settingsLoadFailed) ...[
+                        Text(
+                          tr('settings_load_error'),
+                          style: const TextStyle(color: _muted),
                         ),
-                        subtitle: Text(
-                          tr('vinyl_rotation_hint'),
-                          style: const TextStyle(
-                            color: Colors.white38,
-                            fontSize: 12,
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton(
+                            onPressed: _loadSettings,
+                            child: Text(tr('stats_retry')),
                           ),
                         ),
+                      ],
+                      _section(tr('settings_appearance')),
+                      _row(
+                        title: tr('settings_accent'),
+                        value: tr(
+                          _selectedColorKey == 'custom'
+                              ? 'settings_custom_color'
+                              : _selectedColorKey,
+                        ),
+                      ),
+                      _palette(),
+                      const SizedBox(height: 8),
+                      _row(
+                        key: const ValueKey('settings_background'),
+                        title: tr('settings_background'),
+                        value: tr(
+                          customBg == null
+                              ? 'settings_background_default'
+                              : 'settings_background_custom',
+                        ),
+                        onTap: _settingsReady ? _uploadCustomBackground : null,
+                        action: customBg == null
+                            ? null
+                            : IconButton(
+                                key: const ValueKey('remove_custom_background'),
+                                tooltip: tr('settings_remove_background'),
+                                onPressed: _settingsReady
+                                    ? _removeCustomBackground
+                                    : null,
+                                icon: const Icon(
+                                  Icons.close,
+                                  size: 18,
+                                  color: _muted,
+                                ),
+                              ),
+                      ),
+                      _row(
+                        key: const ValueKey('settings_language'),
+                        title: tr('language'),
+                        value:
+                            availableLanguages[_selectedLang] ?? _selectedLang,
+                        onTap: _settingsReady ? _chooseLanguage : null,
+                      ),
+                      _section(tr('settings_playback')),
+                      _toggle(
+                        key: const ValueKey('vinyl_rotation_switch'),
+                        title: tr('vinyl_rotation'),
+                        hint: tr('vinyl_rotation_hint'),
                         value: _vinylRotation,
-                        activeThumbColor: accent,
-                        activeTrackColor: accent.withValues(alpha: 0.3),
-                        onChanged: (val) {
-                          setState(() => _vinylRotation = val);
-                          vinylRotationNotifier.value = val;
+                        onChanged: (value) {
+                          setState(() => _vinylRotation = value);
+                          vinylRotationNotifier.value = value;
                           _saveSettings();
                         },
                       ),
-                    ),
-
-                    const SizedBox(height: 32),
-
-                    // ── Play Video Clip ──
-                    _buildSectionHeader(
-                      Icons.smart_display_outlined,
-                      tr('play_video_clip'),
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: SwitchListTile(
-                        title: Text(
-                          tr('play_video_clip_desc'),
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                        subtitle: Text(
-                          tr('play_video_clip_hint'),
-                          style: const TextStyle(
-                            color: Colors.white38,
-                            fontSize: 12,
-                          ),
-                        ),
+                      _toggle(
+                        key: const ValueKey('video_clip_switch'),
+                        title: tr('play_video_clip_desc'),
+                        hint: tr('play_video_clip_hint'),
                         value: _playVideoClip,
-                        activeThumbColor: accent,
-                        activeTrackColor: accent.withValues(alpha: 0.3),
-                        onChanged: (val) {
-                          setState(() => _playVideoClip = val);
-                          playVideoClipNotifier.value = val;
+                        onChanged: (value) {
+                          setState(() => _playVideoClip = value);
+                          playVideoClipNotifier.value = value;
                           _saveSettings();
                         },
                       ),
-                    ),
-
-                    const SizedBox(height: 32),
-
-                    // ── Discord RPC ──
-                    _buildSectionHeader(Icons.link, tr('discord_settings')),
-                    const SizedBox(height: 12),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: SwitchListTile(
-                        title: Text(
-                          tr('discord_github_button_desc'),
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                        subtitle: Text(
-                          tr('discord_github_button_hint'),
-                          style: const TextStyle(
-                            color: Colors.white38,
-                            fontSize: 12,
-                          ),
-                        ),
-                        value: _discordShowGitHubButton,
-                        activeThumbColor: accent,
-                        activeTrackColor: accent.withValues(alpha: 0.3),
-                        onChanged: (val) {
-                          setState(() => _discordShowGitHubButton = val);
-                          discordShowGitHubButtonNotifier.value = val;
-                          _saveSettings();
-                        },
-                      ),
-                    ),
-
-                    if (isDesktop) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: SwitchListTile(
+                      _section(tr('discord_settings')),
+                      if (isDesktop)
+                        _toggle(
                           key: const ValueKey('discord_lyrics_status_switch'),
-                          title: Text(
-                            tr('discord_lyrics_status'),
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                          subtitle: Text(
-                            tr('discord_lyrics_status_hint'),
-                            style: const TextStyle(
-                              color: Colors.white38,
-                              fontSize: 12,
-                            ),
-                          ),
+                          title: tr('discord_lyrics_status'),
+                          hint: tr('discord_lyrics_status_hint'),
                           value: _discordLyricsStatus,
-                          activeThumbColor: accent,
-                          activeTrackColor: accent.withValues(alpha: 0.3),
                           onChanged: (value) {
                             setState(() => _discordLyricsStatus = value);
                             discordLyricsStatusNotifier.value = value;
                             _saveSettings();
                           },
                         ),
+                      _toggle(
+                        key: const ValueKey('discord_github_switch'),
+                        title: tr('discord_github_button_desc'),
+                        hint: tr('discord_github_button_hint'),
+                        value: _discordShowGitHubButton,
+                        onChanged: (value) {
+                          setState(() => _discordShowGitHubButton = value);
+                          discordShowGitHubButtonNotifier.value = value;
+                          _saveSettings();
+                        },
+                      ),
+                      _section(tr('settings_data')),
+                      if (widget.statistics != null)
+                        _row(
+                          key: const ValueKey('open_statistics'),
+                          title: tr('stats_title'),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => StatisticsScreen(
+                                statistics: widget.statistics!,
+                                tracks: widget.statisticsTracks,
+                                artists: widget.statisticsArtists,
+                              ),
+                            ),
+                          ),
+                        ),
+                      _row(
+                        key: const ValueKey('settings_server'),
+                        title: tr('settings_server'),
+                        value: _serverBaseUrl,
+                        onTap: _settingsReady ? _editServer : null,
+                      ),
+                      _row(
+                        title: tr('clear_cache'),
+                        hint: tr('clear_cache_desc'),
+                        onTap: _isClearingCache ? null : _confirmClearCache,
+                      ),
+                      _section(tr('about')),
+                      _row(
+                        title: 'ShikiMusic',
+                        value: '${tr('version')} 1.0.0',
+                      ),
+                      Text(
+                        tr('personal_player'),
+                        style: const TextStyle(color: _muted, fontSize: 13),
                       ),
                     ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
-                    const SizedBox(height: 32),
+  Widget _section(String title) => Padding(
+    padding: const EdgeInsets.only(top: 24, bottom: 8),
+    child: Text(
+      title,
+      style: const TextStyle(
+        color: _text,
+        fontSize: 18,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+  );
 
-                    ServerAddressSetting(
-                      value: _serverBaseUrl,
-                      onSave: (value) async {
-                        final previous = _serverBaseUrl;
-                        setState(() => _serverBaseUrl = value);
-                        final saved = await _saveSettings();
-                        if (!saved && mounted) {
-                          setState(() => _serverBaseUrl = previous);
-                        }
-                        return saved;
-                      },
-                    ),
-                    const SizedBox(height: 24),
-                    // ── Clear Cache ──
-                    _buildSectionHeader(Icons.cleaning_services, tr('storage')),
-                    const SizedBox(height: 12),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(12),
+  Widget _row({
+    Key? key,
+    required String title,
+    String? value,
+    String? hint,
+    VoidCallback? onTap,
+    Widget? action,
+  }) => Material(
+    key: key,
+    color: Colors.transparent,
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final stackValue =
+                value != null &&
+                (constraints.maxWidth < 400 ||
+                    MediaQuery.textScalerOf(context).scale(14) > 20);
+            return Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(color: _text, fontSize: 15),
                       ),
-                      child: ListTile(
-                        leading: const Icon(
-                          Icons.delete_outline,
-                          color: Colors.white54,
-                        ),
-                        title: Text(
-                          tr('clear_cache'),
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                        subtitle: Text(
-                          tr('clear_cache_desc'),
+                      if (hint != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          hint,
                           style: const TextStyle(
-                            color: Colors.white38,
+                            color: _muted,
                             fontSize: 12,
+                            height: 1.4,
                           ),
                         ),
-                        onTap: _isClearingCache
-                            ? null
-                            : () {
-                                showDialog(
-                                  context: context,
-                                  builder: (ctx) => AlertDialog(
-                                    backgroundColor: gradColors[1],
-                                    title: Text(
-                                      tr('clear_cache_confirm'),
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                    content: Text(
-                                      tr('clear_cache_body'),
-                                      style: const TextStyle(
-                                        color: Colors.white70,
-                                      ),
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.pop(ctx),
-                                        child: Text(
-                                          tr('cancel'),
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                          ),
-                                        ),
-                                      ),
-                                      TextButton(
-                                        onPressed: () async {
-                                          final messenger =
-                                              ScaffoldMessenger.of(context);
-                                          Navigator.pop(ctx);
-                                          setState(
-                                            () => _isClearingCache = true,
-                                          );
-                                          try {
-                                            final cleared = await widget
-                                                .onClearCache();
-                                            if (!mounted || cleared != true) {
-                                              return;
-                                            }
-                                            messenger.showSnackBar(
-                                              SnackBar(
-                                                content: Text(
-                                                  tr('cache_cleared'),
-                                                ),
-                                                backgroundColor: Colors.black87,
-                                              ),
-                                            );
-                                          } catch (error) {
-                                            debugPrint(
-                                              'Cache clear failed: $error',
-                                            );
-                                            if (!mounted) return;
-                                            messenger.showSnackBar(
-                                              SnackBar(
-                                                content: Text(
-                                                  tr('cache_clear_failed'),
-                                                ),
-                                              ),
-                                            );
-                                          } finally {
-                                            if (mounted) {
-                                              setState(
-                                                () => _isClearingCache = false,
-                                              );
-                                            }
-                                          }
-                                        },
-                                        child: Text(
-                                          tr('clear'),
-                                          style: TextStyle(color: accent),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                      ],
+                      if (stackValue) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          value,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: _muted, fontSize: 14),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                if (value != null && !stackValue) ...[
+                  const SizedBox(width: 24),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: constraints.maxWidth * 0.45,
+                    ),
+                    child: Text(
+                      value,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(color: _muted, fontSize: 14),
+                    ),
+                  ),
+                ],
+                ?action,
+                if (onTap != null) ...[
+                  const SizedBox(width: 12),
+                  const Icon(Icons.chevron_right, size: 20, color: _muted),
+                ],
+              ],
+            );
+          },
+        ),
+      ),
+    ),
+  );
+
+  Widget _toggle({
+    required Key key,
+    required String title,
+    required String hint,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) => SwitchListTile(
+    key: key,
+    contentPadding: EdgeInsets.zero,
+    title: Text(title, style: const TextStyle(color: _text, fontSize: 15)),
+    subtitle: Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text(
+        hint,
+        style: const TextStyle(color: _muted, fontSize: 12, height: 1.4),
+      ),
+    ),
+    value: value,
+    activeThumbColor: accentColorNotifier.value,
+    activeTrackColor: accentColorNotifier.value.withValues(alpha: 0.3),
+    onChanged: _settingsReady ? onChanged : null,
+  );
+
+  Widget _palette() => Align(
+    alignment: Alignment.centerLeft,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 464),
+      child: LayoutBuilder(
+        builder: (context, constraints) => GridView(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: constraints.maxWidth >= 432 ? 8 : 4,
+            mainAxisSpacing: 4,
+            mainAxisExtent: 52,
+          ),
+          shrinkWrap: true,
+          padding: EdgeInsets.zero,
+          physics: const NeverScrollableScrollPhysics(),
+          children: [
+            for (final entry in themeColors.entries)
+              Semantics(
+                key: ValueKey('theme_${entry.key}'),
+                selected: _selectedColorKey == entry.key,
+                button: true,
+                label: tr(entry.key),
+                child: Tooltip(
+                  message: tr(entry.key),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkResponse(
+                      radius: 24,
+                      onTap: !_settingsReady
+                          ? null
+                          : () {
+                              setState(() => _selectedColorKey = entry.key);
+                              accentColorNotifier.value = entry.value;
+                              _saveSettings();
+                            },
+                      child: Center(
+                        child: Container(
+                          width: 38,
+                          height: 38,
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: _selectedColorKey == entry.key
+                                  ? _text
+                                  : Colors.transparent,
+                              width: 2,
+                            ),
+                          ),
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: entry.value,
+                              shape: BoxShape.circle,
+                            ),
+                            child: _selectedColorKey == entry.key
+                                ? Icon(
+                                    Icons.check,
+                                    size: 16,
+                                    color: entry.value.computeLuminance() > 0.5
+                                        ? Colors.black
+                                        : Colors.white,
+                                  )
+                                : null,
+                          ),
                         ),
                       ),
                     ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ),
+  );
 
-                    const SizedBox(height: 32),
-
-                    // ── About ──
-                    _buildSectionHeader(Icons.info_outline, tr('about')),
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(Icons.graphic_eq, color: accent, size: 24),
-                              const SizedBox(width: 10),
-                              const Text(
-                                'ShikiMusic',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            '${tr('version')} 1.0.0',
-                            style: const TextStyle(
-                              color: Colors.white38,
-                              fontSize: 13,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            tr('personal_player'),
-                            style: const TextStyle(
-                              color: Colors.white54,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
+  Future<void> _chooseLanguage() async {
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        backgroundColor: _surface,
+        title: Text(tr('language'), style: const TextStyle(color: _text)),
+        children: [
+          for (final language in availableLanguages.entries)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, language.key),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        language.value,
+                        style: const TextStyle(color: _text),
                       ),
                     ),
-
-                    const SizedBox(height: 40),
+                    if (_selectedLang == language.key)
+                      Icon(
+                        Icons.check,
+                        color: accentColorNotifier.value,
+                        size: 20,
+                      ),
                   ],
                 ),
               ),
             ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildSectionHeader(IconData icon, String title) {
-    return Row(
-      children: [
-        Icon(icon, color: Colors.white38, size: 20),
-        const SizedBox(width: 8),
-        Text(
-          title,
-          style: const TextStyle(
-            color: Colors.white38,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.5,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildCustomBackgroundOption(Color accent) {
-    final isCustomBg = customBackgroundNotifier.value != null;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isCustomBg ? accent : Colors.white12,
-          width: isCustomBg ? 2 : 1,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.image_outlined,
-                color: isCustomBg ? accent : Colors.white54,
-                size: 22,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  tr('custom_bg_title'),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              ElevatedButton.icon(
-                onPressed: _uploadCustomBackground,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: accent,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 12,
-                  ),
-                ),
-                icon: const Icon(Icons.upload_file),
-                label: Text(tr('select_image')),
-              ),
-              if (isCustomBg) ...[
-                const SizedBox(width: 12),
-                IconButton(
-                  onPressed: _removeCustomBackground,
-                  style: IconButton.styleFrom(
-                    backgroundColor: Colors.redAccent.withValues(alpha: 0.2),
-                    foregroundColor: Colors.redAccent,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    padding: const EdgeInsets.all(12),
-                  ),
-                  icon: const Icon(Icons.delete_outline),
-                ),
-              ],
-            ],
-          ),
         ],
       ),
     );
+    if (!mounted || selected == null) return;
+    setState(() => _selectedLang = selected);
+    languageNotifier.value = selected;
+    await _saveSettings();
   }
+
+  Future<void> _editServer() => showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      backgroundColor: _surface,
+      title: Text(tr('settings_server'), style: const TextStyle(color: _text)),
+      content: SizedBox(
+        width: 440,
+        child: SingleChildScrollView(
+          child: ServerAddressSetting(
+            value: _serverBaseUrl,
+            onSave: (value) async {
+              final previous = _serverBaseUrl;
+              setState(() => _serverBaseUrl = value);
+              final saved = await _saveSettings();
+              if (!saved && mounted) setState(() => _serverBaseUrl = previous);
+              return saved;
+            },
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(tr('close')),
+        ),
+      ],
+    ),
+  );
+
+  Future<void> _confirmClearCache() => showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: _surface,
+      title: Text(
+        tr('clear_cache_confirm'),
+        style: const TextStyle(color: _text),
+      ),
+      content: Text(
+        tr('clear_cache_body'),
+        style: const TextStyle(color: _muted),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: Text(tr('cancel')),
+        ),
+        TextButton(
+          onPressed: () async {
+            final messenger = ScaffoldMessenger.of(context);
+            Navigator.pop(ctx);
+            setState(() => _isClearingCache = true);
+            try {
+              final cleared = await widget.onClearCache();
+              if (!mounted || cleared != true) return;
+              messenger.showSnackBar(
+                SnackBar(content: Text(tr('cache_cleared'))),
+              );
+            } catch (error) {
+              debugPrint('Cache clear failed: $error');
+              if (mounted) {
+                messenger.showSnackBar(
+                  SnackBar(content: Text(tr('cache_clear_failed'))),
+                );
+              }
+            } finally {
+              if (mounted) setState(() => _isClearingCache = false);
+            }
+          },
+          child: Text(
+            tr('clear'),
+            style: TextStyle(color: accentColorNotifier.value),
+          ),
+        ),
+      ],
+    ),
+  );
 
   Future<void> _uploadCustomBackground() =>
       _enqueueBackgroundMutation(_uploadCustomBackgroundNow);

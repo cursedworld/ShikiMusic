@@ -49,6 +49,10 @@ migrate_working_dir/
 track_versions.json
 track_versions.json.tmp.*
 
+# Private listening history and portable backups
+listening_statistics.sqlite*
+shiki-statistics-*.json
+
 # Symbolication related
 app.*.symbols
 
@@ -60,4 +64,5 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 /android/build/
+/android/.kotlin/
 
