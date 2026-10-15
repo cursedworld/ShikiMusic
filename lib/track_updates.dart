@@ -112,6 +112,7 @@ class TrackUpdateMonitor {
     Future<String> Function(String)? hashFile,
     this.interval = const Duration(seconds: 12),
     this.requestTimeout = const Duration(seconds: 5),
+    this.localScanInterval = const Duration(minutes: 1),
     this.onCatalogChanged,
   }) : _base = serverBase ?? configuredServerBaseUrl,
        _client = client ?? http.Client(),
@@ -127,6 +128,7 @@ class TrackUpdateMonitor {
   final Future<String> Function(String) _hash;
   final Duration interval;
   final Duration requestTimeout;
+  final Duration localScanInterval;
   final Future<void> Function()? onCatalogChanged;
   final offers = ValueNotifier<List<TrackUpdateOffer>>(const []);
   final Map<int, _LocalTrack> _local = {};
@@ -139,6 +141,9 @@ class TrackUpdateMonitor {
   bool _closed = false;
   bool _checking = false;
   String? _catalogEtag;
+  DateTime? _lastFullCheck;
+  int _localGeneration = 0;
+  int _checkedLocalGeneration = -1;
   File get _index => File('${directory.path}/track_versions.json');
 
   File audioFile(int id) {
@@ -313,6 +318,7 @@ class TrackUpdateMonitor {
   }
 
   Future<void> registerDownload(Map track) => _serial(() async {
+    _localGeneration++;
     final id = track['id'];
     if (id is! int) return;
     final old = _local[id];
@@ -382,6 +388,15 @@ class TrackUpdateMonitor {
           _catalogEtag = next;
         } else if (catalog.statusCode != 304) {
           throw HttpException('Catalog check: HTTP ${catalog.statusCode}');
+        }
+        // Old servers did not include same-path MP3 changes in the catalog
+        // ETag. Only use this shortcut when the server explicitly supports it.
+        if (catalog.statusCode == 304 &&
+            catalog.headers['x-shiki-catalog-scope'] == 'all-content-v1' &&
+            _checkedLocalGeneration == _localGeneration &&
+            _lastFullCheck != null &&
+            DateTime.now().difference(_lastFullCheck!) < localScanInterval) {
+          return;
         }
         final byId = <int, Map>{};
         for (final track in tracks()) {
@@ -504,6 +519,8 @@ class TrackUpdateMonitor {
         }
         _etags.removeWhere((key, _) => !batches.contains(key));
         _manifests.removeWhere((key, _) => !batches.contains(key));
+        _lastFullCheck = DateTime.now();
+        _checkedLocalGeneration = _localGeneration;
       });
     } catch (_) {
       // Local server being offline is normal. Keep downloads and pending offers.
@@ -523,6 +540,7 @@ class TrackUpdateMonitor {
   Future<Map<String, dynamic>> updateTrack(
     TrackUpdateOffer offer,
   ) => _serial(() async {
+    _localGeneration++;
     final response = await _get('api/tracks/${offer.id}/');
     if (response.statusCode != 200) {
       throw HttpException('Track update: HTTP ${response.statusCode}');
@@ -622,6 +640,7 @@ class TrackUpdateMonitor {
   });
 
   Future<void> forget(int? id) => _serial(() async {
+    _localGeneration++;
     final next = {..._local};
     if (id == null) {
       next.clear();

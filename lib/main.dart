@@ -10,6 +10,10 @@ import 'perf/frame_metrics.dart';
 import 'screens/home_screen.dart';
 import 'screens/settings_screen.dart';
 import 'server_config.dart';
+import 'library_transfer.dart';
+import 'localization.dart';
+
+final _navigatorKey = GlobalKey<NavigatorState>();
 
 void _assertPerformanceIsolation() {
   final benchmarkLaunchRequested =
@@ -119,6 +123,27 @@ Future<void> _loadSavedSettings() async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   _assertPerformanceIsolation();
+  String? transferNotice;
+  if (!PerformanceFrameMonitor.enabled) {
+    final directory = await getShikiDataDirectory();
+    if (await File('${directory.path}/transfer_pending.json').exists()) {
+      runApp(
+        const MaterialApp(
+          home: Scaffold(
+            backgroundColor: Color(0xFF161416),
+            body: Center(child: CircularProgressIndicator()),
+          ),
+        ),
+      );
+      try {
+        if (await applyPendingLibraryImport(directory)) {
+          transferNotice = 'transfer_applied';
+        }
+      } catch (error) {
+        transferNotice = 'Import failed: $error';
+      }
+    }
+  }
 
   // Limit image cache to reduce memory usage
   PaintingBinding.instance.imageCache.maximumSize = 50;
@@ -146,6 +171,29 @@ void main() async {
   }
 
   runApp(const MyApp());
+  if (transferNotice != null) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = _navigatorKey.currentContext;
+      if (context == null) return;
+      showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(tr('transfer_title')),
+          content: Text(
+            transferNotice == 'transfer_applied'
+                ? tr('transfer_applied')
+                : transferNotice!,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    });
+  }
 }
 
 class MyApp extends StatelessWidget {
@@ -161,6 +209,7 @@ class MyApp extends StatelessWidget {
           valueListenable: languageNotifier,
           builder: (context, lang, _) {
             return MaterialApp(
+              navigatorKey: _navigatorKey,
               debugShowCheckedModeBanner: false,
               title: "ShikiMusic",
               theme: ThemeData.dark().copyWith(

@@ -15,6 +15,20 @@ String tr(String key) {
 }
 
 const Map<String, Map<String, String>> _translations = {
+  'transfer_title': {'ru': 'Перенос и резервная копия', 'en': 'Transfer and backup'},
+  'transfer_cancel': {'ru': 'Отменить ожидающий импорт', 'en': 'Cancel pending import'},
+  'transfer_cancelled': {'ru': 'Импорт отменён. Библиотека не изменена.', 'en': 'Import cancelled. Library unchanged.'},
+  'transfer_hint': {'ru': 'Один ZIP: плейлисты, обложки, избранное, каталог, настройки и статистика. Без аккаунта. Архив содержит личные данные — передавайте его только доверенным людям.', 'en': 'One ZIP: playlists, artwork, favorites, catalog, settings and statistics. No account. The archive contains private data; share only with people you trust.'},
+  'transfer_media': {'ru': 'Включить скачанную музыку и видео', 'en': 'Include downloaded music and video'},
+  'transfer_export': {'ru': 'Создать архив', 'en': 'Create archive'},
+  'transfer_import': {'ru': 'Выбрать архив', 'en': 'Choose archive'},
+  'transfer_settings': {'ru': 'Применить настройки из архива', 'en': 'Apply settings from archive'},
+  'transfer_import_hint': {'ru': 'Импорт объединяет данные при следующем запуске. Существующая музыка не заменяется. При конфликте разных библиотек импорт остановится. Адрес сервера на другом устройстве может потребовать изменения.', 'en': 'Import merges data at next launch. Existing music is not replaced. Conflicting libraries stop the import. You may need to change the server address on the other device.'},
+  'transfer_pending': {'ru': 'Архив проверен. Закройте и снова откройте плеер для применения.', 'en': 'Archive verified. Close and reopen the player to apply it.'},
+  'transfer_saved': {'ru': 'Архив сохранён.', 'en': 'Archive saved.'},
+  'transfer_error': {'ru': 'Не удалось завершить перенос:', 'en': 'Transfer could not be completed:'},
+  'transfer_working': {'ru': 'Обработка архива. Не закрывайте плеер.', 'en': 'Processing archive. Keep the player open.'},
+  'transfer_applied': {'ru': 'Перенос завершён. Исходные настройки и списки сохранены в резервной папке transfer_restore внутри данных плеера.', 'en': 'Transfer complete. Original settings and lists are backed up in a transfer_restore folder inside player data.'},
   'stats_title': {'ru': 'Моя статистика', 'en': 'My statistics'},
   'stats_music': {'ru': 'Моя музыка', 'en': 'My music'},
   'stats_favorite_artist': {'ru': 'Чаще всего слушал', 'en': 'Most listened artist'},

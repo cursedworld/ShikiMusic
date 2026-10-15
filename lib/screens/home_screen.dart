@@ -4843,7 +4843,23 @@ class MainAppScreenState extends State<MainAppScreen>
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => SettingsScreen(onClearCache: clearAllCache, statistics: _statistics, statisticsTracks: cachedTracks, statisticsArtists: cachedArtists),
+        builder: (context) => SettingsScreen(
+          onClearCache: clearAllCache,
+          statistics: _statistics,
+          statisticsTracks: cachedTracks,
+          statisticsArtists: cachedArtists,
+          beforeLibraryExport: () async {
+            await atomicFileStore.writeString(
+              File('$localPath/my_playlists.json'),
+              jsonEncode(myPlaylists),
+            );
+            await atomicFileStore.writeString(
+              File('$localPath/liked_tracks.json'),
+              jsonEncode(favs.toList()),
+            );
+            await _persistOfflineTracks();
+          },
+        ),
       ),
     ).then((_) {
       if (mounted) setState(() {});

@@ -15,7 +15,10 @@ List<Map<String, dynamic>> artistLibraryEntries(
     if (artist is! Map) return;
     final name = artist['name']?.toString().trim() ?? '';
     if (name.isEmpty) return;
-    final key = name.toLowerCase();
+    // Homonymous performers with distinct server IDs are distinct artists.
+    final key = artist['id'] is int && artist['id'] > 0
+        ? 'id:${artist['id']}'
+        : 'name:${name.toLowerCase()}';
     final entry = entries.putIfAbsent(
       key,
       () => {
@@ -23,11 +26,16 @@ List<Map<String, dynamic>> artistLibraryEntries(
         'name': name,
         'photo': artist['photo'],
         'photo_version': artist['photo_version'],
+        'aliases': <String>{},
         'tracks_count': track == null ? artist['tracks_count'] ?? 0 : 0,
         'albums_count': track == null ? artist['albums_count'] ?? 0 : 0,
         'track_ids': <Object?>{},
         'album_keys': <String>{},
       },
+    );
+    (entry['aliases'] as Set<String>).addAll(
+      (artist['aliases'] is List ? artist['aliases'] as List : const [])
+          .whereType<String>(),
     );
     if (entry['id'] == 0 && artist['id'] != null) entry['id'] = artist['id'];
     if ((entry['photo']?.toString().isEmpty ?? true) &&
@@ -62,7 +70,13 @@ List<Map<String, dynamic>> artistLibraryEntries(
   }
   final search = query.trim().toLowerCase();
   return entries.values
-      .where((entry) => entry['name'].toString().toLowerCase().contains(search))
+      .where(
+        (entry) =>
+            entry['name'].toString().toLowerCase().contains(search) ||
+            (entry['aliases'] as Set<String>).any(
+              (name) => name.toLowerCase().contains(search),
+            ),
+      )
       .map(
         (entry) => {
           ...entry,

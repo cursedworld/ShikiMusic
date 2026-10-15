@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../album_order.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -272,21 +273,23 @@ class _ArtistScreenState extends State<ArtistScreen> {
   List<dynamic> _albumDownloadTracks(int albumId) {
     final catalog = widget.getAllTracks();
     if (catalog.isNotEmpty || _hasFreshCatalog) {
-      return catalog
-          .where((track) => _asId(track['album']?['id']) == albumId)
-          .toList();
+      return albumTrackOrder(
+        catalog.where((track) => _asId(track['album']?['id']) == albumId),
+      );
     }
     // Initial offline/detail fallback only. A confirmed empty catalog wins.
     for (final album in _artistData?['albums'] as List? ?? const []) {
       if (album is Map &&
           _asId(album['id']) == albumId &&
           album['tracks'] is List) {
-        return List<dynamic>.from(album['tracks'] as List);
+        return albumTrackOrder(List<dynamic>.from(album['tracks'] as List));
       }
     }
-    return _getArtistTracks()
-        .where((track) => _asId(track['album']?['id']) == albumId)
-        .toList();
+    return albumTrackOrder(
+      _getArtistTracks().where(
+        (track) => _asId(track['album']?['id']) == albumId,
+      ),
+    );
   }
 
   String _currentArtistName(List<dynamic> tracks) {
@@ -345,7 +348,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
 
     final filteredTracks = _selectedAlbumId == null
         ? tracks
-        : tracks.where((t) => t['album']?['id'] == _selectedAlbumId).toList();
+        : albumTrackOrder(
+            tracks.where((t) => t['album']?['id'] == _selectedAlbumId),
+          );
     final downloadSelection = _selectedAlbumId == null
         ? tracks
         : _albumDownloadTracks(_selectedAlbumId!);

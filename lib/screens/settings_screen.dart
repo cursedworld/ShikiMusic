@@ -14,6 +14,7 @@ import '../globals.dart';
 import '../localization.dart';
 import '../listening_statistics.dart';
 import 'statistics_screen.dart';
+import 'library_transfer_screen.dart';
 import '../server_config.dart';
 import '../widgets/server_address_setting.dart';
 
@@ -119,6 +120,7 @@ class SettingsScreen extends StatefulWidget {
   final List<dynamic> statisticsTracks, statisticsArtists;
   final FutureOr<bool?> Function() onClearCache;
   final Future<Directory> Function() dataDirectoryProvider;
+  final Future<void> Function()? beforeLibraryExport;
   const SettingsScreen({
     super.key,
     required this.onClearCache,
@@ -126,6 +128,7 @@ class SettingsScreen extends StatefulWidget {
     this.statistics,
     this.statisticsTracks = const [],
     this.statisticsArtists = const [],
+    this.beforeLibraryExport,
   });
 
   @override
@@ -393,6 +396,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         },
                       ),
                       _section(tr('settings_data')),
+                      _row(
+                        key: const ValueKey('library_transfer'),
+                        title: tr('transfer_title'),
+                        onTap: _settingsReady
+                            ? () async {
+                                final directory = await _getDataDirectory();
+                                if (!context.mounted) return;
+                                await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => LibraryTransferScreen(
+                                      directory: directory,
+                                      statistics: widget.statistics,
+                                      beforeExport: () async {
+                                        await _settingsPersistence.enqueue(
+                                          () async {},
+                                        );
+                                        await widget.beforeLibraryExport
+                                            ?.call();
+                                      },
+                                    ),
+                                  ),
+                                );
+                              }
+                            : null,
+                      ),
                       if (widget.statistics != null)
                         _row(
                           key: const ValueKey('open_statistics'),

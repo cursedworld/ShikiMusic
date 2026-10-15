@@ -30,6 +30,9 @@ class StatisticsStore {
   Future<Uint8List> exportData() async => (await _job('export')) as Uint8List;
   Future<int> importFile(String source) async =>
       (await _job('import', {'source': source})) as int;
+
+  Future<int> validateFile(String source) async =>
+      (await _job('validate', {'source': source})) as int;
 }
 
 const _columns =
@@ -37,6 +40,9 @@ const _columns =
 const _maxBackupBytes = 64 * 1024 * 1024;
 
 Object? _statisticsJob(Map<String, Object?> job) {
+  if (job['action'] == 'validate') {
+    return _readBackup(job['source'] as String).length;
+  }
   // Validate the whole backup before opening a write transaction.
   final imported = job['action'] == 'import'
       ? _readBackup(job['source'] as String)

@@ -9,6 +9,18 @@ import 'package:shiki/globals.dart';
 import 'package:shiki/widgets/artist_library_view.dart';
 
 void main() {
+  test('homonyms stay separate and aliases remain searchable', () {
+    final artists = [
+      {
+        'id': 1,
+        'name': 'Same',
+        'aliases': ['First name'],
+      },
+      {'id': 2, 'name': 'Same'},
+    ];
+    expect(artistLibraryEntries(artists, [], ''), hasLength(2));
+    expect(artistLibraryEntries(artists, [], 'first').single['id'], 1);
+  });
   const names = [
     'Кишлак',
     '707',

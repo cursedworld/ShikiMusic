@@ -17,6 +17,7 @@ class FixtureApi {
   bool corruptVideo = false;
   int videoRequests = 0;
   bool offline = false;
+  bool completeCatalog = false;
   bool failAudio = false;
   bool corruptAudio = false;
   bool changeOnConfirm = false;
@@ -49,11 +50,15 @@ class FixtureApi {
     requests.add(request);
     if (offline) return http.Response('offline', 503);
     if (request.url.path.endsWith('/catalog-revision/')) {
-      final tag = '"${digest(utf8.encode('$artist:$lyrics'))}"';
+      final tag =
+          '"${digest(utf8.encode('$artist:$lyrics${completeCatalog ? jsonEncode(track['content_versions']) : ''}'))}"';
       return http.Response(
         '{}',
         request.headers['If-None-Match'] == tag ? 304 : 200,
-        headers: {'etag': tag},
+        headers: {
+          'etag': tag,
+          if (completeCatalog) 'x-shiki-catalog-scope': 'all-content-v1',
+        },
       );
     }
     if (request.url.path.endsWith('/revisions/')) {
@@ -140,6 +145,33 @@ void main() {
     expect(monitor.offers.value, isEmpty);
     expect(api.requests.last.headers['If-None-Match'], isNotNull);
   });
+
+  test('modern server: unchanged polls make only one request', () async {
+    api.completeCatalog = true;
+    await monitor.checkNow();
+    api.requests.clear();
+    await monitor.checkNow();
+    expect(api.requests, hasLength(1));
+    expect(api.requests.single.url.path, endsWith('/catalog-revision/'));
+    api.audio = utf8.encode('updated audio');
+    await monitor.checkNow();
+    expect(monitor.offers.value, hasLength(1));
+  });
+
+  test(
+    'modern server still inspects newly registered local downloads',
+    () async {
+      api.completeCatalog = true;
+      await monitor.checkNow();
+      await monitor.registerDownload(api.track);
+      api.requests.clear();
+      await monitor.checkNow();
+      expect(
+        api.requests.any((r) => r.url.path.endsWith('/revisions/')),
+        isTrue,
+      );
+    },
+  );
 
   test(
     'lyrics/timing change offers update without redownloading audio',
