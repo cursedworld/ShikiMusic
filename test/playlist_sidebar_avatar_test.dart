@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:shiki/screens/home_screen.dart';
@@ -129,6 +130,35 @@ void main() {
       );
     }
   }
+
+  testWidgets('create and settings tooltips both appear below their buttons', (
+    tester,
+  ) async {
+    await showSidebar(tester, width: 1024, selected: false);
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: const Offset(500, 200));
+    addTearDown(mouse.removePointer);
+    for (final entry in [
+      (Icons.add_box, 'Создать плейлист'),
+      (Icons.settings, 'Настройки'),
+    ]) {
+      final icon = find.byIcon(entry.$1);
+      final tooltip = tester.widget<Tooltip>(
+        find.ancestor(of: icon, matching: find.byType(Tooltip)).first,
+      );
+      expect(tooltip.preferBelow, isTrue);
+      await mouse.moveTo(tester.getCenter(icon));
+      await tester.pumpAndSettle();
+      final text = find.text(entry.$2);
+      expect(text, findsOneWidget);
+      expect(
+        tester.getTopLeft(text).dy,
+        greaterThan(tester.getCenter(icon).dy),
+      );
+      await mouse.moveTo(const Offset(500, 200));
+      await tester.pumpAndSettle(const Duration(milliseconds: 300));
+    }
+  });
 
   testWidgets('playlist without artwork keeps its centered music icon', (
     tester,

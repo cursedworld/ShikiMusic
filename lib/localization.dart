@@ -15,30 +15,107 @@ String tr(String key) {
 }
 
 const Map<String, Map<String, String>> _translations = {
-  'transfer_title': {'ru': 'Перенос и резервная копия', 'en': 'Transfer and backup'},
-  'transfer_cancel': {'ru': 'Отменить ожидающий импорт', 'en': 'Cancel pending import'},
-  'transfer_cancelled': {'ru': 'Импорт отменён. Библиотека не изменена.', 'en': 'Import cancelled. Library unchanged.'},
-  'transfer_hint': {'ru': 'Один ZIP: плейлисты, обложки, избранное, каталог, настройки и статистика. Без аккаунта. Архив содержит личные данные — передавайте его только доверенным людям.', 'en': 'One ZIP: playlists, artwork, favorites, catalog, settings and statistics. No account. The archive contains private data; share only with people you trust.'},
-  'transfer_media': {'ru': 'Включить скачанную музыку и видео', 'en': 'Include downloaded music and video'},
+  'playlist_rename': {'ru': 'Переименовать', 'en': 'Rename', 'ja': '名前を変更'},
+  'playlist_change_artwork': {
+    'ru': 'Сменить обложку',
+    'en': 'Change artwork',
+    'ja': '画像を変更',
+  },
+  'playlist_delete': {
+    'ru': 'Удалить плейлист',
+    'en': 'Delete playlist',
+    'ja': 'プレイリストを削除',
+  },
+  'playlist_deleted': {
+    'ru': 'Плейлист удалён',
+    'en': 'Playlist deleted',
+    'ja': 'プレイリストを削除しました',
+  },
+  'playlist_name': {
+    'ru': 'Название плейлиста',
+    'en': 'Playlist name',
+    'ja': 'プレイリスト名',
+  },
+  'playlist_save': {'ru': 'Сохранить', 'en': 'Save', 'ja': '保存'},
+  'playlist_save_failed': {
+    'ru':
+        'Не удалось сохранить плейлист. Проверьте доступ к папке данных и свободное место.',
+    'en':
+        'Could not save the playlist. Check data folder access and free space.',
+    'ja': 'プレイリストを保存できませんでした。空き容量とフォルダへのアクセスを確認してください。',
+  },
+  'transfer_title': {
+    'ru': 'Перенос и резервная копия',
+    'en': 'Transfer and backup',
+  },
+  'transfer_cancel': {
+    'ru': 'Отменить ожидающий импорт',
+    'en': 'Cancel pending import',
+  },
+  'transfer_cancelled': {
+    'ru': 'Импорт отменён. Библиотека не изменена.',
+    'en': 'Import cancelled. Library unchanged.',
+  },
+  'transfer_hint': {
+    'ru':
+        'Один ZIP: плейлисты, обложки, избранное, каталог, настройки и статистика. Без аккаунта. Архив содержит личные данные — передавайте его только доверенным людям.',
+    'en':
+        'One ZIP: playlists, artwork, favorites, catalog, settings and statistics. No account. The archive contains private data; share only with people you trust.',
+  },
+  'transfer_media': {
+    'ru': 'Включить скачанную музыку и видео',
+    'en': 'Include downloaded music and video',
+  },
   'transfer_export': {'ru': 'Создать архив', 'en': 'Create archive'},
   'transfer_import': {'ru': 'Выбрать архив', 'en': 'Choose archive'},
-  'transfer_settings': {'ru': 'Применить настройки из архива', 'en': 'Apply settings from archive'},
-  'transfer_import_hint': {'ru': 'Импорт объединяет данные при следующем запуске. Существующая музыка не заменяется. При конфликте разных библиотек импорт остановится. Адрес сервера на другом устройстве может потребовать изменения.', 'en': 'Import merges data at next launch. Existing music is not replaced. Conflicting libraries stop the import. You may need to change the server address on the other device.'},
-  'transfer_pending': {'ru': 'Архив проверен. Закройте и снова откройте плеер для применения.', 'en': 'Archive verified. Close and reopen the player to apply it.'},
+  'transfer_settings': {
+    'ru': 'Применить настройки из архива',
+    'en': 'Apply settings from archive',
+  },
+  'transfer_import_hint': {
+    'ru':
+        'Импорт объединяет данные при следующем запуске. Существующая музыка не заменяется. При конфликте разных библиотек импорт остановится. Адрес сервера на другом устройстве может потребовать изменения.',
+    'en':
+        'Import merges data at next launch. Existing music is not replaced. Conflicting libraries stop the import. You may need to change the server address on the other device.',
+  },
+  'transfer_pending': {
+    'ru': 'Архив проверен. Закройте и снова откройте плеер для применения.',
+    'en': 'Archive verified. Close and reopen the player to apply it.',
+  },
   'transfer_saved': {'ru': 'Архив сохранён.', 'en': 'Archive saved.'},
-  'transfer_error': {'ru': 'Не удалось завершить перенос:', 'en': 'Transfer could not be completed:'},
-  'transfer_working': {'ru': 'Обработка архива. Не закрывайте плеер.', 'en': 'Processing archive. Keep the player open.'},
-  'transfer_applied': {'ru': 'Перенос завершён. Исходные настройки и списки сохранены в резервной папке transfer_restore внутри данных плеера.', 'en': 'Transfer complete. Original settings and lists are backed up in a transfer_restore folder inside player data.'},
+  'transfer_error': {
+    'ru': 'Не удалось завершить перенос:',
+    'en': 'Transfer could not be completed:',
+  },
+  'transfer_working': {
+    'ru': 'Обработка архива. Не закрывайте плеер.',
+    'en': 'Processing archive. Keep the player open.',
+  },
+  'transfer_applied': {
+    'ru':
+        'Перенос завершён. Исходные настройки и списки сохранены в резервной папке transfer_restore внутри данных плеера.',
+    'en':
+        'Transfer complete. Original settings and lists are backed up in a transfer_restore folder inside player data.',
+  },
   'stats_title': {'ru': 'Моя статистика', 'en': 'My statistics'},
   'stats_music': {'ru': 'Моя музыка', 'en': 'My music'},
-  'stats_favorite_artist': {'ru': 'Чаще всего слушал', 'en': 'Most listened artist'},
+  'stats_favorite_artist': {
+    'ru': 'Чаще всего слушал',
+    'en': 'Most listened artist',
+  },
   'stats_favorite_tracks': {'ru': 'Любимые треки', 'en': 'Top tracks'},
   'stats_total_listened': {'ru': 'Всего слушал', 'en': 'Total listening'},
   'stats_daily': {'ru': 'По дням', 'en': 'Listening by day'},
   'stats_more': {'ru': 'Показать все', 'en': 'Show all'},
   'stats_less': {'ru': 'Свернуть', 'en': 'Show less'},
-  'stats_details': {'ru': 'Об истории прослушивания', 'en': 'About listening history'},
-  'stats_private': {'ru': 'История на этом устройстве · без аккаунта', 'en': 'History on this device · no account needed'},
+  'stats_details': {
+    'ru': 'Об истории прослушивания',
+    'en': 'About listening history',
+  },
+  'stats_private': {
+    'ru': 'История на этом устройстве · без аккаунта',
+    'en': 'History on this device · no account needed',
+  },
   'stats_listening': {'ru': 'Время прослушивания', 'en': 'Listening time'},
   'stats_app_time': {'ru': 'В активном окне', 'en': 'Active app time'},
   'stats_plays': {'ru': 'Прослушиваний', 'en': 'Plays'},
@@ -54,20 +131,48 @@ const Map<String, Map<String, String>> _translations = {
   'stats_period_custom': {'ru': 'Период', 'en': 'Date range'},
   'stats_sort_time': {'ru': 'По времени', 'en': 'By listening time'},
   'stats_sort_plays': {'ru': 'По прослушиваниям', 'en': 'By plays'},
-  'stats_top_hint': {'ru': 'До 100 исполнителей или треков за выбранный период', 'en': 'Up to 100 artists or tracks for the selected period'},
-  'stats_empty': {'ru': 'За этот период музыки пока нет. Включи трек — здесь появятся твои итоги.', 'en': 'No listening history for this period yet. Play a track to start your statistics.'},
-  'stats_counting_hint': {'ru': 'Минуты считаются только во время воспроизведения, включая фон. Паузы и перемотка не учитываются. Прослушивание засчитывается после 30 секунд или половины короткого трека. Совместные треки учитываются у каждого исполнителя; общее время не удваивается.', 'en': 'Listening time includes background playback, excluding pauses and seeks. A play is counted after 30 seconds or half of a short track. Collaborations count for each artist; total listening time is counted once.'},
-  'stats_backup_hint': {'ru': 'Экспорт — для переноса и резервной копии. Импорт объединяет историю; повторный импорт не удваивает статистику. Обновления и очистка кэша сохраняют историю.', 'en': 'Export to transfer or back up your history. Import merges records without counting duplicates. App updates and cache cleanup preserve your history.'},
+  'stats_top_hint': {
+    'ru': 'До 100 исполнителей или треков за выбранный период',
+    'en': 'Up to 100 artists or tracks for the selected period',
+  },
+  'stats_empty': {
+    'ru':
+        'За этот период музыки пока нет. Включи трек — здесь появятся твои итоги.',
+    'en':
+        'No listening history for this period yet. Play a track to start your statistics.',
+  },
+  'stats_counting_hint': {
+    'ru':
+        'Минуты считаются только во время воспроизведения, включая фон. Паузы и перемотка не учитываются. Прослушивание засчитывается после 30 секунд или половины короткого трека. Совместные треки учитываются у каждого исполнителя; общее время не удваивается.',
+    'en':
+        'Listening time includes background playback, excluding pauses and seeks. A play is counted after 30 seconds or half of a short track. Collaborations count for each artist; total listening time is counted once.',
+  },
+  'stats_backup_hint': {
+    'ru':
+        'Экспорт — для переноса и резервной копии. Импорт объединяет историю; повторный импорт не удваивает статистику. Обновления и очистка кэша сохраняют историю.',
+    'en':
+        'Export to transfer or back up your history. Import merges records without counting duplicates. App updates and cache cleanup preserve your history.',
+  },
   'stats_since': {'ru': 'История с', 'en': 'History since'},
   'stats_refresh': {'ru': 'Обновить статистику', 'en': 'Refresh statistics'},
   'stats_retry': {'ru': 'Повторить', 'en': 'Retry'},
-  'stats_error': {'ru': 'Не удалось прочитать статистику. Попробуй ещё раз.', 'en': 'Could not load statistics. Please try again.'},
+  'stats_error': {
+    'ru': 'Не удалось прочитать статистику. Попробуй ещё раз.',
+    'en': 'Could not load statistics. Please try again.',
+  },
   'stats_export': {'ru': 'Экспорт', 'en': 'Export'},
   'stats_import': {'ru': 'Импорт', 'en': 'Import'},
   'stats_exported': {'ru': 'Статистика сохранена', 'en': 'Statistics exported'},
   'stats_imported': {'ru': 'История объединена', 'en': 'History merged'},
-  'stats_import_error': {'ru': 'Не удалось импортировать файл. Нужна резервная копия статистики Shiki.', 'en': 'Could not import this file. Select a Shiki statistics backup.'},
-  'stats_export_error': {'ru': 'Не удалось сохранить файл статистики', 'en': 'Could not export statistics'},
+  'stats_import_error': {
+    'ru':
+        'Не удалось импортировать файл. Нужна резервная копия статистики Shiki.',
+    'en': 'Could not import this file. Select a Shiki statistics backup.',
+  },
+  'stats_export_error': {
+    'ru': 'Не удалось сохранить файл статистики',
+    'en': 'Could not export statistics',
+  },
   'stats_under_minute': {'ru': 'Менее минуты', 'en': 'Under a minute'},
   'stats_minutes': {'ru': 'мин', 'en': 'min'},
   'stats_hours': {'ru': 'ч', 'en': 'h'},
@@ -127,8 +232,10 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'プレイリストの画像',
   },
   'playlist_crop_hint': {
-    'ru': 'Перемещай фото и меняй масштаб. В аватарку попадёт область внутри круга.',
-    'en': 'Drag and zoom the photo. The area inside the circle becomes your avatar.',
+    'ru':
+        'Перемещай фото и меняй масштаб. В аватарку попадёт область внутри круга.',
+    'en':
+        'Drag and zoom the photo. The area inside the circle becomes your avatar.',
     'ja': '写真を移動・拡大して、円の中に表示する範囲を選んでください。',
   },
   'playlist_crop_reset': {
@@ -136,11 +243,7 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Reset crop',
     'ja': '切り抜きをリセット',
   },
-  'playlist_crop_apply': {
-    'ru': 'Выбрать',
-    'en': 'Use image',
-    'ja': 'この画像を使用',
-  },
+  'playlist_crop_apply': {'ru': 'Выбрать', 'en': 'Use image', 'ja': 'この画像を使用'},
   'settings': {'ru': 'Настройки', 'en': 'Settings', 'ja': '設定'},
   'search_hint_senpai': {
     'ru': 'Поиск треков, исполнителей...',
@@ -161,14 +264,38 @@ const Map<String, Map<String, String>> _translations = {
   'settings_appearance': {'ru': 'Внешний вид', 'en': 'Appearance', 'ja': '外観'},
   'settings_playback': {'ru': 'Воспроизведение', 'en': 'Playback', 'ja': '再生'},
   'settings_data': {'ru': 'Данные', 'en': 'Data', 'ja': 'データ'},
-  'settings_accent': {'ru': 'Цвет акцента', 'en': 'Accent color', 'ja': 'アクセントカラー'},
+  'settings_accent': {
+    'ru': 'Цвет акцента',
+    'en': 'Accent color',
+    'ja': 'アクセントカラー',
+  },
   'settings_background': {'ru': 'Фон', 'en': 'Background', 'ja': '背景'},
-  'settings_background_default': {'ru': 'Стандартный', 'en': 'Default', 'ja': 'デフォルト'},
-  'settings_background_custom': {'ru': 'Моя картинка', 'en': 'Custom image', 'ja': 'カスタム画像'},
-  'settings_custom_color': {'ru': 'Свой цвет', 'en': 'Custom color', 'ja': 'カスタムカラー'},
-  'settings_remove_background': {'ru': 'Убрать свой фон', 'en': 'Remove custom background', 'ja': 'カスタム背景を削除'},
+  'settings_background_default': {
+    'ru': 'Стандартный',
+    'en': 'Default',
+    'ja': 'デフォルト',
+  },
+  'settings_background_custom': {
+    'ru': 'Моя картинка',
+    'en': 'Custom image',
+    'ja': 'カスタム画像',
+  },
+  'settings_custom_color': {
+    'ru': 'Свой цвет',
+    'en': 'Custom color',
+    'ja': 'カスタムカラー',
+  },
+  'settings_remove_background': {
+    'ru': 'Убрать свой фон',
+    'en': 'Remove custom background',
+    'ja': 'カスタム背景を削除',
+  },
   'settings_server': {'ru': 'Сервер', 'en': 'Server', 'ja': 'サーバー'},
-  'settings_load_error': {'ru': 'Не удалось прочитать настройки. Сохранённые данные не изменены.', 'en': 'Could not read settings. Saved data has not been changed.', 'ja': '設定を読み込めませんでした。保存済みデータは変更されていません。'},
+  'settings_load_error': {
+    'ru': 'Не удалось прочитать настройки. Сохранённые данные не изменены.',
+    'en': 'Could not read settings. Saved data has not been changed.',
+    'ja': '設定を読み込めませんでした。保存済みデータは変更されていません。',
+  },
   'custom_bg_title': {
     'ru': 'Пользовательский фон',
     'en': 'Custom Background',
@@ -543,8 +670,16 @@ const Map<String, Map<String, String>> _translations = {
 
   // ── Artists & Albums ──
   'sidebar_artists': {'ru': 'Исполнители', 'en': 'Artists', 'ja': 'アーティスト'},
-  'artists_empty': {'ru': 'Здесь появятся исполнители из твоей музыки.', 'en': 'Artists from your music library will appear here.', 'ja': 'ライブラリのアーティストがここに表示されます。'},
-  'artists_search_empty': {'ru': 'Исполнители не найдены. Попробуй другое имя.', 'en': 'No matching artists. Try another name.', 'ja': 'アーティストが見つかりません。別の名前を試してください。'},
+  'artists_empty': {
+    'ru': 'Здесь появятся исполнители из твоей музыки.',
+    'en': 'Artists from your music library will appear here.',
+    'ja': 'ライブラリのアーティストがここに表示されます。',
+  },
+  'artists_search_empty': {
+    'ru': 'Исполнители не найдены. Попробуй другое имя.',
+    'en': 'No matching artists. Try another name.',
+    'ja': 'アーティストが見つかりません。別の名前を試してください。',
+  },
   'artist_bio': {'ru': 'Биография', 'en': 'Biography', 'ja': 'バイオグラフィー'},
   'artist_albums': {'ru': 'Альбомы', 'en': 'Albums', 'ja': 'アルバム'},
   'artist_all_tracks': {'ru': 'Все треки', 'en': 'All Tracks', 'ja': 'すべての曲'},

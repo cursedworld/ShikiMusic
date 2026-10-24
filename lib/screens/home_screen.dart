@@ -44,6 +44,7 @@ import '../track_updates.dart';
 import '../widgets/track_updates_dialog.dart';
 import '../widgets/track_metadata_dialog.dart';
 import '../widgets/playlist_crop_dialog.dart';
+import '../widgets/playlist_name_dialog.dart';
 import '../widgets/artist_library_view.dart';
 import 'artist_screen.dart';
 import 'lyrics_screen.dart';
@@ -494,11 +495,15 @@ class MainAppScreenState extends State<MainAppScreen>
         updateRPC(force: true);
         _saveState();
       };
-      audioHandler.onSeekStateChanged = (seeking) => _statistics?.setSeeking(seeking);
+      audioHandler.onSeekStateChanged = (seeking) =>
+          _statistics?.setSeeking(seeking);
     }
 
-    _statisticsStateSubscription = audioPlayer.onPlayerStateChanged.listen((state) {
-      if (!_stateDisposing) _statistics?.setPlaying(state == PlayerState.playing);
+    _statisticsStateSubscription = audioPlayer.onPlayerStateChanged.listen((
+      state,
+    ) {
+      if (!_stateDisposing)
+        _statistics?.setPlaying(state == PlayerState.playing);
     });
     audioPlayer.setVolume(volume);
     _audioDurationSubscription = audioPlayer.onDurationChanged.listen((d) {
@@ -573,9 +578,11 @@ class MainAppScreenState extends State<MainAppScreen>
   void dispose() {
     _stateDisposing = true;
     unawaited(_statisticsStateSubscription?.cancel());
-    unawaited(_statistics?.close().catchError((Object error) {
-      debugPrint('Listening statistics close failed: $error');
-    }));
+    unawaited(
+      _statistics?.close().catchError((Object error) {
+        debugPrint('Listening statistics close failed: $error');
+      }),
+    );
     if (isAudioServiceActive) audioHandler.onSeekStateChanged = null;
     _discordArtwork?.dispose();
     _discordCovers?.dispose();
@@ -2026,7 +2033,8 @@ class MainAppScreenState extends State<MainAppScreen>
     if (!PerformanceFrameMonitor.enabled) {
       _statistics ??= ListeningStatistics(
         StatisticsStore('$localPath/listening_statistics.sqlite'),
-        foreground: WidgetsBinding.instance.lifecycleState == null ||
+        foreground:
+            WidgetsBinding.instance.lifecycleState == null ||
             WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
       );
     }
@@ -2233,14 +2241,61 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
-  Future<void> savePlaylists() async {
+  Future<bool> savePlaylists() async {
     try {
       final f = File('$localPath/my_playlists.json');
       final snapshot = json.encode(myPlaylists);
       await atomicFileStore.writeString(f, snapshot);
+      return true;
     } catch (error) {
       debugPrint('Playlist save failed: $error');
+      if (mounted && !_stateDisposing) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(tr('playlist_save_failed'))));
+      }
+      return false;
     }
+  }
+
+  Future<bool> updatePlaylistDetails(
+    int playlistId,
+    Map<String, dynamic> changes,
+  ) async {
+    final index = myPlaylists.indexWhere((p) => p['id'] == playlistId);
+    if (index < 0) return false;
+    final previous = Map<String, dynamic>.from(myPlaylists[index]);
+    final allowed = <String, dynamic>{
+      if (changes['name'] is String &&
+          (changes['name'] as String).trim().isNotEmpty)
+        'name': (changes['name'] as String).trim(),
+      if (changes['image'] is String) 'image': changes['image'],
+    };
+    if (allowed.isEmpty) return false;
+    void apply() => myPlaylists[index] = {...previous, ...allowed};
+    if (mounted) {
+      setState(apply);
+    } else {
+      apply();
+    }
+    if (await savePlaylists()) return true;
+    final current = myPlaylists.indexWhere((p) => p['id'] == playlistId);
+    if (current >= 0) {
+      void restore() {
+        for (final key in allowed.keys) {
+          if (myPlaylists[current][key] == allowed[key]) {
+            myPlaylists[current][key] = previous[key];
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(restore);
+      } else {
+        restore();
+      }
+    }
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2991,12 +3046,19 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _openArtistScreen(int artistId, String artistName) {
+    final artist = cachedArtists
+        .whereType<Map>()
+        .where((a) => a['id'] == artistId)
+        .firstOrNull;
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (ctx) => ArtistScreen(
           artistId: artistId,
           artistName: artistName,
+          initialArtistData: artist == null
+              ? null
+              : Map<String, dynamic>.from(artist),
           getAllTracks: () => cachedTracks,
           onPlayTrack: (queue, idx) => startPlayback(queue, idx),
           onToggleFavorite: (id) => toggleFavorite(id),
@@ -4110,7 +4172,8 @@ class MainAppScreenState extends State<MainAppScreen>
         durationMs = dur.toInt() * 1000;
       }
 
-      final largeImg = coverUrl ??
+      final largeImg =
+          coverUrl ??
           'https://cdn.discordapp.com/app-icons/1480246072042590219/36573ffd3ca304580ed8968517090b0e.png';
 
       if (_stateDisposing || activityRevision != _discordActivityRevision) {
@@ -4230,64 +4293,143 @@ class MainAppScreenState extends State<MainAppScreen>
   //  Dialogs
   // ═══════════════════════════════════════════════════════════════════════════
 
-  void showPlaylistContextMenu(
+  Future<void> showPlaylistContextMenu(
     BuildContext context,
     Offset position,
     int index,
-  ) {
-    showMenu(
+  ) async {
+    if (index < 0 || index >= myPlaylists.length) return;
+    Tooltip.dismissAllToolTips();
+    final playlistId = myPlaylists[index]['id'] as int;
+    final overlay =
+        Navigator.of(context).overlay!.context.findRenderObject() as RenderBox;
+    final point = overlay.globalToLocal(position);
+    final value = await showMenu<String>(
       context: context,
-      position: RelativeRect.fromLTRB(
-        position.dx,
-        position.dy,
-        position.dx,
-        position.dy,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(point.dx, point.dy, 0, 0),
+        Offset.zero & overlay.size,
       ),
-      color: const Color(0xFF1A0000),
+      color: const Color(0xFF242024),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
         side: const BorderSide(color: Colors.white10),
       ),
       items: [
-        const PopupMenuItem(
-          value: 'delete',
+        PopupMenuItem(
+          value: 'rename',
+          height: 40,
           child: Row(
             children: [
-              Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
-              SizedBox(width: 10),
+              const Icon(Icons.edit_outlined, color: Colors.white70, size: 18),
+              const SizedBox(width: 10),
               Text(
-                'Удалить плейлист',
-                style: TextStyle(
-                  color: Colors.redAccent,
-                  fontWeight: FontWeight.bold,
-                ),
+                tr('playlist_rename'),
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: 'artwork',
+          height: 40,
+          child: Row(
+            children: [
+              const Icon(Icons.image_outlined, color: Colors.white70, size: 18),
+              const SizedBox(width: 10),
+              Text(
+                tr('playlist_change_artwork'),
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+        const PopupMenuDivider(height: 8),
+        PopupMenuItem(
+          value: 'delete',
+          height: 36,
+          child: Row(
+            children: [
+              const Icon(
+                Icons.delete_outline,
+                color: Colors.redAccent,
+                size: 16,
+              ),
+              const SizedBox(width: 10),
+              Text(
+                tr('playlist_delete'),
+                style: const TextStyle(color: Colors.redAccent, fontSize: 13),
               ),
             ],
           ),
         ),
       ],
-    ).then((value) {
-      if (value == 'delete') {
-        setState(() {
-          if (navId == index + 3) {
-            navId = 0;
-          } else if (navId > index + 3) {
-            navId--;
-          }
-          myPlaylists.removeAt(index);
-          savePlaylists();
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Плейлист удален'),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        });
+    );
+    if (!mounted || !context.mounted || value == null) return;
+    final currentIndex = myPlaylists.indexWhere((p) => p['id'] == playlistId);
+    if (currentIndex < 0) return;
+    if (value == 'rename') {
+      final name = await showDialog<String>(
+        context: context,
+        builder: (_) => PlaylistNameDialog(
+          initialName: myPlaylists[currentIndex]['name']?.toString() ?? '',
+        ),
+      );
+      if (mounted && name != null) {
+        await updatePlaylistDetails(playlistId, {'name': name});
       }
-    });
+    } else if (value == 'artwork') {
+      await changePlaylistArtwork(playlistId);
+    } else if (value == 'delete') {
+      setState(() {
+        if (navId == currentIndex + 3) {
+          navId = 0;
+        } else if (navId > currentIndex + 3) {
+          navId--;
+        }
+        myPlaylists.removeAt(currentIndex);
+      });
+      await savePlaylists();
+      if (mounted && context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(tr('playlist_deleted'))));
+      }
+    }
+  }
+
+  Future<void> changePlaylistArtwork(int playlistId) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(type: FileType.image);
+      final path = result?.files.single.path;
+      if (path == null || !mounted) return;
+      final artwork = await showPlaylistCropDialog(context, path);
+      if (artwork == null || !mounted) return;
+      final playlist = myPlaylists
+          .where((p) => p['id'] == playlistId)
+          .firstOrNull;
+      if (playlist == null) return;
+      final oldImage = playlist['image']?.toString() ?? '';
+      final image = await saveCroppedPlaylistArtwork(
+        Directory(localPath),
+        artwork,
+        playlistId,
+      );
+      if (!mounted) return;
+      if (oldImage.isNotEmpty) await getPlaylistImage(oldImage).evict();
+      await getPlaylistImage(image).evict();
+      if (mounted) await updatePlaylistDetails(playlistId, {'image': image});
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(tr('playlist_image_failed'))));
+      }
+    }
   }
 
   void showCreatePlaylistDialog() {
+    Tooltip.dismissAllToolTips();
     String pName = "";
     CroppedPlaylistArtwork? selectedArtwork;
     bool selectingImage = false;
@@ -4338,26 +4480,37 @@ class MainAppScreenState extends State<MainAppScreen>
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
-                      onPressed: selectingImage || saving ? null : () async {
-                        setStateDialog(() => selectingImage = true);
-                        try {
-                          final result = await FilePicker.platform
-                              .pickFiles(type: FileType.image);
-                          final path = result?.files.single.path;
-                          if (path == null || !ctx.mounted) return;
-                          final artwork = await showPlaylistCropDialog(ctx, path);
-                          if (artwork == null || !ctx.mounted) return;
-                          setStateDialog(() => selectedArtwork = artwork);
-                        } catch (_) {
-                          if (ctx.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text(tr('playlist_image_failed'))),
-                            );
-                          }
-                        } finally {
-                          if (ctx.mounted) setStateDialog(() => selectingImage = false);
-                        }
-                      },
+                      onPressed: selectingImage || saving
+                          ? null
+                          : () async {
+                              setStateDialog(() => selectingImage = true);
+                              try {
+                                final result = await FilePicker.platform
+                                    .pickFiles(type: FileType.image);
+                                final path = result?.files.single.path;
+                                if (path == null || !ctx.mounted) return;
+                                final artwork = await showPlaylistCropDialog(
+                                  ctx,
+                                  path,
+                                );
+                                if (artwork == null || !ctx.mounted) return;
+                                setStateDialog(() => selectedArtwork = artwork);
+                              } catch (_) {
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        tr('playlist_image_failed'),
+                                      ),
+                                    ),
+                                  );
+                                }
+                              } finally {
+                                if (ctx.mounted) {
+                                  setStateDialog(() => selectingImage = false);
+                                }
+                              }
+                            },
                       icon: const Icon(Icons.folder_open),
                       label: Text(
                         selectedArtwork != null
@@ -4386,44 +4539,49 @@ class MainAppScreenState extends State<MainAppScreen>
                   ),
                 ),
                 TextButton(
-                  onPressed: saving || selectingImage ? null : () async {
-                    if (pName.trim().isNotEmpty) {
-                      setStateDialog(() => saving = true);
-                      final playlistId = DateTime.now().microsecondsSinceEpoch;
-                      var image = '';
-                      if (selectedArtwork != null) {
-                        try {
-                          image = await saveCroppedPlaylistArtwork(
-                            Directory(localPath),
-                            selectedArtwork!,
-                            playlistId,
-                          );
-                        } catch (error) {
-                          if (ctx.mounted) {
-                            setStateDialog(() => saving = false);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(tr('playlist_image_failed')),
-                              ),
-                            );
+                  onPressed: saving || selectingImage
+                      ? null
+                      : () async {
+                          if (pName.trim().isNotEmpty) {
+                            setStateDialog(() => saving = true);
+                            final playlistId =
+                                DateTime.now().microsecondsSinceEpoch;
+                            var image = '';
+                            if (selectedArtwork != null) {
+                              try {
+                                image = await saveCroppedPlaylistArtwork(
+                                  Directory(localPath),
+                                  selectedArtwork!,
+                                  playlistId,
+                                );
+                              } catch (error) {
+                                if (ctx.mounted) {
+                                  setStateDialog(() => saving = false);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        tr('playlist_image_failed'),
+                                      ),
+                                    ),
+                                  );
+                                }
+                                return;
+                              }
+                            }
+                            if (!mounted || !ctx.mounted) return;
+                            setState(() {
+                              myPlaylists.add({
+                                "id": playlistId,
+                                "name": pName.trim(),
+                                "image": image,
+                                "tracks": [],
+                              });
+                            });
+                            await savePlaylists();
+                            if (!ctx.mounted) return;
+                            Navigator.pop(ctx);
                           }
-                          return;
-                        }
-                      }
-                      if (!mounted || !ctx.mounted) return;
-                      setState(() {
-                        myPlaylists.add({
-                          "id": playlistId,
-                          "name": pName.trim(),
-                          "image": image,
-                          "tracks": [],
-                        });
-                      });
-                      await savePlaylists();
-                      if (!ctx.mounted) return;
-                      Navigator.pop(ctx);
-                    }
-                  },
+                        },
                   child: const Text(
                     "Создать",
                     style: TextStyle(
@@ -4641,16 +4799,38 @@ class MainAppScreenState extends State<MainAppScreen>
               },
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.add_box, color: Colors.white54),
-            tooltip: tr('create_playlist'),
-            onPressed: showCreatePlaylistDialog,
+          Tooltip(
+            message: tr('create_playlist'),
+            preferBelow: true,
+            verticalOffset: 16,
+            constraints: const BoxConstraints(minHeight: 24),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            textStyle: const TextStyle(fontSize: 12, color: Colors.black87),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF3EFF1),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.add_box, color: Colors.white54),
+              onPressed: showCreatePlaylistDialog,
+            ),
           ),
           const SizedBox(height: 10),
-          IconButton(
-            icon: const Icon(Icons.settings, color: Colors.white54),
-            tooltip: tr('settings'),
-            onPressed: _openSettings,
+          Tooltip(
+            message: tr('settings'),
+            preferBelow: true,
+            verticalOffset: 16,
+            constraints: const BoxConstraints(minHeight: 24),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            textStyle: const TextStyle(fontSize: 12, color: Colors.black87),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF3EFF1),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.settings, color: Colors.white54),
+              onPressed: _openSettings,
+            ),
           ),
           const SizedBox(height: 30),
         ],
@@ -4840,6 +5020,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _openSettings() {
+    Tooltip.dismissAllToolTips();
     Navigator.push(
       context,
       MaterialPageRoute(

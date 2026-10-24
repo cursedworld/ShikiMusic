@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -12,10 +14,27 @@ import 'package:shiki/globals.dart';
 import 'package:shiki/screens/artist_screen.dart';
 
 void main() {
+  setUpAll(() async {
+    // Optional local fonts make generated previews readable; CI needs no fonts.
+    for (final font in [
+      ('Roboto', const String.fromEnvironment('SHIKI_UI_FONT')),
+      ('MaterialIcons', const String.fromEnvironment('SHIKI_UI_ICON_FONT')),
+    ]) {
+      if (font.$2.isEmpty) continue;
+      final loader = FontLoader(font.$1)
+        ..addFont(
+          File(
+            font.$2,
+          ).readAsBytes().then((bytes) => ByteData.sublistView(bytes)),
+        );
+      await loader.load();
+    }
+  });
   late Directory directory;
   late String previousLocalPath;
   late dynamic previousTrack;
   late bool previousPlaying;
+  late String? previousBackground;
   late ChangeNotifier libraryChanges;
 
   setUp(() async {
@@ -23,6 +42,8 @@ void main() {
     previousLocalPath = globalLocalPath;
     previousTrack = activeTrackNotifier.value;
     previousPlaying = isPlayingNotifier.value;
+    previousBackground = customBackgroundNotifier.value;
+    customBackgroundNotifier.value = null;
     globalLocalPath = directory.path;
     activeTrackNotifier.value = null;
     isPlayingNotifier.value = false;
@@ -40,6 +61,7 @@ void main() {
     globalLocalPath = previousLocalPath;
     activeTrackNotifier.value = previousTrack;
     isPlayingNotifier.value = previousPlaying;
+    customBackgroundNotifier.value = previousBackground;
     final path = directory.absolute.path;
     final prefix =
         '${Directory.systemTemp.absolute.path}${Platform.pathSeparator}shiki_artist_test_';
@@ -75,10 +97,13 @@ void main() {
     bool Function(int)? isDownloading,
     bool Function(int)? isFavorited,
     Future<void> Function(List<dynamic>)? onDownloadAlbum,
+    Map<String, dynamic>? initialArtistData,
   }) => MaterialApp(
+    debugShowCheckedModeBanner: false,
     home: ArtistScreen(
       artistId: 7,
       artistName: 'Artist',
+      initialArtistData: initialArtistData,
       getAllTracks: getTracks,
       onPlayTrack: (_, _) {},
       onToggleFavorite: (_) {},
@@ -540,4 +565,91 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+  for (final width in [375.0, 1440.0]) {
+    testWidgets(
+      'artist layout keeps background and cached biography at width $width',
+      (tester) async {
+        tester.view.physicalSize = Size(width, 1000);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final background = img.Image(width: 32, height: 32)
+          ..clear(img.ColorRgb8(60, 78, 98));
+        File(
+          '${directory.path}/background.png',
+        ).writeAsBytesSync(img.encodePng(background));
+        customBackgroundNotifier.value = 'background.png';
+        final biography =
+            'Биография из локального каталога. '
+            'Исполнитель, альбомы и совместные записи доступны без подключения к серверу. '
+            'Музыка и сохранённые данные остаются на устройстве.';
+        File(
+          '${directory.path}/artist_details_7.json',
+        ).writeAsStringSync(jsonEncode({'id': 7, 'bio': 'Stale detail cache'}));
+        final requested = Completer<void>();
+        final client = MockClient((_) async {
+          requested.complete();
+          return http.Response('', 503);
+        });
+        addTearDown(client.close);
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: const ValueKey('artist_preview'),
+            child: screen(
+              client: client,
+              getTracks: () => [track(1001, 'Трек из библиотеки')],
+              initialArtistData: {'id': 7, 'name': 'Кишлак', 'bio': biography},
+            ),
+          ),
+        );
+        expect(find.text(biography), findsOneWidget);
+        await driveUntil(tester, requested);
+        await settleImages(tester);
+        await tester.pumpAndSettle();
+        expect(find.text(biography), findsOneWidget);
+        expect(find.text('Stale detail cache'), findsNothing);
+        expect(find.byKey(const ValueKey('artist_background')), findsOneWidget);
+        final portrait = tester.widget<Container>(
+          find.byKey(const ValueKey('artist_portrait')),
+        );
+        final decoration = portrait.decoration! as BoxDecoration;
+        expect(decoration.boxShadow, isNull);
+        expect(decoration.gradient, isNull);
+        expect(
+          tester.getSize(find.text(biography)).width,
+          lessThanOrEqualTo(780),
+        );
+        expect(tester.takeException(), isNull);
+        const previewDirectory = String.fromEnvironment('SHIKI_UI_PREVIEW_DIR');
+        if (previewDirectory.isNotEmpty) {
+          final boundary = tester.renderObject<RenderRepaintBoundary>(
+            find.byKey(const ValueKey('artist_preview')),
+          );
+          await tester.runAsync(() async {
+            final image = await boundary.toImage(pixelRatio: 1);
+            try {
+              final bytes = await image.toByteData(
+                format: ui.ImageByteFormat.png,
+              );
+              final target = File(
+                '$previewDirectory/artist_${width.toInt()}.png',
+              );
+              await target.parent.create(recursive: true);
+              await target.writeAsBytes(bytes!.buffer.asUint8List());
+            } finally {
+              image.dispose();
+            }
+          });
+        }
+        if (width == 375) {
+          final expand = find.byKey(const ValueKey('artist_bio_expand'));
+          expect(expand, findsOneWidget);
+          await tester.tap(expand);
+          await tester.pump();
+          expect(tester.widget<Text>(find.text(biography)).maxLines, isNull);
+        }
+        await tester.pumpWidget(const SizedBox.shrink());
+      },
+    );
+  }
 }
