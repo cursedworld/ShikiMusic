@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:shiki/screens/home_screen.dart';
+import 'package:shiki/cover_processing.dart';
 
 // Exercise the real sidebar builder without starting playback or reading data.
 class _SidebarLayoutState extends MainAppScreenState {
@@ -35,6 +36,7 @@ void main() {
     required double width,
     required bool selected,
     bool withArtwork = true,
+    String artworkPath = 'photo.png',
   }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = Size(width, 800);
@@ -43,7 +45,7 @@ void main() {
     final state = _SidebarLayoutState(artwork)
       ..navId = selected ? 3 : 0
       ..myPlaylists = [
-        {'id': 1, 'name': 'Playlist', 'image': withArtwork ? 'photo.png' : ''},
+        {'id': 1, 'name': 'Playlist', 'image': withArtwork ? artworkPath : ''},
       ];
     addTearDown(() {
       state.searchInput.dispose();
@@ -130,6 +132,31 @@ void main() {
       );
     }
   }
+
+  testWidgets('animated avatar formats share one decode size when selected', (
+    tester,
+  ) async {
+    for (final format in ['gif', 'webp']) {
+      Object? firstKey;
+      for (final selected in [false, true]) {
+        await showSidebar(
+          tester,
+          width: 1440,
+          selected: selected,
+          artworkPath: 'avatar.$format',
+        );
+        final image =
+            tester
+                    .widget<CircleAvatar>(find.byType(CircleAvatar))
+                    .backgroundImage!
+                as CoverThumbnailProvider;
+        expect(image.pixelSize, 0);
+        final key = await image.obtainKey(ImageConfiguration.empty);
+        firstKey ??= key;
+        expect(key, firstKey);
+      }
+    }
+  });
 
   testWidgets('create and settings tooltips both appear below their buttons', (
     tester,

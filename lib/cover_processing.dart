@@ -68,10 +68,15 @@ Uint8List? cropCoverBytes(Uint8List bytes) {
 ImageProvider coverThumbnail(
   BuildContext context,
   ImageProvider provider,
-  double logicalSize,
-) {
+  double logicalSize, {
+  int cacheVersion = 0,
+}) {
   final pixels = (logicalSize * MediaQuery.devicePixelRatioOf(context)).ceil();
-  return CoverThumbnailProvider(provider, pixelSize: pixels);
+  return CoverThumbnailProvider(
+    provider,
+    pixelSize: pixels,
+    cacheVersion: cacheVersion,
+  );
 }
 
 /// Preserves the pixels needed for BoxFit.cover, including rectangular artwork.
@@ -82,7 +87,7 @@ ui.TargetImageSize coverThumbnailTargetSize(
   int pixelSize,
 ) {
   final shorterSide = width < height ? width : height;
-  if (shorterSide <= pixelSize || shorterSide <= 0) {
+  if (pixelSize <= 0 || shorterSide <= pixelSize || shorterSide <= 0) {
     return ui.TargetImageSize(width: width, height: height);
   }
   final scale = pixelSize / shorterSide;
@@ -94,41 +99,61 @@ ui.TargetImageSize coverThumbnailTargetSize(
 
 @immutable
 class CoverThumbnailKey {
-  const CoverThumbnailKey(this.providerKey, this.pixelSize);
+  const CoverThumbnailKey(
+    this.providerKey,
+    this.pixelSize, [
+    this.cacheVersion = 0,
+  ]);
   final Object providerKey;
   final int pixelSize;
+  final int cacheVersion;
 
   @override
   bool operator ==(Object other) =>
       other is CoverThumbnailKey &&
       other.providerKey == providerKey &&
-      other.pixelSize == pixelSize;
+      other.pixelSize == pixelSize &&
+      other.cacheVersion == cacheVersion;
 
   @override
-  int get hashCode => Object.hash(providerKey, pixelSize);
+  int get hashCode => Object.hash(providerKey, pixelSize, cacheVersion);
 }
 
 class CoverThumbnailProvider extends ImageProvider<CoverThumbnailKey> {
-  const CoverThumbnailProvider(this.imageProvider, {required this.pixelSize});
+  /// One source-sized cache entry for animated artwork across display sizes.
+  const CoverThumbnailProvider.original(
+    this.imageProvider, {
+    this.cacheVersion = 0,
+  }) : pixelSize = 0;
+
+  const CoverThumbnailProvider(
+    this.imageProvider, {
+    required this.pixelSize,
+    this.cacheVersion = 0,
+  });
   final ImageProvider imageProvider;
   final int pixelSize;
+  final int cacheVersion;
 
   @override
   Future<CoverThumbnailKey> obtainKey(ImageConfiguration configuration) =>
       // Preserve SynchronousFuture: cached images must resolve in this frame.
       imageProvider
           .obtainKey(configuration)
-          .then<CoverThumbnailKey>((key) => CoverThumbnailKey(key, pixelSize));
+          .then<CoverThumbnailKey>(
+            (key) => CoverThumbnailKey(key, pixelSize, cacheVersion),
+          );
 
   @override
   bool operator ==(Object other) =>
       other.runtimeType == runtimeType &&
       other is CoverThumbnailProvider &&
       other.imageProvider == imageProvider &&
-      other.pixelSize == pixelSize;
+      other.pixelSize == pixelSize &&
+      other.cacheVersion == cacheVersion;
 
   @override
-  int get hashCode => Object.hash(imageProvider, pixelSize);
+  int get hashCode => Object.hash(imageProvider, pixelSize, cacheVersion);
 
   @override
   ImageStreamCompleter loadImage(

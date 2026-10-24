@@ -124,6 +124,20 @@ void main() {
     },
   );
 
+  test(
+    '200ms position reporting retains exact listening time and play count',
+    () async {
+      start();
+      for (var i = 1; i <= 175; i++) {
+        advance(200);
+        statistics.position(Duration(milliseconds: i * 200));
+      }
+      await statistics.flush();
+      expect(store.total('listening_ms'), 35000);
+      expect(store.total('plays'), 1);
+    },
+  );
+
   test('background music counts while active-window time stops', () async {
     start();
     play(2);

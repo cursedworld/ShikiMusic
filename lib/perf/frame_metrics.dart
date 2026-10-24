@@ -447,6 +447,17 @@ class PerformanceFrameMonitor with WidgetsBindingObserver {
     return null;
   }
 
+  /// Bounded focused A/B probes use the same capture boundary as the collector.
+  static Future<void> waitForCaptureEnd(String runId) async {
+    final deadline = DateTime.now().add(const Duration(minutes: 3));
+    while (DateTime.now().isBefore(deadline)) {
+      final run = _requireInstalled()._requireActiveRun(runId);
+      if (run.evidence.captureEnded) return;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    throw TimeoutException('Focused benchmark capture did not finish.');
+  }
+
   static Future<void> markScenarioReady(
     String runId,
     int expectedActions, {

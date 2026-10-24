@@ -1,5 +1,32 @@
 # ShikiMusic performance scenarios
 
+## Focused A/B diagnostics
+
+`focused_windows.ps1` provides bounded 30-second, three-fresh-process probes
+for position polling, active video, and video covered by settings/artist routes.
+Its windows launch hidden to avoid desktop interference: these are native
+playback/resource diagnostics, not displayed-video FPS measurements. Use the
+visible scenarios below to validate actual presentation separately.
+Use the same benchmark instrumentation and fixtures in both compared builds;
+keep each complete Release directory separately so later builds cannot change
+the measured executable. The collector records its SHA-256, CPU, working set,
+raw samples, frame evidence, and real native pause/seek/resume checks. It never
+selects the installed app. Do not interact with benchmark windows during capture.
+Flutter `FrameTiming` counts are not video FPS: native textures can update
+without rebuilding the Dart layer tree. Video advancement is checked separately.
+The legacy collector also supports `-LaunchHidden` with `-Smoke` for isolated
+non-presentational diagnostics; those runs cannot be accepted as full baselines.
+
+```powershell
+& tool/perf/focused_windows.ps1 -Executable .omx/perf/before-app/Shiki.exe -Output .omx/perf/focused-before.json
+& tool/perf/focused_windows.ps1 -Executable .omx/perf/after-app/Shiki.exe -Output .omx/perf/focused-after.json
+& tool/perf/evaluate_focused.ps1 -Before .omx/perf/focused-before.json -After .omx/perf/focused-after.json -Output .omx/perf/focused-verdict.json
+```
+
+These diagnostics do **not** satisfy or replace the long-duration baseline
+contract below. Image codec/crop/animation tests and the full regression suite
+are separate mandatory checks. Normal release builds omit all benchmark flags.
+
 `scenario_contract_v1.json` is the immutable Windows baseline contract. The
 collector rejects shortened durations, changed warm-ups, a non-500 ms sampling
 interval, or a frame budget other than 16,667 microseconds. `-Smoke` is the only

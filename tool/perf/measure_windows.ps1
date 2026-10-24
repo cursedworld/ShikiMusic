@@ -20,6 +20,7 @@ param(
   [int]$TargetProcessId = 0,
   [string]$ProcessName = "Shiki",
   [string]$Executable = "",
+  [switch]$LaunchHidden,
   [switch]$AutoExitLaunchedApp,
   [switch]$ResetBenchmarkState,
   [switch]$AutomateMinimizeRestore,
@@ -93,6 +94,9 @@ if ($null -eq $actionStartDelayProperty) {
 }
 $ActionStartDelayMs = [int]$actionStartDelayProperty.Value
 $ActionCadenceMs = [int]$scenarioContract.actionCadenceMs
+if ($LaunchHidden -and -not $Smoke) {
+  throw '-LaunchHidden is diagnostic-only; evaluable baseline runs must use visible windows.'
+}
 
 function Resolve-ContractInteger {
   param(
@@ -356,6 +360,10 @@ function Resolve-TargetProcessId {
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $resolvedExecutable
     $startInfo.UseShellExecute = $false
+    if ($LaunchHidden) {
+      $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+      $startInfo.CreateNoWindow = $true
+    }
     if (-not [string]::IsNullOrWhiteSpace($RunId)) {
       $startInfo.EnvironmentVariables["SHIKI_PERF_RUN_ID"] = $RunId
       $startInfo.EnvironmentVariables["SHIKI_PERF_CONTROL_DIR"] = [IO.Path]::GetFullPath($PerfControlDirectory)
@@ -1350,7 +1358,12 @@ function Invoke-AutomatedRun {
   $awaitCapture = $Scenario -ne "cold-start-server-offline"
   Write-PerfControl -Command "start" -RunId $RunId -AwaitCapture $awaitCapture
   $rootId = Resolve-TargetProcessId -RunId $RunId
-  $appExecutable = (Get-Process -Id $rootId -ErrorAction Stop).Path
+  # The exact launch path is already validated. Process.Path can be empty
+  # briefly during Windows process initialization; retain the launch identity.
+  $appExecutable = $script:LaunchedExecutable
+  if ([string]::IsNullOrWhiteSpace($appExecutable)) {
+    $appExecutable = (Get-Process -Id $rootId -ErrorAction Stop).Path
+  }
   $ready = $null
   $preCapture = $null
   $window = [IntPtr]::Zero
@@ -1488,7 +1501,14 @@ function Invoke-AutomatedRun {
 
   $startupMs = $null
   if ($null -ne $script:LaunchRequestedUtc) {
-    $readyAtUtc = [DateTime]::Parse([string]$ready.data.readyAtUtc).ToUniversalTime()
+    # PowerShell 7 can deserialize ISO JSON timestamps directly as DateTime.
+    # Stringifying that value first produces culture-dependent MM/dd text.
+    $readyTimestamp = $ready.data.readyAtUtc
+    $readyAtUtc = if ($readyTimestamp -is [DateTime]) {
+      $readyTimestamp.ToUniversalTime()
+    } else {
+      [DateTime]::Parse([string]$readyTimestamp, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+    }
     $startupMs = [Math]::Max(0.0, ($readyAtUtc - $script:LaunchRequestedUtc).TotalMilliseconds)
   }
 

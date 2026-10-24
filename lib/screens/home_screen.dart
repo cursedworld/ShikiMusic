@@ -38,6 +38,7 @@ import '../perf/frame_metrics.dart';
 import '../playlist_artwork.dart';
 import '../playlist_tracks.dart';
 import '../player_shortcuts.dart';
+import '../playback_position.dart';
 import '../safe_file_migration.dart';
 import '../server_config.dart';
 import '../windows_taskbar_controls.dart';
@@ -146,6 +147,7 @@ class MainAppScreen extends StatefulWidget {
 class MainAppScreenState extends State<MainAppScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   late final AudioPlayer audioPlayer;
+  int _benchmarkPositionEvents = 0;
 
   // ── flutter_media_session for Media3 notification ────────────────────────
   fms.FlutterMediaSession? _mediaSession;
@@ -362,7 +364,9 @@ class MainAppScreenState extends State<MainAppScreen>
   int? _videoTrackId;
   String? _videoSourcePath;
   bool _videoLifecycleVisible = true;
+  bool _videoRouteVisible = true;
   bool _videoSurfaceAvailable = false;
+  bool get _videoVisible => _videoLifecycleVisible && _videoRouteVisible;
   bool _stateDisposing = false;
   int _trackRevision = 0;
   int _transportRevision = 0;
@@ -401,6 +405,7 @@ class MainAppScreenState extends State<MainAppScreen>
   Set<int> favs = {};
 
   List<Map<String, dynamic>> myPlaylists = [];
+  final Map<String, int> _playlistArtworkVersions = {};
 
   final TextEditingController searchInput = TextEditingController();
   final FocusNode searchFocusNode = FocusNode();
@@ -434,6 +439,11 @@ class MainAppScreenState extends State<MainAppScreen>
 
     // Create a single AudioPlayer and share it with AudioPlayerHandler
     audioPlayer = AudioPlayer();
+    // Playback itself runs in the native engine. Polling position need not
+    // request a Flutter frame; the UI currently displays whole seconds.
+    audioPlayer.positionUpdater = playbackPositionUpdater(
+      audioPlayer.getCurrentPosition,
+    );
     if (isAudioServiceActive) {
       audioHandler.attachPlayer(audioPlayer);
     }
@@ -511,8 +521,9 @@ class MainAppScreenState extends State<MainAppScreen>
     _statisticsStateSubscription = audioPlayer.onPlayerStateChanged.listen((
       state,
     ) {
-      if (!_stateDisposing)
+      if (!_stateDisposing) {
         _statistics?.setPlaying(state == PlayerState.playing);
+      }
     });
     audioPlayer.setVolume(volume);
     _audioDurationSubscription = audioPlayer.onDurationChanged.listen((d) {
@@ -529,6 +540,7 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     });
     _audioPositionSubscription = audioPlayer.onPositionChanged.listen((p) {
+      if (PerformanceFrameMonitor.enabled) _benchmarkPositionEvents++;
       if (mounted &&
           _settledTrackRevision == _trackRevision &&
           _audioSourceTrackId == activeTrackNotifier.value?['id']) {
@@ -576,11 +588,17 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    // Overlay disables TickerMode only below an opaque route. Dialogs and
+    // transparent overlays must leave the still-visible video untouched.
+    final routeVisible = TickerMode.valuesOf(context).enabled;
+    final routeChanged = _videoRouteVisible != routeVisible;
+    _videoRouteVisible = routeVisible;
     final surfaceAvailable = MediaQuery.sizeOf(context).width >= 800;
     if (_videoSurfaceAvailable != surfaceAvailable) {
       _videoSurfaceAvailable = surfaceAvailable;
       _initializeVideo(activeTrackNotifier.value);
     }
+    if (routeChanged) _reconcileVideoVisibility();
   }
 
   @override
@@ -685,12 +703,10 @@ class MainAppScreenState extends State<MainAppScreen>
         !_videoLifecycleVisible;
     if (state == AppLifecycleState.resumed || restoredWithoutActivation) {
       _videoLifecycleVisible = true;
-      _videoReleaseTimer?.cancel();
-      _videoReleaseTimer = null;
       if (isPlaying && vinylRotationNotifier.value && !_vinylUserStopped) {
         _vinylController.repeat();
       }
-      _initializeVideo(activeTrackNotifier.value);
+      _reconcileVideoVisibility();
       return;
     }
     if (state == AppLifecycleState.inactive) {
@@ -706,11 +722,22 @@ class MainAppScreenState extends State<MainAppScreen>
       return;
     }
     _vinylController.stop();
+    _reconcileVideoVisibility(
+      releaseImmediately: state == AppLifecycleState.detached,
+    );
+  }
+
+  void _reconcileVideoVisibility({bool releaseImmediately = false}) {
+    _videoReleaseTimer?.cancel();
+    _videoReleaseTimer = null;
+    if (_videoVisible) {
+      _initializeVideo(activeTrackNotifier.value);
+      return;
+    }
     _videoTrackSwitchTimer?.cancel();
     _videoRevision += 1;
     _videoOperation?.cancel();
     _videoOperation = null;
-    _videoReleaseTimer?.cancel();
     final controller = _videoController;
     final initializingController = _initializingVideoController;
     if (controller != null) {
@@ -722,17 +749,17 @@ class MainAppScreenState extends State<MainAppScreen>
     }
     _enqueueVideoWork(() async {
       final current = _videoController;
-      if (!_videoLifecycleVisible && current != null) {
+      if (!_videoVisible && current != null) {
         await _pauseVideoController(current);
       }
     });
 
-    if (state == AppLifecycleState.detached) {
+    if (releaseImmediately) {
       _initializeVideo(activeTrackNotifier.value);
       return;
     }
     _videoReleaseTimer = Timer(const Duration(milliseconds: 500), () {
-      if (!_stateDisposing && !_videoLifecycleVisible) {
+      if (!_stateDisposing && !_videoVisible) {
         _initializeVideo(activeTrackNotifier.value);
       }
     });
@@ -840,7 +867,12 @@ class MainAppScreenState extends State<MainAppScreen>
   void _syncVideoDrift() {
     _enqueueVideoWork(() async {
       final controller = _videoController;
-      if (controller == null || !_isVideoInitialized || !mounted) return;
+      if (controller == null ||
+          !_isVideoInitialized ||
+          !mounted ||
+          !_videoVisible) {
+        return;
+      }
       final audioPos = currentPositionNotifier.value;
       final videoPos = controller.value.position;
       final diff = (audioPos.inMilliseconds - videoPos.inMilliseconds).abs();
@@ -892,7 +924,7 @@ class MainAppScreenState extends State<MainAppScreen>
         () async {
           final activeTrack = activeTrackNotifier.value;
           if (!_isCurrentVideoOperation(revision, operation) ||
-              !_videoLifecycleVisible ||
+              !_videoVisible ||
               !_videoSurfaceAvailable ||
               !playVideoClipNotifier.value ||
               activeTrack?['id'] != trackId) {
@@ -926,7 +958,7 @@ class MainAppScreenState extends State<MainAppScreen>
       final videoUrl = _resolveAbsoluteUrl(rawVideoUrl);
       final requestStillCurrent =
           _isCurrentVideoOperation(revision, operation) &&
-          _videoLifecycleVisible &&
+          _videoVisible &&
           _videoSurfaceAvailable &&
           playVideoClipNotifier.value &&
           activeTrackNotifier.value?['id'] == trackId;
@@ -1174,7 +1206,7 @@ class MainAppScreenState extends State<MainAppScreen>
       !operation.isCanceled;
 
   bool _shouldRunVideo(_VideoRequest request) =>
-      _videoLifecycleVisible &&
+      _videoVisible &&
       _videoSurfaceAvailable &&
       playVideoClipNotifier.value &&
       request.trackId != null;
@@ -1206,7 +1238,7 @@ class MainAppScreenState extends State<MainAppScreen>
     await _disposeCurrentVideo();
     if (!_isCurrentVideoOperation(revision, operation)) return;
     if (!shouldRun) {
-      if (_videoLifecycleVisible &&
+      if (_videoVisible &&
           _videoSurfaceAvailable &&
           playVideoClipNotifier.value &&
           request.trackId != null &&
@@ -1440,7 +1472,7 @@ class MainAppScreenState extends State<MainAppScreen>
   Future<void> _applyVideoPlaybackState(
     VideoPlayerController controller,
   ) async {
-    if (!_videoLifecycleVisible || !isPlayingNotifier.value) {
+    if (!_videoVisible || !isPlayingNotifier.value) {
       await controller.pause();
     } else {
       try {
@@ -1683,7 +1715,9 @@ class MainAppScreenState extends State<MainAppScreen>
         );
       }
 
-      if (command.scenario == 'cold-start-server-offline' ||
+      if (command.scenario.startsWith('focused-')) {
+        await _runFocusedBenchmark(command);
+      } else if (command.scenario == 'cold-start-server-offline' ||
           command.scenario == 'idle-home-five-minutes') {
         await PerformanceFrameMonitor.markScenarioReady(
           command.runId,
@@ -1727,6 +1761,135 @@ class MainAppScreenState extends State<MainAppScreen>
         await PerformanceFrameMonitor.markScenarioActionFailed(runId, error);
       }
     }
+  }
+
+  Future<void> _runFocusedBenchmark(BenchmarkScenarioCommand command) async {
+    final video = command.scenario != 'focused-audio';
+    if (!const {
+      'focused-audio',
+      'focused-video',
+      'focused-settings',
+      'focused-artist',
+    }.contains(command.scenario)) {
+      throw StateError('Unknown focused benchmark: ${command.scenario}');
+    }
+    if (video) {
+      await _prepareBenchmarkVideo(command.runId, _benchmarkVideo60TrackId);
+    } else {
+      await _prepareBenchmarkAudio(command.runId, _benchmarkVideo30TrackId);
+    }
+    await audioPlayer.setVolume(0);
+    final covered =
+        command.scenario == 'focused-settings' ||
+        command.scenario == 'focused-artist';
+    if (command.scenario == 'focused-settings') _openSettings();
+    if (command.scenario == 'focused-artist') {
+      _openArtistScreen(62000, 'Benchmark artist');
+    }
+    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 750));
+    await _markBenchmarkReadyAndComplete(command);
+    await PerformanceFrameMonitor.waitForCapture(command.runId);
+    final eventsBefore = _benchmarkPositionEvents;
+    final audioBefore = await audioPlayer.getCurrentPosition();
+    await PerformanceFrameMonitor.waitForCaptureEnd(command.runId);
+    final events = _benchmarkPositionEvents - eventsBefore;
+    final audioAfter = await audioPlayer.getCurrentPosition();
+    final controllerAlive = _videoController != null;
+    final videoPlaying = _videoController?.value.isPlaying ?? false;
+    final audioPlaying = audioPlayer.state == PlayerState.playing;
+    if (!audioPlaying ||
+        audioBefore == null ||
+        audioAfter == null ||
+        audioAfter <= audioBefore) {
+      throw StateError('Audio stopped or failed to advance during capture.');
+    }
+    double? restoreMs;
+    if (covered) {
+      if (!mounted) throw StateError('Benchmark screen was disposed.');
+      final clock = Stopwatch()..start();
+      Navigator.of(context).pop();
+      await _waitForBenchmarkCondition(
+        command.runId,
+        'video after covered route',
+        () =>
+            _isVideoInitialized &&
+            _videoController?.value.isPlaying == true &&
+            _videoController?.value.isBuffering == false,
+      );
+      restoreMs = clock.elapsedMicroseconds / 1000;
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (audioPlayer.state != PlayerState.playing) {
+        throw StateError('Returning from route interrupted audio.');
+      }
+    }
+    await _verifyFocusedPlaybackControls(command.runId, video: video);
+    await File('$localPath/focused_${command.runId}.json').writeAsString(
+      jsonEncode({
+        'runId': command.runId,
+        'scenario': command.scenario,
+        'positionEvents': events,
+        'audioAdvanceMs': (audioAfter - audioBefore).inMilliseconds,
+        'audioPlaying': audioPlaying,
+        'videoControllerAlive': controllerAlive,
+        'videoPlaying': videoPlaying,
+        'restoreVideoMs': restoreMs,
+        'playbackControlsPassed': true,
+        'imageCacheBytes': PaintingBinding.instance.imageCache.currentSizeBytes,
+      }),
+    );
+  }
+
+  Future<void> _verifyFocusedPlaybackControls(
+    String runId, {
+    required bool video,
+  }) async {
+    if (video) {
+      if (!mounted) throw StateError('Benchmark screen was disposed.');
+      final controller = _videoController;
+      unawaited(
+        showDialog<void>(
+          context: context,
+          builder: (_) => const AlertDialog(content: Text('Benchmark dialog')),
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 750));
+      if (!identical(controller, _videoController) ||
+          controller?.value.isPlaying != true) {
+        throw StateError('A transparent dialog stopped visible video.');
+      }
+      if (!mounted) throw StateError('Benchmark screen was disposed.');
+      Navigator.of(context).pop();
+    }
+    pauseTrack();
+    await _audioWork;
+    final paused = await audioPlayer.getCurrentPosition();
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    final stillPaused = await audioPlayer.getCurrentPosition();
+    if (audioPlayer.state != PlayerState.paused ||
+        paused == null ||
+        stillPaused == null ||
+        (stillPaused - paused).abs() > const Duration(milliseconds: 100)) {
+      throw StateError('Pause failed to freeze audio.');
+    }
+    seekTo(const Duration(seconds: 7));
+    await _audioWork;
+    await _videoWork;
+    final seeked = await audioPlayer.getCurrentPosition();
+    if (seeked == null ||
+        (seeked - const Duration(seconds: 7)).abs() >
+            const Duration(milliseconds: 300)) {
+      throw StateError(
+        'Explicit seek did not update native audio immediately.',
+      );
+    }
+    pauseTrack();
+    await _audioWork;
+    await _waitForBenchmarkCondition(
+      runId,
+      'resume after pause/seek',
+      () => audioPlayer.state == PlayerState.playing,
+    );
   }
 
   Future<void> _markBenchmarkReadyAndComplete(
@@ -3639,6 +3802,35 @@ class MainAppScreenState extends State<MainAppScreen>
     return FileImage(resolvePlaylistArtwork(Directory(localPath), pathOrUrl));
   }
 
+  ImageProvider _playlistThumbnail(
+    BuildContext context,
+    String path,
+    double size,
+  ) {
+    final provider = getPlaylistImage(path);
+    final version = _playlistArtworkVersions[path] ?? 0;
+    final imagePath =
+        Uri.tryParse(path)?.path.toLowerCase() ?? path.toLowerCase();
+    // Animated codecs can ignore target dimensions. Do not duplicate full GIF/
+    // WebP frame buffers for selected/unselected avatar sizes or another DPR.
+    if (imagePath.endsWith('.gif') || imagePath.endsWith('.webp')) {
+      return CoverThumbnailProvider.original(provider, cacheVersion: version);
+    }
+    return coverThumbnail(context, provider, size, cacheVersion: version);
+  }
+
+  Future<void> _invalidatePlaylistArtwork(String path) async {
+    if (path.isEmpty) return;
+    // A replacement keeps its portable filename. Version all decode sizes,
+    // including ones previously used on another monitor/DPR, not only FileImage.
+    _playlistArtworkVersions.update(
+      path,
+      (version) => version + 1,
+      ifAbsent: () => 1,
+    );
+    await getPlaylistImage(path).evict();
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  Playback
   // ═══════════════════════════════════════════════════════════════════════════
@@ -4469,8 +4661,8 @@ class MainAppScreenState extends State<MainAppScreen>
         playlistId,
       );
       if (!mounted) return;
-      if (oldImage.isNotEmpty) await getPlaylistImage(oldImage).evict();
-      await getPlaylistImage(image).evict();
+      await _invalidatePlaylistArtwork(oldImage);
+      if (image != oldImage) await _invalidatePlaylistArtwork(image);
       if (mounted) await updatePlaylistDetails(playlistId, {'image': image});
     } catch (_) {
       if (mounted) {
@@ -4833,7 +5025,11 @@ class MainAppScreenState extends State<MainAppScreen>
                             backgroundColor: Colors.white10,
                             backgroundImage:
                                 myPlaylists[i]['image']?.isNotEmpty == true
-                                ? getPlaylistImage(myPlaylists[i]['image'])
+                                ? _playlistThumbnail(
+                                    ctx,
+                                    myPlaylists[i]['image'],
+                                    navId == i + 3 ? 36 : 28,
+                                  )
                                 : null,
                             radius: navId == i + 3 ? 18 : 14,
                             child: myPlaylists[i]['image']?.isNotEmpty != true
@@ -4964,7 +5160,7 @@ class MainAppScreenState extends State<MainAppScreen>
                   leading: CircleAvatar(
                     backgroundColor: Colors.white10,
                     backgroundImage: pl['image']?.isNotEmpty == true
-                        ? getPlaylistImage(pl['image'])
+                        ? _playlistThumbnail(ctx, pl['image'], 32)
                         : null,
                     radius: 16,
                     child: pl['image']?.isNotEmpty != true
@@ -5336,8 +5532,12 @@ class MainAppScreenState extends State<MainAppScreen>
                                     ),
                                   )
                                 : Image(
-                                    image: getPictureProvider(
-                                      playingQueue[playingIndex],
+                                    image: coverThumbnail(
+                                      context,
+                                      getPictureProvider(
+                                        playingQueue[playingIndex],
+                                      ),
+                                      240,
                                     ),
                                     fit: BoxFit.cover,
                                   ),

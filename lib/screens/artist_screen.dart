@@ -555,7 +555,11 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                           color: Colors.white10,
                                           image: coverProvider != null
                                               ? DecorationImage(
-                                                  image: coverProvider,
+                                                  image: coverThumbnail(
+                                                    context,
+                                                    coverProvider,
+                                                    120,
+                                                  ),
                                                   fit: BoxFit.cover,
                                                 )
                                               : null,

@@ -94,6 +94,8 @@ void main() {
       expect([portrait.width, portrait.height], [100, 150]);
       final tiny = coverThumbnailTargetSize(50, 100, 100);
       expect([tiny.width, tiny.height], [50, 100]);
+      final original = coverThumbnailTargetSize(600, 900, 0);
+      expect([original.width, original.height], [600, 900]);
     },
   );
 
@@ -138,6 +140,127 @@ void main() {
       immediateKey = key;
     });
     expect(immediateKey, const CoverThumbnailKey(source, 100));
+  });
+
+  test(
+    'artwork replacement versions invalidate every thumbnail size',
+    () async {
+      const source = NetworkImage('https://example.com/same-playlist-path.jpg');
+      for (final size in [28, 32, 36, 56, 64, 72]) {
+        final old = CoverThumbnailProvider(source, pixelSize: size);
+        final replacement = CoverThumbnailProvider(
+          source,
+          pixelSize: size,
+          cacheVersion: 1,
+        );
+        expect(
+          await old.obtainKey(ImageConfiguration.empty),
+          isNot(await replacement.obtainKey(ImageConfiguration.empty)),
+        );
+        expect(old, isNot(replacement));
+      }
+    },
+  );
+
+  testWidgets(
+    'real decoded album bytes shrink without undersampling at 1x and 2x',
+    (tester) async {
+      final source = MemoryImage(
+        Uint8List.fromList(img.encodePng(img.Image(width: 600, height: 600))),
+      );
+      Future<Size> decode(ImageProvider provider) async {
+        final result = Completer<Size>();
+        final stream = provider.resolve(ImageConfiguration.empty);
+        late ImageStreamListener listener;
+        listener = ImageStreamListener((info, _) {
+          result.complete(
+            Size(info.image.width.toDouble(), info.image.height.toDouble()),
+          );
+          info.dispose();
+          stream.removeListener(listener);
+        }, onError: result.completeError);
+        stream.addListener(listener);
+        return result.future;
+      }
+
+      final original = await tester.runAsync(() => decode(source));
+      expect(original, const Size(600, 600));
+      for (final dpr in [1.0, 2.0]) {
+        tester.view.devicePixelRatio = dpr;
+        late ImageProvider thumbnail;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Builder(
+              builder: (context) {
+                thumbnail = coverThumbnail(context, source, 120);
+                return const SizedBox();
+              },
+            ),
+          ),
+        );
+        final actual = (await tester.runAsync(() => decode(thumbnail)))!;
+        expect(actual, Size.square(120 * dpr));
+        final originalBytes = original!.width * original.height * 4;
+        final thumbnailBytes = actual.width * actual.height * 4;
+        expect(thumbnailBytes, lessThan(originalBytes / 2));
+        // Actual codec dimensions, not compressed file-size estimates.
+        debugPrint(
+          'Album ${dpr}x: decoded ${originalBytes.toInt()} -> ${thumbnailBytes.toInt()} bytes',
+        );
+      }
+      tester.view.resetDevicePixelRatio();
+      await tester.pumpWidget(const SizedBox());
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+    },
+  );
+
+  testWidgets('thumbnail decoding keeps animated GIF frames', (tester) async {
+    final image = img.Image(width: 120, height: 120)
+      ..clear(img.ColorRgb8(255, 0, 0))
+      ..frameDuration = 100;
+    image.addFrame(
+      img.Image(width: 120, height: 120)
+        ..clear(img.ColorRgb8(0, 0, 255))
+        ..frameDuration = 100,
+    );
+    final source = MemoryImage(Uint8List.fromList(img.encodeGif(image)));
+    final stream = CoverThumbnailProvider.original(
+      source,
+    ).resolve(ImageConfiguration.empty);
+    final frames = <Color>[];
+    final ready = Completer<void>();
+    final listener = ImageStreamListener((info, _) {
+      // Flutter may retain source dimensions for animated codecs. Animation
+      // must survive even when a codec cannot downsample individual frames.
+      expect(info.image.width, greaterThanOrEqualTo(36));
+      expect(info.image.height, greaterThanOrEqualTo(36));
+      info.image
+          .toByteData()
+          .then((bytes) {
+            frames.add(
+              Color.fromARGB(
+                255,
+                bytes!.getUint8(0),
+                bytes.getUint8(1),
+                bytes.getUint8(2),
+              ),
+            );
+            if (frames.length >= 2 && !ready.isCompleted) ready.complete();
+          })
+          .whenComplete(info.dispose);
+    });
+    stream.addListener(listener);
+    for (var i = 0; i < 100 && !ready.isCompleted; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 5)),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(frames.take(2), [const Color(0xFFFF0000), const Color(0xFF0000FF)]);
+    stream.removeListener(listener);
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
   });
 
   test('asynchronous source keys and failures propagate unchanged', () async {
