@@ -40,6 +40,7 @@ import '../playlist_tracks.dart';
 import '../player_shortcuts.dart';
 import '../safe_file_migration.dart';
 import '../server_config.dart';
+import '../windows_taskbar_controls.dart';
 import '../track_updates.dart';
 import '../widgets/track_updates_dialog.dart';
 import '../widgets/track_metadata_dialog.dart';
@@ -302,6 +303,7 @@ class MainAppScreenState extends State<MainAppScreen>
   int playCount = 0;
   List<dynamic> cachedTracks = [];
   List<dynamic> cachedArtists = [];
+  WindowsTaskbarControls? _taskbarControls;
   bool _isSyncingArtists = false;
   bool _isRefreshingArtistPhotos = false;
   final Map<int, Map> _artistPhotoQueue = {};
@@ -434,6 +436,13 @@ class MainAppScreenState extends State<MainAppScreen>
     audioPlayer = AudioPlayer();
     if (isAudioServiceActive) {
       audioHandler.attachPlayer(audioPlayer);
+    }
+    if (Platform.isWindows && !PerformanceFrameMonitor.enabled) {
+      _taskbarControls = WindowsTaskbarControls(onAction: _onTaskbarAction);
+      activeTrackNotifier.addListener(_syncTaskbarControls);
+      isPlayingNotifier.addListener(_syncTaskbarControls);
+      languageNotifier.addListener(_syncTaskbarControls);
+      _syncTaskbarControls();
     }
 
     // Configure audio context for Android background playback
@@ -577,6 +586,10 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void dispose() {
     _stateDisposing = true;
+    activeTrackNotifier.removeListener(_syncTaskbarControls);
+    isPlayingNotifier.removeListener(_syncTaskbarControls);
+    languageNotifier.removeListener(_syncTaskbarControls);
+    _taskbarControls?.dispose();
     unawaited(_statisticsStateSubscription?.cancel());
     unawaited(
       _statistics?.close().catchError((Object error) {
@@ -1494,6 +1507,45 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void _onDiscordSettingChanged() {
     updateRPC(force: true);
+  }
+
+  void _syncTaskbarControls() {
+    if (_stateDisposing || _taskbarControls == null) return;
+    final hasTrack = playingIndex >= 0 && playingIndex < playingQueue.length;
+    final favorite =
+        hasTrack && favs.contains(playingQueue[playingIndex]['id']);
+    unawaited(
+      _taskbarControls!.update(
+        hasTrack: hasTrack,
+        playing: isPlaying,
+        favorite: favorite,
+        favoriteTip: tr(
+          favorite ? 'taskbar_favorite_remove' : 'taskbar_favorite_add',
+        ),
+        previousTip: tr('taskbar_previous'),
+        playPauseTip: tr(isPlaying ? 'taskbar_pause' : 'taskbar_play'),
+        nextTip: tr('taskbar_next'),
+      ),
+    );
+  }
+
+  Future<void> _onTaskbarAction(String action) async {
+    if (!mounted ||
+        _stateDisposing ||
+        playingIndex < 0 ||
+        playingIndex >= playingQueue.length) {
+      return;
+    }
+    switch (action) {
+      case 'favorite':
+        await toggleFavorite(playingQueue[playingIndex]['id'] as int);
+      case 'previous':
+        prevTrack();
+      case 'toggle':
+        pauseTrack();
+      case 'next':
+        nextTrack();
+    }
   }
 
   void _setPlaying(bool value) {
@@ -3571,6 +3623,7 @@ class MainAppScreenState extends State<MainAppScreen>
         favs.add(id);
       }
     });
+    _syncTaskbarControls();
     _notifyArtistLibraryChanged();
     final favFile = File('$localPath/liked_tracks.json');
     final snapshot = json.encode(favs.toList());

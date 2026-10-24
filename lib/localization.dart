@@ -15,6 +15,24 @@ String tr(String key) {
 }
 
 const Map<String, Map<String, String>> _translations = {
+  'taskbar_favorite_add': {
+    'ru': 'Добавить в избранное',
+    'en': 'Add to favorites',
+    'ja': 'お気に入りに追加',
+  },
+  'taskbar_favorite_remove': {
+    'ru': 'Убрать из избранного',
+    'en': 'Remove from favorites',
+    'ja': 'お気に入りから削除',
+  },
+  'taskbar_previous': {
+    'ru': 'Предыдущий трек',
+    'en': 'Previous track',
+    'ja': '前の曲',
+  },
+  'taskbar_next': {'ru': 'Следующий трек', 'en': 'Next track', 'ja': '次の曲'},
+  'taskbar_play': {'ru': 'Воспроизвести', 'en': 'Play', 'ja': '再生'},
+  'taskbar_pause': {'ru': 'Пауза', 'en': 'Pause', 'ja': '一時停止'},
   'playlist_rename': {'ru': 'Переименовать', 'en': 'Rename', 'ja': '名前を変更'},
   'playlist_change_artwork': {
     'ru': 'Сменить обложку',
