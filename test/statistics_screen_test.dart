@@ -1,12 +1,15 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/globals.dart';
 import 'package:shiki/listening_statistics.dart';
+import 'package:shiki/localization.dart';
 import 'package:shiki/screens/settings_screen.dart';
 import 'package:shiki/screens/statistics_screen.dart';
 import 'package:shiki/statistics_store.dart';
@@ -17,6 +20,7 @@ class _ScreenStore extends StatisticsStore {
   int trackCount = 3;
   String? requestedFrom;
   bool requestedByPlays = false;
+  Completer<void>? pendingRead;
 
   @override
   Future<void> write(List<Map<String, Object?>> rows) async {}
@@ -27,6 +31,7 @@ class _ScreenStore extends StatisticsStore {
     String? to,
     bool byPlays = false,
   }) async {
+    await pendingRead?.future;
     if (fail) throw StateError('unavailable');
     requestedFrom = from;
     requestedByPlays = byPlays;
@@ -80,6 +85,15 @@ class _ScreenStore extends StatisticsStore {
 
 class _ScreenStatistics extends ListeningStatistics {
   _ScreenStatistics(_ScreenStore super.store);
+  StatisticsSummary? readySummary;
+
+  @override
+  StatisticsSummary? cachedSummary({
+    String? from,
+    String? to,
+    bool byPlays = false,
+  }) =>
+      readySummary ?? super.cachedSummary(from: from, to: to, byPlays: byPlays);
 
   @override
   Future<StatisticsSummary> summary({
@@ -131,6 +145,7 @@ void main() {
     WidgetTester tester, {
     double width = 1024,
     double scale = 1,
+    bool settle = true,
   }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = Size(width, 900);
@@ -141,6 +156,9 @@ void main() {
         key: const ValueKey('statistics_screenshot'),
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
+          locale: Locale(languageNotifier.value),
+          supportedLocales: appSupportedLocales,
+          localizationsDelegates: GlobalMaterialLocalizations.delegates,
           theme: ThemeData.dark().copyWith(
             textTheme: ThemeData.dark().textTheme.apply(
               fontFamily: screenshot && fontPath.isNotEmpty
@@ -158,7 +176,70 @@ void main() {
         ),
       ),
     );
+    if (settle) await tester.pumpAndSettle();
+  }
+
+  testWidgets('initial read hides the incomplete statistics page', (
+    tester,
+  ) async {
+    final pending = store.pendingRead = Completer<void>();
+    await show(tester, settle: false);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byKey(const ValueKey('stats_initial_loading')), findsOneWidget);
+    expect(find.byKey(const ValueKey('stats_period')), findsNothing);
+    expect(find.text('Экспорт'), findsNothing);
+    expect(find.text('Импорт'), findsNothing);
+    pending.complete();
     await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('stats_initial_loading')), findsNothing);
+    expect(find.text('Без ответа'), findsOneWidget);
+    expect(find.text('2 ч 5 мин'), findsOneWidget);
+    expect(find.text('Экспорт'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('refresh retains the loaded statistics while reading', (
+    tester,
+  ) async {
+    await show(tester);
+    final pending = store.pendingRead = Completer<void>();
+    await tester.tap(find.byIcon(Icons.refresh));
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byKey(const ValueKey('stats_initial_loading')), findsNothing);
+    expect(find.text('Без ответа'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    pending.complete();
+    await tester.pumpAndSettle();
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'prepared statistics appear without a loading frame or another read',
+    (tester) async {
+      (statistics as _ScreenStatistics).readySummary = await statistics
+          .summary();
+      store.pendingRead = Completer<void>();
+      await show(tester, settle: false);
+      await tester.pump();
+      expect(find.text('2 ч 5 мин'), findsOneWidget);
+      expect(find.byKey(const ValueKey('stats_initial_loading')), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(store.pendingRead!.isCompleted, isFalse);
+    },
+  );
+
+  for (final language in ['ru', 'en', 'ja']) {
+    testWidgets('statistics fits narrow layout in $language', (tester) async {
+      languageNotifier.value = language;
+      await show(tester, width: 375);
+      await tester.scrollUntilVisible(
+        find.text(tr('stats_import')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(tester.takeException(), isNull);
+    });
   }
 
   for (final width in [320.0, 375.0, 768.0, 1024.0, 1440.0]) {
@@ -223,12 +304,37 @@ void main() {
     await tester.tap(find.text('Всё время'));
     await tester.pumpAndSettle();
     expect(store.requestedFrom, isNull);
-    await tester.ensureVisible(find.byType(DropdownButton<bool>));
-    await tester.tap(find.byType(DropdownButton<bool>));
+    await tester.ensureVisible(find.byKey(const ValueKey('stats_sort')));
+    await tester.tap(find.byKey(const ValueKey('stats_sort')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('По прослушиваниям').last);
     await tester.pumpAndSettle();
     expect(store.requestedByPlays, isTrue);
+  });
+
+  testWidgets('sort menu opens below the button for either selection', (
+    tester,
+  ) async {
+    await show(tester);
+    final button = find.byKey(const ValueKey('stats_sort'));
+    for (final value in [true, false]) {
+      await tester.ensureVisible(button);
+      final bottom = tester.getBottomLeft(button).dy;
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      final items = find.byType(PopupMenuItem<bool>);
+      expect(items, findsNWidgets(2));
+      expect(tester.getTopLeft(items.first).dy, greaterThanOrEqualTo(bottom));
+      await tester.tap(
+        find.widgetWithText(
+          PopupMenuItem<bool>,
+          value ? 'По прослушиваниям' : 'По времени',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(store.requestedByPlays, value);
+      expect(tester.takeException(), isNull);
+    }
   });
 
   testWidgets('rankings expand and artist tab preserves the compact default', (
@@ -294,6 +400,7 @@ void main() {
   });
 
   testWidgets('settings opens the statistics screen', (tester) async {
+    final pending = store.pendingRead = Completer<void>();
     final directory = (await tester.runAsync(
       () => Directory.systemTemp.createTemp('shiki-statistics-settings-'),
     ))!;
@@ -315,6 +422,13 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
+    expect(find.byType(SettingsScreen), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
+    expect(pending.isCompleted, isFalse);
+    pending.complete();
+    store.pendingRead = null;
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.byKey(const ValueKey('open_statistics')),

@@ -63,17 +63,34 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
     };
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool refresh = false}) async {
     final request = ++_request;
+    final range = _range;
+    final from = range == null ? null : statisticsDay(range.start);
+    final to = statisticsDay(range?.end ?? DateTime.now());
+    final cached = refresh
+        ? null
+        : widget.statistics.cachedSummary(
+            from: from,
+            to: to,
+            byPlays: _byPlays,
+          );
+    if (cached != null) {
+      setState(() {
+        _summary = cached;
+        _loading = false;
+        _error = null;
+      });
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
     });
-    final range = _range;
     try {
       final summary = await widget.statistics.summary(
-        from: range == null ? null : statisticsDay(range.start),
-        to: statisticsDay(range?.end ?? DateTime.now()),
+        from: from,
+        to: to,
         byPlays: _byPlays,
       );
       if (mounted && request == _request) setState(() => _summary = summary);
@@ -117,6 +134,7 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       if (importing) {
         final picked = await FilePicker.platform.pickFiles(
           type: FileType.custom,
+          dialogTitle: tr('stats_import'),
           allowedExtensions: ['json'],
         );
         if (picked == null) return;
@@ -191,337 +209,398 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         actions: [
           IconButton(
             tooltip: tr('stats_refresh'),
-            onPressed: _loading || _transferring ? null : _load,
+            onPressed: _loading || _transferring
+                ? null
+                : () => _load(refresh: true),
             icon: const Icon(Icons.refresh),
           ),
         ],
       ),
       body: SafeArea(
         top: false,
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 960),
-            child: RefreshIndicator(
-              onRefresh: _load,
-              color: accent,
-              child: CustomScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                slivers: [
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
-                    sliver: SliverToBoxAdapter(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: PopupMenuButton<String>(
-                              key: const ValueKey('stats_period'),
-                              tooltip: tr('stats_period_custom'),
-                              enabled: !_transferring,
-                              initialValue: _period,
-                              onSelected: _selectPeriod,
-                              color: _surface,
-                              itemBuilder: (_) => [
-                                for (final value in [
-                                  'week',
-                                  'month',
-                                  'year',
-                                  'all',
-                                  'custom',
-                                ])
-                                  PopupMenuItem(
-                                    value: value,
-                                    child: Text(tr('stats_period_$value')),
-                                  ),
-                              ],
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 12,
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Flexible(
-                                      child: Text(
-                                        _period == 'custom' &&
-                                                _customRange != null
-                                            ? '${_date(_customRange!.start)} — ${_date(_customRange!.end)}'
-                                            : tr('stats_period_$_period'),
-                                        style: const TextStyle(
-                                          color: _text,
-                                          fontWeight: FontWeight.w600,
+        child: _loading && summary == null
+            ? Center(
+                child: SizedBox.square(
+                  dimension: 24,
+                  child: CircularProgressIndicator(
+                    key: const ValueKey('stats_initial_loading'),
+                    color: accent,
+                    strokeWidth: 2,
+                  ),
+                ),
+              )
+            : Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 960),
+                  child: RefreshIndicator(
+                    onRefresh: () => _load(refresh: true),
+                    color: accent,
+                    child: CustomScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      slivers: [
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
+                          sliver: SliverToBoxAdapter(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Align(
+                                  alignment: Alignment.centerRight,
+                                  child: PopupMenuButton<String>(
+                                    key: const ValueKey('stats_period'),
+                                    tooltip: tr('stats_period_custom'),
+                                    enabled: !_transferring,
+                                    initialValue: _period,
+                                    onSelected: _selectPeriod,
+                                    color: _surface,
+                                    itemBuilder: (_) => [
+                                      for (final value in [
+                                        'week',
+                                        'month',
+                                        'year',
+                                        'all',
+                                        'custom',
+                                      ])
+                                        PopupMenuItem(
+                                          value: value,
+                                          child: Text(
+                                            tr('stats_period_$value'),
+                                          ),
                                         ),
+                                    ],
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 12,
                                       ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    const Icon(
-                                      Icons.expand_more,
-                                      size: 20,
-                                      color: _muted,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                          if (_loading || _transferring)
-                            LinearProgressIndicator(
-                              color: accent,
-                              minHeight: 2,
-                            ),
-                          if (_error != null) ...[
-                            Text(
-                              _error!,
-                              style: const TextStyle(color: Colors.redAccent),
-                            ),
-                            TextButton.icon(
-                              onPressed: _load,
-                              icon: const Icon(Icons.refresh),
-                              label: Text(tr('stats_retry')),
-                            ),
-                          ],
-                          if (summary != null) ...[
-                            const SizedBox(height: 8),
-                            if (summary.topArtists.isNotEmpty)
-                              _featuredArtist(summary.topArtists.first)
-                            else
-                              Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 24,
-                                ),
-                                child: Text(
-                                  tr('stats_empty'),
-                                  style: const TextStyle(color: _muted),
-                                ),
-                              ),
-                            const SizedBox(height: 28),
-                            Wrap(
-                              spacing: 32,
-                              runSpacing: 16,
-                              children: [
-                                _total(
-                                  tr('stats_total_listened'),
-                                  _duration(summary.listeningMs),
-                                ),
-                                _total(tr('stats_tracks'), '${summary.tracks}'),
-                                _total(
-                                  tr('stats_artists'),
-                                  '${summary.artists}',
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 36),
-                            Wrap(
-                              alignment: WrapAlignment.spaceBetween,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              spacing: 24,
-                              runSpacing: 8,
-                              children: [
-                                Wrap(
-                                  spacing: 16,
-                                  children: [
-                                    _rankTab(
-                                      false,
-                                      tr('stats_favorite_tracks'),
-                                      accent,
-                                    ),
-                                    _rankTab(true, tr('stats_artists'), accent),
-                                  ],
-                                ),
-                                ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    maxWidth: 230,
-                                  ),
-                                  child: DropdownButtonHideUnderline(
-                                    child: DropdownButton<bool>(
-                                      isExpanded: true,
-                                      value: _byPlays,
-                                      dropdownColor: _surface,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodyMedium
-                                          ?.copyWith(color: _muted),
-                                      items: [
-                                        for (final value in [false, true])
-                                          DropdownMenuItem(
-                                            value: value,
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Flexible(
                                             child: Text(
-                                              tr(
-                                                value
-                                                    ? 'stats_sort_plays'
-                                                    : 'stats_sort_time',
+                                              _period == 'custom' &&
+                                                      _customRange != null
+                                                  ? '${_date(_customRange!.start)} — ${_date(_customRange!.end)}'
+                                                  : tr('stats_period_$_period'),
+                                              style: const TextStyle(
+                                                color: _text,
+                                                fontWeight: FontWeight.w600,
                                               ),
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
                                             ),
                                           ),
-                                      ],
-                                      onChanged: _transferring
-                                          ? null
-                                          : (value) {
-                                              if (value == null) return;
-                                              setState(() => _byPlays = value);
-                                              _load();
-                                            },
+                                          const SizedBox(width: 8),
+                                          const Icon(
+                                            Icons.expand_more,
+                                            size: 20,
+                                            color: _muted,
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
+                                if (_loading || _transferring)
+                                  LinearProgressIndicator(
+                                    color: accent,
+                                    minHeight: 2,
+                                  ),
+                                if (_error != null) ...[
+                                  Text(
+                                    _error!,
+                                    style: const TextStyle(
+                                      color: Colors.redAccent,
+                                    ),
+                                  ),
+                                  TextButton.icon(
+                                    onPressed: _load,
+                                    icon: const Icon(Icons.refresh),
+                                    label: Text(tr('stats_retry')),
+                                  ),
+                                ],
+                                if (summary != null) ...[
+                                  const SizedBox(height: 8),
+                                  if (summary.topArtists.isNotEmpty)
+                                    _featuredArtist(summary.topArtists.first)
+                                  else
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 24,
+                                      ),
+                                      child: Text(
+                                        tr('stats_empty'),
+                                        style: const TextStyle(color: _muted),
+                                      ),
+                                    ),
+                                  const SizedBox(height: 28),
+                                  Wrap(
+                                    spacing: 32,
+                                    runSpacing: 16,
+                                    children: [
+                                      _total(
+                                        tr('stats_total_listened'),
+                                        _duration(summary.listeningMs),
+                                      ),
+                                      _total(
+                                        tr('stats_tracks'),
+                                        '${summary.tracks}',
+                                      ),
+                                      _total(
+                                        tr('stats_artists'),
+                                        '${summary.artists}',
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 36),
+                                  Wrap(
+                                    alignment: WrapAlignment.spaceBetween,
+                                    crossAxisAlignment:
+                                        WrapCrossAlignment.center,
+                                    spacing: 24,
+                                    runSpacing: 8,
+                                    children: [
+                                      Wrap(
+                                        spacing: 16,
+                                        children: [
+                                          _rankTab(
+                                            false,
+                                            tr('stats_favorite_tracks'),
+                                            accent,
+                                          ),
+                                          _rankTab(
+                                            true,
+                                            tr('stats_artists'),
+                                            accent,
+                                          ),
+                                        ],
+                                      ),
+                                      ConstrainedBox(
+                                        constraints: const BoxConstraints(
+                                          maxWidth: 230,
+                                        ),
+                                        child: PopupMenuButton<bool>(
+                                          key: const ValueKey('stats_sort'),
+                                          position: PopupMenuPosition.under,
+                                          enabled: !_transferring,
+                                          color: _surface,
+                                          itemBuilder: (_) => [
+                                            for (final value in [false, true])
+                                              PopupMenuItem<bool>(
+                                                value: value,
+                                                child: Text(
+                                                  tr(
+                                                    value
+                                                        ? 'stats_sort_plays'
+                                                        : 'stats_sort_time',
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                    color: value == _byPlays
+                                                        ? _text
+                                                        : _muted,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
+                                          onSelected: (value) {
+                                            setState(() => _byPlays = value);
+                                            _load();
+                                          },
+                                          child: SizedBox(
+                                            height: 48,
+                                            child: Row(
+                                              children: [
+                                                Expanded(
+                                                  child: Text(
+                                                    tr(
+                                                      _byPlays
+                                                          ? 'stats_sort_plays'
+                                                          : 'stats_sort_time',
+                                                    ),
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: Theme.of(context)
+                                                        .textTheme
+                                                        .bodyMedium
+                                                        ?.copyWith(
+                                                          color: _muted,
+                                                        ),
+                                                  ),
+                                                ),
+                                                const Icon(
+                                                  Icons.arrow_drop_down,
+                                                  color: _muted,
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                ],
                               ],
                             ),
-                            const SizedBox(height: 8),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
-                    sliver: SliverList.builder(
-                      itemCount: visibleCount,
-                      itemBuilder: (context, index) =>
-                          _rankRow(ranks[index], index, ranks.first, accent),
-                    ),
-                  ),
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
-                    sliver: SliverToBoxAdapter(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (ranks.length > 5)
-                            TextButton(
-                              key: const ValueKey('stats_expand_ranking'),
-                              onPressed: () =>
-                                  setState(() => _expanded = !_expanded),
-                              child: Text(
-                                tr(_expanded ? 'stats_less' : 'stats_more'),
-                              ),
+                          ),
+                        ),
+                        SliverPadding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          sliver: SliverList.builder(
+                            itemCount: visibleCount,
+                            itemBuilder: (context, index) => _rankRow(
+                              ranks[index],
+                              index,
+                              ranks.first,
+                              accent,
                             ),
-                          if (summary != null) ...[
-                            const SizedBox(height: 28),
-                            Text(
-                              tr('stats_daily'),
-                              style: const TextStyle(
-                                color: _text,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            if (summary.listeningMs > 0)
-                              _chart(summary, accent)
-                            else
-                              const SizedBox(height: 12),
-                            const SizedBox(height: 28),
-                            Wrap(
-                              spacing: 32,
-                              runSpacing: 16,
+                          ),
+                        ),
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(24, 8, 24, 28),
+                          sliver: SliverToBoxAdapter(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                _total(
-                                  tr('stats_plays'),
-                                  '${summary.plays}',
-                                  secondary: true,
+                                if (ranks.length > 5)
+                                  TextButton(
+                                    key: const ValueKey('stats_expand_ranking'),
+                                    onPressed: () =>
+                                        setState(() => _expanded = !_expanded),
+                                    child: Text(
+                                      tr(
+                                        _expanded ? 'stats_less' : 'stats_more',
+                                      ),
+                                    ),
+                                  ),
+                                if (summary != null) ...[
+                                  const SizedBox(height: 28),
+                                  Text(
+                                    tr('stats_daily'),
+                                    style: const TextStyle(
+                                      color: _text,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 20),
+                                  if (summary.listeningMs > 0)
+                                    _chart(summary, accent)
+                                  else
+                                    const SizedBox(height: 12),
+                                  const SizedBox(height: 28),
+                                  Wrap(
+                                    spacing: 32,
+                                    runSpacing: 16,
+                                    children: [
+                                      _total(
+                                        tr('stats_plays'),
+                                        '${summary.plays}',
+                                        secondary: true,
+                                      ),
+                                      _total(
+                                        tr('stats_active_days'),
+                                        '${summary.days.length}',
+                                        secondary: true,
+                                      ),
+                                      _total(
+                                        tr('stats_app_time'),
+                                        _duration(summary.appMs),
+                                        secondary: true,
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 28),
+                                ],
+                                if (summary?.firstDay != null)
+                                  Text(
+                                    '${tr('stats_since')} ${_date(DateTime.parse(summary!.firstDay!))}',
+                                    style: const TextStyle(
+                                      color: _muted,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                Theme(
+                                  data: Theme.of(
+                                    context,
+                                  ).copyWith(dividerColor: Colors.transparent),
+                                  child: ExpansionTile(
+                                    tilePadding: EdgeInsets.zero,
+                                    childrenPadding: const EdgeInsets.only(
+                                      bottom: 16,
+                                    ),
+                                    title: Text(
+                                      tr('stats_details'),
+                                      style: const TextStyle(
+                                        color: _muted,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    children: [
+                                      Text(
+                                        tr('stats_counting_hint'),
+                                        style: const TextStyle(
+                                          color: _muted,
+                                          fontSize: 13,
+                                          height: 1.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                _total(
-                                  tr('stats_active_days'),
-                                  '${summary.days.length}',
-                                  secondary: true,
+                                Wrap(
+                                  spacing: 12,
+                                  runSpacing: 8,
+                                  children: [
+                                    TextButton.icon(
+                                      onPressed: _transferring
+                                          ? null
+                                          : () => _transfer(false),
+                                      icon: const Icon(
+                                        Icons.file_upload_outlined,
+                                        size: 18,
+                                      ),
+                                      label: Text(tr('stats_export')),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: _transferring
+                                          ? null
+                                          : () => _transfer(true),
+                                      icon: const Icon(
+                                        Icons.file_download_outlined,
+                                        size: 18,
+                                      ),
+                                      label: Text(tr('stats_import')),
+                                    ),
+                                  ],
                                 ),
-                                _total(
-                                  tr('stats_app_time'),
-                                  _duration(summary.appMs),
-                                  secondary: true,
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 28),
-                          ],
-                          if (summary?.firstDay != null)
-                            Text(
-                              '${tr('stats_since')} ${_date(DateTime.parse(summary!.firstDay!))}',
-                              style: const TextStyle(
-                                color: _muted,
-                                fontSize: 12,
-                              ),
-                            ),
-                          Theme(
-                            data: Theme.of(
-                              context,
-                            ).copyWith(dividerColor: Colors.transparent),
-                            child: ExpansionTile(
-                              tilePadding: EdgeInsets.zero,
-                              childrenPadding: const EdgeInsets.only(
-                                bottom: 16,
-                              ),
-                              title: Text(
-                                tr('stats_details'),
-                                style: const TextStyle(
-                                  color: _muted,
-                                  fontSize: 13,
-                                ),
-                              ),
-                              children: [
+                                const SizedBox(height: 8),
                                 Text(
-                                  tr('stats_counting_hint'),
+                                  tr('stats_private'),
                                   style: const TextStyle(
                                     color: _muted,
-                                    fontSize: 13,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  tr('stats_backup_hint'),
+                                  style: const TextStyle(
+                                    color: _muted,
+                                    fontSize: 12,
                                     height: 1.5,
                                   ),
                                 ),
                               ],
                             ),
                           ),
-                          Wrap(
-                            spacing: 12,
-                            runSpacing: 8,
-                            children: [
-                              TextButton.icon(
-                                onPressed: _transferring
-                                    ? null
-                                    : () => _transfer(false),
-                                icon: const Icon(
-                                  Icons.file_upload_outlined,
-                                  size: 18,
-                                ),
-                                label: Text(tr('stats_export')),
-                              ),
-                              TextButton.icon(
-                                onPressed: _transferring
-                                    ? null
-                                    : () => _transfer(true),
-                                icon: const Icon(
-                                  Icons.file_download_outlined,
-                                  size: 18,
-                                ),
-                                label: Text(tr('stats_import')),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            tr('stats_private'),
-                            style: const TextStyle(color: _muted, fontSize: 12),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            tr('stats_backup_hint'),
-                            style: const TextStyle(
-                              color: _muted,
-                              fontSize: 12,
-                              height: 1.5,
-                            ),
-                          ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
-        ),
       ),
     );
   }

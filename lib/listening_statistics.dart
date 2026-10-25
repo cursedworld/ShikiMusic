@@ -140,6 +140,115 @@ class _ListeningSession {
       days.putIfAbsent(day, () => _Counter(id, day, trackKey, title, artists));
 }
 
+class _SummarySnapshot {
+  _SummarySnapshot(this.data, this.from, this.to, this.byPlays, this.counters)
+    : included = {
+        for (final entry in counters.entries) entry.key: entry.value.toMap(),
+      };
+
+  final Map<String, Object?> data;
+  final String? from, to;
+  final bool byPlays;
+  final Map<String, _Counter> counters;
+  final Map<String, Map<String, Object?>> included;
+
+  StatisticsSummary current({bool? sortByPlays}) {
+    final tracks = {
+      for (final row in (data['top_tracks'] as List).cast<Map>())
+        row['key'] as String: Map<String, Object?>.from(row),
+    };
+    final artists = {
+      for (final row in (data['top_artists'] as List).cast<Map>())
+        row['key'] as String: Map<String, Object?>.from(row),
+    };
+    final days = {
+      for (final row in (data['days'] as List).cast<Map>())
+        row['day'] as String: row['ms'] as int,
+    };
+    var listening = data['listening_ms'] as int;
+    var app = data['app_ms'] as int;
+    var plays = data['plays'] as int;
+    var firstDay = data['first_day'] as String?;
+    for (final entry in counters.entries) {
+      final counter = entry.value;
+      if (firstDay == null || counter.day.compareTo(firstDay) < 0) {
+        firstDay = counter.day;
+      }
+      if ((from != null && counter.day.compareTo(from!) < 0) ||
+          (to != null && counter.day.compareTo(to!) > 0)) {
+        continue;
+      }
+      final base = included[entry.key];
+      final ms = max(
+        0,
+        counter.listeningMs - (base?['listening_ms'] as int? ?? 0),
+      );
+      final count = max(0, counter.plays - (base?['plays'] as int? ?? 0));
+      listening += ms;
+      app += max(0, counter.appMs - (base?['app_ms'] as int? ?? 0));
+      plays += count;
+      if (ms > 0) {
+        days.update(counter.day, (value) => value + ms, ifAbsent: () => ms);
+      }
+      if (counter.trackKey.isEmpty || (ms == 0 && count == 0)) continue;
+      final track = tracks.putIfAbsent(
+        counter.trackKey,
+        () => {
+          'key': counter.trackKey,
+          'name': counter.title,
+          'detail': counter.artists.map((artist) => artist['name']).join(', '),
+          'ms': 0,
+          'plays': 0,
+        },
+      );
+      track['ms'] = (track['ms'] as int) + ms;
+      track['plays'] = (track['plays'] as int) + count;
+      for (final credit in counter.artists) {
+        final artist = artists.putIfAbsent(
+          credit['key']!,
+          () => {
+            'key': credit['key'],
+            'name': credit['name'],
+            'ms': 0,
+            'plays': 0,
+          },
+        );
+        artist['ms'] = (artist['ms'] as int) + ms;
+        artist['plays'] = (artist['plays'] as int) + count;
+      }
+    }
+    List<Map<String, Object?>> ranked(Map<String, Map<String, Object?>> rows) {
+      final result = rows.values
+          .where((row) => (row['ms'] as int) > 0)
+          .toList();
+      result.sort((a, b) {
+        for (final key
+            in (sortByPlays ?? byPlays) ? ['plays', 'ms'] : ['ms', 'plays']) {
+          final comparison = (b[key] as int).compareTo(a[key] as int);
+          if (comparison != 0) return comparison;
+        }
+        return (a['name'] as String).compareTo(b['name'] as String);
+      });
+      return result.take(100).toList(growable: false);
+    }
+
+    final dates = days.keys.toList()..sort();
+    return StatisticsSummary.fromMap({
+      'listening_ms': listening,
+      'app_ms': app,
+      'plays': plays,
+      'tracks': tracks.values.where((row) => (row['ms'] as int) > 0).length,
+      'artists': artists.values.where((row) => (row['ms'] as int) > 0).length,
+      'first_day': firstDay,
+      'days': [
+        for (final day in dates) {'day': day, 'ms': days[day]},
+      ],
+      'top_tracks': ranked(tracks),
+      'top_artists': ranked(artists),
+    });
+  }
+}
+
 /// Playback events update only two small counters. SQLite work runs off the UI
 /// isolate, in batches; no additional timer or per-position disk writes.
 class ListeningStatistics {
@@ -167,6 +276,11 @@ class ListeningStatistics {
   int _lastAppSample = 0, _lastFlush = 0;
   int? _lastPosition, _lastPositionTime;
   Future<void> _writeTail = Future<void>.value();
+  _SummarySnapshot? _snapshot;
+  Map<String, _Counter>? _readingCounters;
+  Future<StatisticsSummary>? _pendingSummary;
+  (String?, String?, bool)? _pendingSummaryQuery;
+  int _summaryGeneration = 0;
   int get _elapsed => _monotonic?.call() ?? _watch.elapsedMilliseconds;
 
   void beginTrack(Map track, {Duration? duration}) {
@@ -294,6 +408,10 @@ class ListeningStatistics {
     counter.revision++;
     counter.updatedAt = wall.millisecondsSinceEpoch;
     _dirty[counter.key] = counter;
+    final snapshot = _snapshot;
+    snapshot?.counters[counter.key] = counter;
+    if (snapshot != null && snapshot.counters.length > 512) _snapshot = null;
+    _readingCounters?[counter.key] = counter;
   }
 
   void _maybeSave() {
@@ -332,15 +450,98 @@ class ListeningStatistics {
     return result;
   }
 
+  StatisticsSummary? cachedSummary({
+    String? from,
+    String? to,
+    bool byPlays = false,
+  }) {
+    _accountApp();
+    final snapshot = _snapshot;
+    if (snapshot == null || snapshot.from != from || snapshot.to != to) {
+      return null;
+    }
+    return snapshot.current(sortByPlays: byPlays);
+  }
+
+  Future<void> prepareSummary() async {
+    final now = _wallClock();
+    await summary(
+      from: statisticsDay(DateTime(now.year, now.month, now.day - 29)),
+      to: statisticsDay(now),
+    );
+  }
+
   Future<StatisticsSummary> summary({
     String? from,
     String? to,
     bool byPlays = false,
-  }) async {
-    await flush();
-    return StatisticsSummary.fromMap(
-      await store.summary(from: from, to: to, byPlays: byPlays),
+  }) {
+    final query = (from, to, byPlays);
+    if (_pendingSummaryQuery == query && _pendingSummary != null) {
+      return _pendingSummary!;
+    }
+    final generation = _summaryGeneration;
+    final result = _writeTail.then((_) async {
+      _accountApp();
+      final counters = <String, _Counter>{
+        for (final counter in [
+          ..._appDays.values,
+          ...?_session?.days.values,
+          ..._dirty.values,
+        ])
+          counter.key: counter,
+      };
+      final snapshot = _SummarySnapshot({}, from, to, byPlays, counters);
+      _readingCounters = counters;
+      try {
+        final data = await store.liveSummary(
+          counters: snapshot.included.values.toList(growable: false),
+          from: from,
+          to: to,
+          byPlays: byPlays,
+        );
+        final included = data.remove('included_counters');
+        if (included is List) {
+          snapshot.included
+            ..clear()
+            ..addEntries(
+              included.cast<Map>().map(
+                (row) => MapEntry(
+                  '${row['id']}/${row['day']}',
+                  Map<String, Object?>.from(row),
+                ),
+              ),
+            );
+        }
+        snapshot.data.addAll(data);
+        if (!_closed &&
+            generation == _summaryGeneration &&
+            counters.length <= 512 &&
+            (data['top_tracks'] as List).length <= 10000) {
+          _snapshot = snapshot;
+        }
+        return snapshot.current();
+      } finally {
+        _readingCounters = null;
+      }
+    });
+    // Reads and existing writes share a queue. New listening remains in memory;
+    // neither the settings route nor the statistics route waits for a save.
+    _writeTail = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
     );
+    _pendingSummaryQuery = query;
+    _pendingSummary = result;
+    result.then<void>(
+      (_) {
+        if (identical(_pendingSummary, result)) _pendingSummary = null;
+      },
+      onError: (Object _, StackTrace _) {
+        if (identical(_pendingSummary, result)) _pendingSummary = null;
+      },
+    );
+    return result;
   }
 
   Future<Uint8List> exportData() async {
@@ -349,8 +550,22 @@ class ListeningStatistics {
   }
 
   Future<int> importFile(String path) async {
+    _summaryGeneration++;
+    _snapshot = null;
+    _pendingSummary = null;
     await flush();
-    return store.importFile(path);
+    try {
+      final result = _writeTail.then((_) => store.importFile(path));
+      _writeTail = result.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) {},
+      );
+      return await result;
+    } finally {
+      _summaryGeneration++;
+      _snapshot = null;
+      _pendingSummary = null;
+    }
   }
 
   Future<void> close() async {
@@ -359,6 +574,7 @@ class ListeningStatistics {
     _foreground = false;
     _session = null;
     _closed = true;
+    _snapshot = null;
     await flush();
     _watch.stop();
   }

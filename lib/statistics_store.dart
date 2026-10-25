@@ -27,6 +27,20 @@ class StatisticsStore {
       (await _job('summary', {'from': from, 'to': to, 'by_plays': byPlays}))
           as Map<String, Object?>;
 
+  Future<Map<String, Object?>> liveSummary({
+    required List<Map<String, Object?>> counters,
+    String? from,
+    String? to,
+    bool byPlays = false,
+  }) async =>
+      (await _job('live_summary', {
+            'rows': counters,
+            'from': from,
+            'to': to,
+            'by_plays': byPlays,
+          }))
+          as Map<String, Object?>;
+
   Future<Uint8List> exportData() async => (await _job('export')) as Uint8List;
   Future<int> importFile(String source) async =>
       (await _job('import', {'source': source})) as int;
@@ -74,13 +88,66 @@ Object? _statisticsJob(Map<String, Object?> job) {
         _merge(db, (job['rows'] as List).cast<Map<String, Object?>>());
         return null;
       case 'summary':
+      case 'live_summary':
         db.execute('BEGIN');
+        final live = job['action'] == 'live_summary';
+        if (live) {
+          // Temporary tables only: viewing statistics never writes listening
+          // counters or waits for an extra save/isolate round trip.
+          db.execute(
+            'CREATE TEMP TABLE pending AS SELECT * FROM counters WHERE 0',
+          );
+          db.execute('CREATE UNIQUE INDEX pending_key ON pending(id, day)');
+          final insert = db.prepare(
+            'INSERT INTO pending ($_columns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          );
+          try {
+            for (final row
+                in (job['rows'] as List).cast<Map<String, Object?>>()) {
+              insert.execute([
+                row['id'],
+                row['day'],
+                row['track_key'],
+                row['title'],
+                jsonEncode(row['artists']),
+                row['listening_ms'],
+                row['app_ms'],
+                row['plays'],
+                row['updated_at'],
+              ]);
+            }
+          } finally {
+            insert.close();
+          }
+          db.execute(
+            '''CREATE TEMP VIEW live_counters AS
+            SELECT c.* FROM counters c WHERE NOT EXISTS (
+              SELECT 1 FROM pending p WHERE p.id = c.id AND p.day = c.day)
+            UNION ALL SELECT p.id, p.day, p.track_key,
+              CASE WHEN COALESCE(c.updated_at, -1) > p.updated_at THEN c.title ELSE p.title END,
+              CASE WHEN COALESCE(c.updated_at, -1) > p.updated_at THEN c.artists ELSE p.artists END,
+              MAX(p.listening_ms, COALESCE(c.listening_ms, 0)),
+              MAX(p.app_ms, COALESCE(c.app_ms, 0)),
+              MAX(p.plays, COALESCE(c.plays, 0)),
+              MAX(p.updated_at, COALESCE(c.updated_at, 0))
+            FROM pending p LEFT JOIN counters c ON p.id = c.id AND p.day = c.day''',
+          );
+        }
         final summary = _summary(
           db,
           job['from'] as String?,
           job['to'] as String?,
           job['by_plays'] == true,
+          table: live ? 'live_counters' : 'counters',
+          limit: live ? null : 100,
         );
+        if (live) {
+          summary['included_counters'] = db
+              .select('''SELECT l.* FROM live_counters l
+            JOIN pending p ON p.id = l.id AND p.day = l.day''')
+              .map((row) => Map<String, Object?>.from(row))
+              .toList();
+        }
         db.execute('COMMIT');
         return summary;
       case 'export':
@@ -155,8 +222,10 @@ Map<String, Object?> _summary(
   Database db,
   String? from,
   String? to,
-  bool byPlays,
-) {
+  bool byPlays, {
+  String table = 'counters',
+  int? limit = 100,
+}) {
   final clauses = <String>[];
   final arguments = <Object?>[];
   if (from != null) {
@@ -172,23 +241,24 @@ Map<String, Object?> _summary(
     '''SELECT COALESCE(SUM(listening_ms), 0) listening_ms,
     COALESCE(SUM(app_ms), 0) app_ms, COALESCE(SUM(plays), 0) plays,
     COUNT(DISTINCT CASE WHEN listening_ms > 0 THEN track_key END) tracks
-    FROM counters WHERE $where''',
+    FROM $table WHERE $where''',
     arguments,
   ).first;
   final artistCount = db.select(
     '''SELECT COUNT(DISTINCT json_extract(j.value, '\$.key')) count
-    FROM counters, json_each(counters.artists) j WHERE $where AND listening_ms > 0''',
+    FROM $table, json_each($table.artists) j WHERE $where AND listening_ms > 0''',
     arguments,
   ).first['count'];
   final order = byPlays
       ? 'plays DESC, ms DESC, name'
       : 'ms DESC, plays DESC, name';
+  final limitSql = limit == null ? '' : ' LIMIT $limit';
   // SQLite's single MAX aggregate chooses the metadata from the newest row.
   final tracks = db
       .select('''SELECT track_key, title name, artists,
     SUM(listening_ms) ms, SUM(plays) plays, MAX(updated_at) latest
-    FROM counters WHERE $where AND track_key != '' GROUP BY track_key
-    HAVING ms > 0 ORDER BY $order LIMIT 100''', arguments)
+    FROM $table WHERE $where AND track_key != '' GROUP BY track_key
+    HAVING ms > 0 ORDER BY $order$limitSql''', arguments)
       .map(
         (row) => <String, Object?>{
           'key': row['track_key'],
@@ -205,8 +275,8 @@ Map<String, Object?> _summary(
       .select(
         '''SELECT json_extract(j.value, '\$.key') artist_key,
     json_extract(j.value, '\$.name') name, SUM(listening_ms) ms, SUM(plays) plays,
-    MAX(updated_at) latest FROM counters, json_each(counters.artists) j
-    WHERE $where GROUP BY artist_key HAVING ms > 0 ORDER BY $order LIMIT 100''',
+    MAX(updated_at) latest FROM $table, json_each($table.artists) j
+    WHERE $where GROUP BY artist_key HAVING ms > 0 ORDER BY $order$limitSql''',
         arguments,
       )
       .map(
@@ -221,12 +291,12 @@ Map<String, Object?> _summary(
   return {
     ...totals,
     'artists': artistCount,
-    'first_day': db.select('SELECT MIN(day) day FROM counters').first['day'],
+    'first_day': db.select('SELECT MIN(day) day FROM $table').first['day'],
     'top_tracks': tracks,
     'top_artists': artists,
     'days': db
         .select(
-          'SELECT day, SUM(listening_ms) ms FROM counters WHERE $where GROUP BY day HAVING ms > 0 ORDER BY day',
+          'SELECT day, SUM(listening_ms) ms FROM $table WHERE $where GROUP BY day HAVING ms > 0 ORDER BY day',
           arguments,
         )
         .map((row) => <String, Object?>{'day': row['day'], 'ms': row['ms']})

@@ -49,6 +49,7 @@ class _LibraryTransferScreenState extends State<LibraryTransferScreen> {
       if (importing) {
         final result = await FilePicker.platform.pickFiles(
           type: FileType.custom,
+          dialogTitle: tr('transfer_import'),
           allowedExtensions: ['zip'],
           withData: false,
         );

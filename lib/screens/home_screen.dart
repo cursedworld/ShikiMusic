@@ -2821,8 +2821,8 @@ class MainAppScreenState extends State<MainAppScreen>
       // Show a snackbar only when the user might care (i.e. we had no cache)
       if (mounted && cachedTracks.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Сервер недоступен. Работаем оффлайн.'),
+          SnackBar(
+            content: Text(tr('offline_mode')),
             backgroundColor: Colors.orange,
           ),
         );
@@ -3367,43 +3367,41 @@ class MainAppScreenState extends State<MainAppScreen>
     final hasCover =
         (track['album']?['cover']?.toString().trim().isNotEmpty ?? false);
     final hasLyrics = (track['lyrics']?.toString().trim().isNotEmpty ?? false);
-    Future<String?>
-    generateVideoUrl() => _clipTaskLimiter.run<String?>(() async {
-      final signature = _videoAvailabilitySignature(track);
-      if (!_clipRetryGate.canRequest(
-        id,
-        signature,
-        force: retryUnavailableVideo,
-      )) {
-        videoUnavailable = _unavailableVideoSignatures[id] == signature;
-        if (videoUnavailable) return null;
-        throw const HttpException(
-          'Повторный поиск клипа временно отложен. Можно повторить скачивание вручную.',
-        );
-      }
-      final res = await _requestClipGeneration(
-        id,
-        force: retryUnavailableVideo,
-      );
-      if (res.statusCode != HttpStatus.ok) {
-        _recordClipFailure(id, signature, res);
-      } else {
-        _clipRetryGate.clear(id);
-      }
-      if (res.statusCode == HttpStatus.notFound) {
-        videoUnavailable = true;
-        return null;
-      }
-      final data = _decodeApiResponse(res);
-      if (res.statusCode != HttpStatus.ok) {
-        throw HttpException(
-          data['error']?.toString() ?? 'HTTP ${res.statusCode}',
-        );
-      }
-      final url = data['video_url']?.toString().trim();
-      if (url == null || url.isEmpty) videoUnavailable = true;
-      return url;
-    });
+    Future<String?> generateVideoUrl() =>
+        _clipTaskLimiter.run<String?>(() async {
+          final signature = _videoAvailabilitySignature(track);
+          if (!_clipRetryGate.canRequest(
+            id,
+            signature,
+            force: retryUnavailableVideo,
+          )) {
+            videoUnavailable = _unavailableVideoSignatures[id] == signature;
+            if (videoUnavailable) return null;
+            throw HttpException(tr('video_retry_delayed'));
+          }
+          final res = await _requestClipGeneration(
+            id,
+            force: retryUnavailableVideo,
+          );
+          if (res.statusCode != HttpStatus.ok) {
+            _recordClipFailure(id, signature, res);
+          } else {
+            _clipRetryGate.clear(id);
+          }
+          if (res.statusCode == HttpStatus.notFound) {
+            videoUnavailable = true;
+            return null;
+          }
+          final data = _decodeApiResponse(res);
+          if (res.statusCode != HttpStatus.ok) {
+            throw HttpException(
+              data['error']?.toString() ?? 'HTTP ${res.statusCode}',
+            );
+          }
+          final url = data['video_url']?.toString().trim();
+          if (url == null || url.isEmpty) videoUnavailable = true;
+          return url;
+        });
     final audioAlreadyReady = await _hasNonEmptyFile(audioFile);
     final videoAlreadyReady = await _hasNonEmptyFile(videoFile);
     final videoKnownUnavailable =
@@ -4436,13 +4434,13 @@ class MainAppScreenState extends State<MainAppScreen>
 
       if (isPlaying) {
         String p1 = '$title — $art';
-        String p2 = 'Слушает музыку';
+        String p2 = tr('listening_music');
 
         if (globalLyrics.isNotEmpty) {
           if (currentLine >= 0 && currentLine < globalLyrics.length) {
             p2 = globalLyrics[currentLine].txt;
           } else if (currentLine == -1) {
-            p2 = 'Вступление...';
+            p2 = tr('lyrics_intro');
           }
         }
 
@@ -4488,7 +4486,7 @@ class MainAppScreenState extends State<MainAppScreen>
         await _setDiscordActivity(
           RPCActivity(
             details: '$title — $art',
-            state: 'На паузе ($posStr$durStr)',
+            state: tr('paused_at').replaceAll('{position}', '$posStr$durStr'),
             activityType: ActivityType.listening,
             statusDisplayType: statusDisplayType,
             assets: RPCAssets(largeImage: largeImg),
@@ -4645,7 +4643,10 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> changePlaylistArtwork(int playlistId) async {
     try {
-      final result = await FilePicker.platform.pickFiles(type: FileType.image);
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        dialogTitle: tr('select_image'),
+      );
       final path = result?.files.single.path;
       if (path == null || !mounted) return;
       final artwork = await showPlaylistCropDialog(context, path);
@@ -4702,13 +4703,13 @@ class MainAppScreenState extends State<MainAppScreen>
                     key: const ValueKey('playlist_name'),
                     autofocus: true,
                     style: const TextStyle(color: Colors.white),
-                    decoration: const InputDecoration(
-                      hintText: "Название",
-                      hintStyle: TextStyle(color: Colors.white54),
-                      enabledBorder: UnderlineInputBorder(
+                    decoration: InputDecoration(
+                      hintText: tr('playlist_name'),
+                      hintStyle: const TextStyle(color: Colors.white54),
+                      enabledBorder: const UnderlineInputBorder(
                         borderSide: BorderSide(color: Colors.white24),
                       ),
-                      focusedBorder: UnderlineInputBorder(
+                      focusedBorder: const UnderlineInputBorder(
                         borderSide: BorderSide(color: Colors.redAccent),
                       ),
                     ),
@@ -4731,7 +4732,10 @@ class MainAppScreenState extends State<MainAppScreen>
                               setStateDialog(() => selectingImage = true);
                               try {
                                 final result = await FilePicker.platform
-                                    .pickFiles(type: FileType.image);
+                                    .pickFiles(
+                                      type: FileType.image,
+                                      dialogTitle: tr('select_image'),
+                                    );
                                 final path = result?.files.single.path;
                                 if (path == null || !ctx.mounted) return;
                                 final artwork = await showPlaylistCropDialog(
@@ -4759,8 +4763,8 @@ class MainAppScreenState extends State<MainAppScreen>
                       icon: const Icon(Icons.folder_open),
                       label: Text(
                         selectedArtwork != null
-                            ? "Картинка выбрана ✓"
-                            : "Выбрать картинку",
+                            ? tr('image_selected')
+                            : tr('select_image'),
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                       style: ElevatedButton.styleFrom(
@@ -4778,9 +4782,9 @@ class MainAppScreenState extends State<MainAppScreen>
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
-                  child: const Text(
-                    "Отмена",
-                    style: TextStyle(color: Colors.white54),
+                  child: Text(
+                    tr('cancel'),
+                    style: const TextStyle(color: Colors.white54),
                   ),
                 ),
                 TextButton(
@@ -4827,9 +4831,9 @@ class MainAppScreenState extends State<MainAppScreen>
                             Navigator.pop(ctx);
                           }
                         },
-                  child: const Text(
-                    "Создать",
-                    style: TextStyle(
+                  child: Text(
+                    tr('create'),
+                    style: const TextStyle(
                       color: Colors.redAccent,
                       fontWeight: FontWeight.bold,
                     ),
@@ -5721,8 +5725,8 @@ class MainAppScreenState extends State<MainAppScreen>
                           size: 24,
                         ),
                         tooltip: isShuffled
-                            ? 'Выключить перемешивание'
-                            : 'Перемешать',
+                            ? tr('shuffle_off')
+                            : tr('artist_shuffle'),
                         onPressed: toggleShuffle,
                       ),
                       const SizedBox(width: 5),
@@ -5949,12 +5953,14 @@ class MainAppScreenState extends State<MainAppScreen>
                               children: [
                                 Text(
                                   searchQuery.isNotEmpty
-                                      ? "Нет совпадений по '$searchQuery'"
+                                      ? tr(
+                                          'search_no_matches',
+                                        ).replaceAll('{query}', searchQuery)
                                       : navId == 1
-                                      ? "Поставь сердечко на любимую песенку и она окажется тут!"
+                                      ? tr('favorites_empty')
                                       : navId >= 3
-                                      ? "Плейлист пока пуст. Добавь сюда треки через плюсик!"
-                                      : "Нет данных",
+                                      ? tr('playlist_empty')
+                                      : tr('no_data'),
                                   style: const TextStyle(
                                     color: Colors.white54,
                                     fontSize: 16,
@@ -5966,7 +5972,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                   ElevatedButton.icon(
                                     onPressed: downloadFromNetwork,
                                     icon: const Icon(Icons.cloud_sync),
-                                    label: const Text("Поискать в интернете?"),
+                                    label: Text(tr('search_online')),
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: Colors.redAccent,
                                       foregroundColor: Colors.white,

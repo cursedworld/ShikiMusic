@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_discord_rpc/flutter_discord_rpc.dart';
 import 'dart:convert';
 import 'dart:io';
@@ -187,7 +188,7 @@ void main() async {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('OK'),
+              child: Text(tr('ok')),
             ),
           ],
         ),
@@ -212,6 +213,9 @@ class MyApp extends StatelessWidget {
               navigatorKey: _navigatorKey,
               debugShowCheckedModeBanner: false,
               title: "ShikiMusic",
+              locale: Locale(lang),
+              supportedLocales: appSupportedLocales,
+              localizationsDelegates: GlobalMaterialLocalizations.delegates,
               theme: ThemeData.dark().copyWith(
                 colorScheme: ColorScheme.dark(
                   primary: accent,

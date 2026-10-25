@@ -163,6 +163,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'custom';
     _getDataDirectory = widget.dataDirectoryProvider;
     _loadSettings();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(
+        widget.statistics?.prepareSummary().catchError((Object error) {
+          debugPrint('Statistics preparation failed: $error');
+        }),
+      );
+    });
   }
 
   @override
@@ -801,6 +809,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.image,
+        dialogTitle: tr('select_image'),
         allowMultiple: false,
       );
       if (result != null && result.files.single.path != null) {
