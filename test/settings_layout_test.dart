@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -131,6 +132,34 @@ void main() {
     );
   }
 
+  for (final platform in [
+    TargetPlatform.android,
+    TargetPlatform.windows,
+    TargetPlatform.linux,
+  ]) {
+    testWidgets('video setting availability on $platform', (tester) async {
+      debugDefaultTargetPlatformOverride = platform;
+      try {
+        await show(tester);
+        await drive(tester, () => editable(tester));
+        await tester.scrollUntilVisible(
+          find.byKey(const ValueKey('vinyl_rotation_switch')),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(
+          find.byKey(const ValueKey('video_clip_switch')),
+          platform == TargetPlatform.android ? findsNothing : findsOneWidget,
+        );
+        expect(playVideoClipNotifier.value, isTrue);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+  }
+
   testWidgets('first frame shows the current purple selection, not red', (
     tester,
   ) async {
@@ -188,11 +217,20 @@ void main() {
       await show(tester);
       await drive(tester, () => editable(tester));
       await tester.tap(swatch('blue'));
-      await drive(
-        tester,
-        () => jsonDecode(file.readAsStringSync())['themeColor'] == 'color_blue',
-      );
-      final saved = jsonDecode(file.readAsStringSync());
+      late Map<String, dynamic> saved;
+      await drive(tester, () {
+        try {
+          final current =
+              jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+          if (current['themeColor'] != 'color_blue') return false;
+          saved = current;
+          return true;
+        } on FileSystemException catch (error) {
+          // Windows may briefly lock the atomic replacement during this poll.
+          if (error.osError?.errorCode == 32) return false;
+          rethrow;
+        }
+      });
       expect(saved['language'], 'en');
       expect(saved['playVideoClip'], isTrue);
       expect(saved['vinylRotation'], isFalse);

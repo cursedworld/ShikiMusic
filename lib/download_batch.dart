@@ -8,6 +8,7 @@ class TrackDownloadResult {
     required this.title,
     required this.audioReady,
     required this.videoReady,
+    this.videoRequired = true,
     this.videoUnavailable = false,
     Map<DownloadComponent, String> errors = const {},
   }) : errors = Map.unmodifiable(errors);
@@ -16,12 +17,16 @@ class TrackDownloadResult {
   final String title;
   final bool audioReady;
   final bool videoReady;
+  final bool videoRequired;
   final bool videoUnavailable;
   final Map<DownloadComponent, String> errors;
 
-  bool get complete => audioReady && videoReady && errors.isEmpty;
+  bool get complete =>
+      audioReady && (!videoRequired || videoReady) && errors.isEmpty;
   bool get needsRetry =>
-      errors.isNotEmpty || !audioReady || (!videoReady && !videoUnavailable);
+      errors.isNotEmpty ||
+      !audioReady ||
+      (videoRequired && !videoReady && !videoUnavailable);
 }
 
 class DownloadBatchResult {

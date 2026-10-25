@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'dart:ui';
 
 import '../globals.dart';
 import '../localization.dart';
 import '../music_import.dart';
+import '../platform_capabilities.dart';
+import '../widgets/synced_lyrics_view.dart';
 
 /// Full-screen lyrics overlay with synced scrolling and blurred background.
 /// Keeps it simple — just lyrics to enjoy, no playback controls.
@@ -18,28 +21,44 @@ class PresentationOverlay extends StatefulWidget {
 class _PresentationOverlayState extends State<PresentationOverlay> {
   int localSyncIndex = -1;
   final ScrollController scrollController = ScrollController();
+  List<LyricLine>? _lastLyrics;
+  String? _lastPlainLyrics;
+  bool? _wasLoading;
 
   @override
   void initState() {
     super.initState();
     uiSignal.addListener(updateTick);
     localSyncIndex = currentLine;
+    _lastLyrics = List<LyricLine>.unmodifiable(globalLyrics);
+    _lastPlainLyrics = noLrcData;
+    _wasLoading = lrcLoading;
   }
 
   void updateTick() {
     if (!mounted) return;
+    final lyricsChanged = !listEquals(_lastLyrics, globalLyrics);
+    if (lyricsChanged) {
+      _lastLyrics = List<LyricLine>.unmodifiable(globalLyrics);
+    }
     if (localSyncIndex != currentLine) {
       setState(() => localSyncIndex = currentLine);
-      if (scrollController.hasClients && localSyncIndex >= 0) {
+      if (!isMobilePlatform &&
+          scrollController.hasClients &&
+          localSyncIndex >= 0) {
         scrollController.animateTo(
           localSyncIndex * 80.0,
           duration: const Duration(milliseconds: 400),
           curve: Curves.easeOut,
         );
       }
-    } else {
+    } else if (lyricsChanged ||
+        _lastPlainLyrics != noLrcData ||
+        _wasLoading != lrcLoading) {
       setState(() {});
     }
+    _lastPlainLyrics = noLrcData;
+    _wasLoading = lrcLoading;
   }
 
   @override
@@ -138,48 +157,57 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
                               ),
                             )
                           : globalLyrics.isNotEmpty
-                          ? ListView.builder(
-                              controller: scrollController,
-                              physics: const BouncingScrollPhysics(),
-                              padding: EdgeInsets.symmetric(
-                                vertical:
-                                    MediaQuery.of(context).size.height / 2 - 40,
-                              ),
-                              itemExtent: 80.0,
-                              itemCount: globalLyrics.length,
-                              itemBuilder: (ctx, idx) {
-                                final isHighlighted = idx == localSyncIndex;
-                                return GestureDetector(
-                                  onTap: () => widget.onSeekRequested(
-                                    globalLyrics[idx].time,
-                                  ),
-                                  child: Container(
-                                    alignment: Alignment.center,
-                                    child: AnimatedDefaultTextStyle(
-                                      duration: const Duration(
-                                        milliseconds: 300,
-                                      ),
-                                      style: TextStyle(
-                                        fontSize: isHighlighted ? 32 : 20,
-                                        fontWeight: isHighlighted
-                                            ? FontWeight.bold
-                                            : FontWeight.normal,
-                                        color: isHighlighted
-                                            ? Colors.white
-                                            : Colors.white38,
-                                      ),
-                                      textAlign: TextAlign.center,
-                                      child: Text(
-                                        globalLyrics[idx].txt,
-                                        textAlign: TextAlign.center,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
+                          ? isMobilePlatform
+                                ? SyncedLyricsView(
+                                    lines: _lastLyrics!,
+                                    activeIndex: localSyncIndex,
+                                    onSeek: widget.onSeekRequested,
+                                  )
+                                : ListView.builder(
+                                    controller: scrollController,
+                                    physics: const BouncingScrollPhysics(),
+                                    padding: EdgeInsets.symmetric(
+                                      vertical:
+                                          MediaQuery.of(context).size.height /
+                                              2 -
+                                          40,
                                     ),
-                                  ),
-                                );
-                              },
-                            )
+                                    itemExtent: 80.0,
+                                    itemCount: globalLyrics.length,
+                                    itemBuilder: (ctx, idx) {
+                                      final isHighlighted =
+                                          idx == localSyncIndex;
+                                      return GestureDetector(
+                                        onTap: () => widget.onSeekRequested(
+                                          globalLyrics[idx].time,
+                                        ),
+                                        child: Container(
+                                          alignment: Alignment.center,
+                                          child: AnimatedDefaultTextStyle(
+                                            duration: const Duration(
+                                              milliseconds: 300,
+                                            ),
+                                            style: TextStyle(
+                                              fontSize: isHighlighted ? 32 : 20,
+                                              fontWeight: isHighlighted
+                                                  ? FontWeight.bold
+                                                  : FontWeight.normal,
+                                              color: isHighlighted
+                                                  ? Colors.white
+                                                  : Colors.white38,
+                                            ),
+                                            textAlign: TextAlign.center,
+                                            child: Text(
+                                              globalLyrics[idx].txt,
+                                              textAlign: TextAlign.center,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  )
                           : SingleChildScrollView(
                               physics: const BouncingScrollPhysics(),
                               padding: const EdgeInsets.all(40.0),

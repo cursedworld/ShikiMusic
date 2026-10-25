@@ -146,6 +146,42 @@ void main() {
     expect(api.requests.last.headers['If-None-Match'], isNotNull);
   });
 
+  test(
+    'mobile skips video offers and downloads while preserving old clips',
+    () async {
+      final original = api.video = utf8.encode('original video');
+      await File('${directory.path}/video_1.mp4').writeAsBytes(original);
+      await monitor.checkNow();
+      monitor.dispose();
+      monitor = TrackUpdateMonitor(
+        directory: directory,
+        tracks: () => [api.track],
+        serverBase: 'http://fixture',
+        client: api.client,
+        includeVideo: false,
+        hashFile: (path) async {
+          expect(path.endsWith('.mp4'), isFalse);
+          return (await sha256.bind(File(path).openRead()).first).toString();
+        },
+      );
+      await monitor.load();
+      api.video = utf8.encode('updated video');
+      await monitor.checkNow();
+      expect(monitor.offers.value, isEmpty);
+      api.audio = utf8.encode('updated audio');
+      await monitor.checkNow();
+      expect(monitor.offers.value, hasLength(1));
+      await monitor.updateTrack(monitor.offers.value.single);
+      expect(api.videoRequests, 0);
+      expect(await monitor.videoFile(1).readAsBytes(), original);
+      final index = jsonDecode(
+        await File('${directory.path}/track_versions.json').readAsString(),
+      );
+      expect(index['1']['versions']['video'], digest(original));
+      expect(await monitor.audioFile(1).readAsBytes(), api.audio);
+    },
+  );
+
   test('modern server: unchanged polls make only one request', () async {
     api.completeCatalog = true;
     await monitor.checkNow();

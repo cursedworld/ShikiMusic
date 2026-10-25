@@ -435,6 +435,9 @@ void main() {
       200,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const ValueKey('open_statistics')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('open_statistics')));
     await tester.pumpAndSettle();
     expect(find.byType(StatisticsScreen), findsOneWidget);

@@ -13,6 +13,7 @@ import '../atomic_file_store.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../listening_statistics.dart';
+import '../platform_capabilities.dart';
 import 'statistics_screen.dart';
 import 'library_transfer_screen.dart';
 import '../server_config.dart';
@@ -368,17 +369,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           _saveSettings();
                         },
                       ),
-                      _toggle(
-                        key: const ValueKey('video_clip_switch'),
-                        title: tr('play_video_clip_desc'),
-                        hint: tr('play_video_clip_hint'),
-                        value: _playVideoClip,
-                        onChanged: (value) {
-                          setState(() => _playVideoClip = value);
-                          playVideoClipNotifier.value = value;
-                          _saveSettings();
-                        },
-                      ),
+                      if (supportsVideoClips)
+                        _toggle(
+                          key: const ValueKey('video_clip_switch'),
+                          title: tr('play_video_clip_desc'),
+                          hint: tr('play_video_clip_hint'),
+                          value: _playVideoClip,
+                          onChanged: (value) {
+                            setState(() => _playVideoClip = value);
+                            playVideoClipNotifier.value = value;
+                            _saveSettings();
+                          },
+                        ),
                       _section(tr('discord_settings')),
                       if (isDesktop)
                         _toggle(

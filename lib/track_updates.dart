@@ -114,6 +114,7 @@ class TrackUpdateMonitor {
     this.requestTimeout = const Duration(seconds: 5),
     this.localScanInterval = const Duration(minutes: 1),
     this.onCatalogChanged,
+    this.includeVideo = true,
   }) : _base = serverBase ?? configuredServerBaseUrl,
        _client = client ?? http.Client(),
        _ownsClient = client == null,
@@ -130,6 +131,7 @@ class TrackUpdateMonitor {
   final Duration requestTimeout;
   final Duration localScanInterval;
   final Future<void> Function()? onCatalogChanged;
+  final bool includeVideo;
   final offers = ValueNotifier<List<TrackUpdateOffer>>(const []);
   final Map<int, _LocalTrack> _local = {};
   final Map<String, String> _etags = {};
@@ -299,9 +301,9 @@ class TrackUpdateMonitor {
         audioStat.type == FileSystemEntityType.file && audioStat.size > 0;
     final digest = hasAudio ? await _hash(audio.path) : remote?.audio;
     final video = videoFile(id);
-    final videoStat = await video.stat();
+    final videoStat = includeVideo ? await video.stat() : null;
     final hasVideo =
-        videoStat.type == FileSystemEntityType.file && videoStat.size > 0;
+        videoStat?.type == FileSystemEntityType.file && videoStat!.size > 0;
     return _LocalTrack(
       TrackContentVersions(
         audio: digest,
@@ -313,7 +315,7 @@ class TrackUpdateMonitor {
       audio.uri.pathSegments.last,
       await lrc.exists() ? lrc.uri.pathSegments.last : null,
       hasAudio: hasAudio,
-      videoName: hasVideo ? video.uri.pathSegments.last : null,
+      videoName: hasVideo ? video.uri.pathSegments.last : _local[id]?.videoName,
     );
   }
 
@@ -323,7 +325,8 @@ class TrackUpdateMonitor {
     if (id is! int) return;
     final old = _local[id];
     final newAudio = !(old?.hasAudio ?? false) && await audioFile(id).exists();
-    final newVideo = old?.videoName == null && await videoFile(id).exists();
+    final newVideo =
+        includeVideo && old?.videoName == null && await videoFile(id).exists();
     if (!newAudio && !newVideo) {
       return;
     }
@@ -413,7 +416,7 @@ class TrackUpdateMonitor {
           if (_closed) return;
           if ((stat.type == FileSystemEntityType.file && stat.size > 0) ||
               await lyricsFile(id).exists() ||
-              await videoFile(id).exists()) {
+              (includeVideo && await videoFile(id).exists())) {
             ids.add(id);
           }
         }
@@ -479,7 +482,8 @@ class TrackUpdateMonitor {
                     remote.audio != null &&
                     remote.audio != local.versions.audio) ||
                 remote.lyrics != local.versions.lyrics ||
-                (local.videoName != null &&
+                (includeVideo &&
+                    local.videoName != null &&
                     remote.video != null &&
                     remote.video != local.versions.video);
             if (!changedMedia && remote.metadata != local.versions.metadata) {
@@ -575,7 +579,8 @@ class TrackUpdateMonitor {
         );
       }
     }
-    if (old.videoName != null &&
+    if (includeVideo &&
+        old.videoName != null &&
         remote.video != null &&
         remote.video != old.versions.video) {
       final source = track['video_file']?.toString();
@@ -623,7 +628,9 @@ class TrackUpdateMonitor {
         audio: remote.audio ?? old.versions.audio,
         lyrics: remote.lyrics,
         metadata: remote.metadata,
-        video: remote.video ?? old.versions.video,
+        video: includeVideo
+            ? (remote.video ?? old.versions.video)
+            : old.versions.video,
         artwork: remote.artwork,
       ),
       audioName,

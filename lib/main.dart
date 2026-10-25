@@ -13,6 +13,7 @@ import 'screens/settings_screen.dart';
 import 'server_config.dart';
 import 'library_transfer.dart';
 import 'localization.dart';
+import 'mobile_motion.dart';
 
 final _navigatorKey = GlobalKey<NavigatorState>();
 
@@ -217,6 +218,13 @@ class MyApp extends StatelessWidget {
               supportedLocales: appSupportedLocales,
               localizationsDelegates: GlobalMaterialLocalizations.delegates,
               theme: ThemeData.dark().copyWith(
+                pageTransitionsTheme: PageTransitionsTheme(
+                  builders: {
+                    ...const PageTransitionsTheme().builders,
+                    TargetPlatform.android:
+                        const MobilePageTransitionsBuilder(),
+                  },
+                ),
                 colorScheme: ColorScheme.dark(
                   primary: accent,
                   secondary: accent,

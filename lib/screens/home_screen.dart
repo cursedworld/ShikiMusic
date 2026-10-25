@@ -39,6 +39,8 @@ import '../playlist_artwork.dart';
 import '../playlist_tracks.dart';
 import '../player_shortcuts.dart';
 import '../playback_position.dart';
+import '../platform_capabilities.dart';
+import '../mobile_motion.dart';
 import '../safe_file_migration.dart';
 import '../server_config.dart';
 import '../windows_taskbar_controls.dart';
@@ -728,6 +730,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _reconcileVideoVisibility({bool releaseImmediately = false}) {
+    if (!supportsVideoClips) return;
     _videoReleaseTimer?.cancel();
     _videoReleaseTimer = null;
     if (_videoVisible) {
@@ -813,7 +816,7 @@ class MainAppScreenState extends State<MainAppScreen>
   // ═══════════════════════════════════════════════════════════════════════════
 
   void _onActiveTrackChanged() {
-    if (!mounted) return;
+    if (!mounted || !supportsVideoClips) return;
     _videoTrackSwitchTimer?.cancel();
     _suspendVideoForTrackTransition();
     final scheduledTrackId = activeTrackNotifier.value?['id'];
@@ -845,6 +848,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _syncVideoPlayState() {
+    if (!supportsVideoClips) return;
     _enqueueVideoWork(() async {
       final controller = _videoController;
       if (controller == null || !_isVideoInitialized) return;
@@ -853,7 +857,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _onVideoSettingChanged() {
-    if (mounted) {
+    if (mounted && supportsVideoClips) {
       _videoTrackSwitchTimer?.cancel();
       _videoTrackSwitchTimer = null;
       _initializeVideo(activeTrackNotifier.value);
@@ -865,6 +869,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _syncVideoDrift() {
+    if (!supportsVideoClips) return;
     _enqueueVideoWork(() async {
       final controller = _videoController;
       if (controller == null ||
@@ -1139,6 +1144,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _initializeVideo(dynamic trackData) {
+    if (!supportsVideoClips) return;
     final request = _VideoRequest.from(trackData);
     _videoOperation?.cancel();
     final operation = _VideoOperation();
@@ -1206,6 +1212,7 @@ class MainAppScreenState extends State<MainAppScreen>
       !operation.isCanceled;
 
   bool _shouldRunVideo(_VideoRequest request) =>
+      supportsVideoClips &&
       _videoVisible &&
       _videoSurfaceAvailable &&
       playVideoClipNotifier.value &&
@@ -2283,6 +2290,7 @@ class MainAppScreenState extends State<MainAppScreen>
         directory: appDir,
         tracks: () => cachedTracks,
         onCatalogChanged: _refreshLiveCatalog,
+        includeVideo: supportsVideoClips,
       );
       _trackUpdates = monitor;
       await monitor.load();
@@ -3474,6 +3482,7 @@ class MainAppScreenState extends State<MainAppScreen>
           errors[DownloadComponent.library] = _downloadError(error);
         }
 
+        if (!supportsVideoClips) return;
         // Existing local video remains usable even when the server is offline.
         videoReady = await _hasNonEmptyFile(videoFile);
         if (videoReady || _stateDisposing) return;
@@ -3552,6 +3561,7 @@ class MainAppScreenState extends State<MainAppScreen>
       title: track['title']?.toString() ?? '$id',
       audioReady: audioReady,
       videoReady: videoReady,
+      videoRequired: supportsVideoClips,
       videoUnavailable: videoUnavailable,
       errors: errors,
     );
@@ -3655,7 +3665,8 @@ class MainAppScreenState extends State<MainAppScreen>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          '${tr(label)}. ${tr('download_audio')}: ${result.audioReady}/${result.results.length}, ${tr('download_video')}: ${result.videoReady}/${result.results.length}',
+          '${tr(label)}. ${tr('download_audio')}: ${result.audioReady}/${result.results.length}'
+          '${supportsVideoClips ? ', ${tr('download_video')}: ${result.videoReady}/${result.results.length}' : ''}',
         ),
         backgroundColor: result.incomplete.isEmpty
             ? Colors.green
@@ -5328,15 +5339,21 @@ class MainAppScreenState extends State<MainAppScreen>
                   // Cover art
                   ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: Image(
-                      image: coverThumbnail(
-                        context,
-                        getPictureProvider(playingQueue[playingIndex]),
-                        52,
+                    child: AnimatedSwitcher(
+                      duration: MediaQuery.disableAnimationsOf(context)
+                          ? Duration.zero
+                          : mobileControlTransition,
+                      child: Image(
+                        key: ValueKey(playingQueue[playingIndex]['id']),
+                        image: coverThumbnail(
+                          context,
+                          getPictureProvider(playingQueue[playingIndex]),
+                          52,
+                        ),
+                        width: 52,
+                        height: 52,
+                        fit: BoxFit.cover,
                       ),
-                      width: 52,
-                      height: 52,
-                      fit: BoxFit.cover,
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -5395,12 +5412,18 @@ class MainAppScreenState extends State<MainAppScreen>
                   ),
                   // Play / pause
                   IconButton(
-                    icon: Icon(
-                      isPlaying
-                          ? Icons.pause_circle_filled
-                          : Icons.play_circle_fill,
-                      color: Colors.white,
-                      size: 40,
+                    icon: AnimatedSwitcher(
+                      duration: MediaQuery.disableAnimationsOf(context)
+                          ? Duration.zero
+                          : mobileControlTransition,
+                      child: Icon(
+                        isPlaying
+                            ? Icons.pause_circle_filled
+                            : Icons.play_circle_fill,
+                        key: ValueKey(isPlaying),
+                        color: Colors.white,
+                        size: 40,
+                      ),
                     ),
                     onPressed: pauseTrack,
                     visualDensity: VisualDensity.compact,
@@ -5803,7 +5826,7 @@ class MainAppScreenState extends State<MainAppScreen>
         .where((track) => matchesTrackSearch(track, searchQuery))
         .toList();
 
-    Widget mainContent = Expanded(
+    var mainContent = Expanded(
       child: Padding(
         padding: EdgeInsets.symmetric(
           horizontal: isMobile ? 15.0 : 30.0,
@@ -6176,6 +6199,15 @@ class MainAppScreenState extends State<MainAppScreen>
         ),
       ),
     );
+
+    if (isMobile) {
+      mainContent = Expanded(
+        child: MobileSectionTransition(
+          section: navId,
+          child: mainContent.child,
+        ),
+      );
+    }
 
     return ScrollConfiguration(
       behavior: const _SmoothScrollBehavior(),
