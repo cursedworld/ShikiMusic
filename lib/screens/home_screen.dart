@@ -46,6 +46,7 @@ import '../server_config.dart';
 import '../windows_taskbar_controls.dart';
 import '../track_updates.dart';
 import '../widgets/track_updates_dialog.dart';
+import '../widgets/mobile_playback_controls.dart';
 import '../widgets/track_metadata_dialog.dart';
 import '../widgets/playlist_crop_dialog.dart';
 import '../widgets/playlist_name_dialog.dart';
@@ -5313,6 +5314,17 @@ class MainAppScreenState extends State<MainAppScreen>
 
   // ── Mobile mini-player ───────────────────────────────────────────────────
 
+  Widget _mobilePlaybackControls() => MobilePlaybackControls(
+    isFavorite: favs.contains(playingQueue[playingIndex]['id']),
+    isPlaying: isPlaying,
+    loopMode: loopMode,
+    onFavorite: () => toggleFavorite(playingQueue[playingIndex]['id']),
+    onPrevious: prevTrack,
+    onPlayPause: pauseTrack,
+    onNext: nextTrack,
+    onRepeat: toggleLoopMode,
+  );
+
   Widget buildMobileMiniPlayer() {
     return SafeArea(
       top: false,
@@ -5325,161 +5337,116 @@ class MainAppScreenState extends State<MainAppScreen>
             if (details.primaryVelocity! > 300) prevTrack();
           }
         },
-        child: Container(
-          decoration: BoxDecoration(
-            color: const Color(0xE6000000),
-            border: const Border(top: BorderSide(color: Colors.white10)),
-          ),
-          padding: const EdgeInsets.fromLTRB(14, 12, 8, 4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  // Cover art
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: AnimatedSwitcher(
-                      duration: MediaQuery.disableAnimationsOf(context)
-                          ? Duration.zero
-                          : mobileControlTransition,
-                      child: Image(
-                        key: ValueKey(playingQueue[playingIndex]['id']),
-                        image: coverThumbnail(
-                          context,
-                          getPictureProvider(playingQueue[playingIndex]),
-                          52,
+        child: LayoutBuilder(
+          builder: (context, constraints) => Container(
+            decoration: BoxDecoration(
+              color: const Color(0xE6000000),
+              border: const Border(top: BorderSide(color: Colors.white10)),
+            ),
+            padding: const EdgeInsets.fromLTRB(14, 12, 8, 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    // Cover art
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: AnimatedSwitcher(
+                        duration: MediaQuery.disableAnimationsOf(context)
+                            ? Duration.zero
+                            : mobileControlTransition,
+                        child: Image(
+                          key: ValueKey(playingQueue[playingIndex]['id']),
+                          image: coverThumbnail(
+                            context,
+                            getPictureProvider(playingQueue[playingIndex]),
+                            52,
+                          ),
+                          width: 52,
+                          height: 52,
+                          fit: BoxFit.cover,
                         ),
-                        width: 52,
-                        height: 52,
-                        fit: BoxFit.cover,
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 14),
-                  // Title + Artist
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          playingQueue[playingIndex]['title'],
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 15,
+                    const SizedBox(width: 14),
+                    // Title + Artist
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            playingQueue[playingIndex]['title'],
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          trackArtistLabel(playingQueue[playingIndex]),
-                          style: const TextStyle(
-                            color: Colors.white54,
-                            fontSize: 13,
+                          const SizedBox(height: 3),
+                          Text(
+                            trackArtistLabel(playingQueue[playingIndex]),
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 13,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                  // Favorite
-                  IconButton(
-                    icon: Icon(
-                      favs.contains(playingQueue[playingIndex]['id'])
-                          ? Icons.favorite
-                          : Icons.favorite_border,
-                      color: favs.contains(playingQueue[playingIndex]['id'])
-                          ? Colors.redAccent
-                          : Colors.white38,
-                      size: 22,
-                    ),
-                    onPressed: () =>
-                        toggleFavorite(playingQueue[playingIndex]['id']),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  // Skip prev
-                  IconButton(
-                    icon: const Icon(
-                      Icons.skip_previous_rounded,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                    onPressed: prevTrack,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  // Play / pause
-                  IconButton(
-                    icon: AnimatedSwitcher(
-                      duration: MediaQuery.disableAnimationsOf(context)
-                          ? Duration.zero
-                          : mobileControlTransition,
-                      child: Icon(
-                        isPlaying
-                            ? Icons.pause_circle_filled
-                            : Icons.play_circle_fill,
-                        key: ValueKey(isPlaying),
-                        color: Colors.white,
-                        size: 40,
+                        ],
                       ),
                     ),
-                    onPressed: pauseTrack,
-                    visualDensity: VisualDensity.compact,
+                    if (constraints.maxWidth >= 460) _mobilePlaybackControls(),
+                  ],
+                ),
+                if (constraints.maxWidth < 460)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: _mobilePlaybackControls(),
                   ),
-                  // Skip next
-                  IconButton(
-                    icon: const Icon(
-                      Icons.skip_next_rounded,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                    onPressed: nextTrack,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ],
-              ),
-              // Thin progress bar
-              ValueListenableBuilder<Duration>(
-                valueListenable: currentPositionNotifier,
-                builder: (context, currPos, child) {
-                  return ValueListenableBuilder<Duration>(
-                    valueListenable: fullDurationNotifier,
-                    builder: (context, fullDur, child) {
-                      final maxVal = fullDur.inSeconds.toDouble() > 0
-                          ? fullDur.inSeconds.toDouble()
-                          : 1.0;
-                      return SizedBox(
-                        height: 16,
-                        child: SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            trackHeight: 2.0,
-                            thumbShape: const RoundSliderThumbShape(
-                              enabledThumbRadius: 0.0,
+                // Thin progress bar
+                ValueListenableBuilder<Duration>(
+                  valueListenable: currentPositionNotifier,
+                  builder: (context, currPos, child) {
+                    return ValueListenableBuilder<Duration>(
+                      valueListenable: fullDurationNotifier,
+                      builder: (context, fullDur, child) {
+                        final maxVal = fullDur.inSeconds.toDouble() > 0
+                            ? fullDur.inSeconds.toDouble()
+                            : 1.0;
+                        return SizedBox(
+                          height: 16,
+                          child: SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 2.0,
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 0.0,
+                              ),
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 0.0,
+                              ),
+                              trackShape: const RectangularSliderTrackShape(),
                             ),
-                            overlayShape: const RoundSliderOverlayShape(
-                              overlayRadius: 0.0,
+                            child: Slider(
+                              value: currPos.inSeconds.toDouble().clamp(
+                                0.0,
+                                maxVal,
+                              ),
+                              min: 0.0,
+                              max: maxVal,
+                              onChanged: (v) =>
+                                  seekTo(Duration(seconds: v.toInt())),
                             ),
-                            trackShape: const RectangularSliderTrackShape(),
                           ),
-                          child: Slider(
-                            value: currPos.inSeconds.toDouble().clamp(
-                              0.0,
-                              maxVal,
-                            ),
-                            min: 0.0,
-                            max: maxVal,
-                            onChanged: (v) =>
-                                seekTo(Duration(seconds: v.toInt())),
-                          ),
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
-            ],
+                        );
+                      },
+                    );
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       ),

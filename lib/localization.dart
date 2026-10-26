@@ -24,6 +24,13 @@ String tr(String key) {
 }
 
 const Map<String, Map<String, String>> _translations = {
+  'repeat_off': {'ru': 'Повтор выключен', 'en': 'Repeat off', 'ja': 'リピートなし'},
+  'repeat_queue': {
+    'ru': 'Повтор очереди',
+    'en': 'Repeat queue',
+    'ja': '再生キューをリピート',
+  },
+  'repeat_track': {'ru': 'Повтор трека', 'en': 'Repeat track', 'ja': '1曲リピート'},
   'ok': {'ru': 'ОК', 'en': 'OK', 'ja': 'OK'},
   'create': {'ru': 'Создать', 'en': 'Create', 'ja': '作成'},
   'image_selected': {
