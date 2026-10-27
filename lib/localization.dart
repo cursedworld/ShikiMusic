@@ -24,6 +24,61 @@ String tr(String key) {
 }
 
 const Map<String, Map<String, String>> _translations = {
+  'download_recovery_failed': {
+    'ru':
+        'Не удалось восстановить незавершённое удаление. Файлы сохранены. Перезапустите плеер; скачивание и перенос временно недоступны.',
+    'en':
+        'Could not recover an interrupted removal. Files are preserved. Restart the player; downloads and transfer are temporarily unavailable.',
+    'ja':
+        '中断された削除を復元できませんでした。ファイルは保持されています。プレーヤーを再起動してください。ダウンロードと転送は一時的に利用できません。',
+  },
+  'download_removal_deferred': {
+    'ru': 'Удалим загрузку после переключения трека. Музыка не прервётся.',
+    'en':
+        'Download will be removed after switching tracks. Playback continues.',
+    'ja': '曲を切り替えた後にダウンロードを削除します。再生は続行します。',
+  },
+  'download_removal_failed': {
+    'ru': 'Не удалось удалить загрузку. Файлы сохранены; попробуйте снова.',
+    'en': 'Could not remove download. Files are preserved; please retry.',
+    'ja': 'ダウンロードを削除できませんでした。ファイルは保持されています。再試行してください。',
+  },
+  'download_removal_cleanup_pending': {
+    'ru':
+        'Загрузка убрана. Очистка занятых файлов завершится при следующем запуске.',
+    'en': 'Download removed. Busy files will be cleaned up at next startup.',
+    'ja': 'ダウンロードを削除しました。使用中のファイルは次回起動時に消去します。',
+  },
+  'catalog_refresh': {
+    'ru': 'Обновить каталог',
+    'en': 'Refresh library',
+    'ja': 'ライブラリを更新',
+  },
+  'catalog_checking': {
+    'ru': 'Проверяем сервер',
+    'en': 'Checking server',
+    'ja': 'サーバーを確認中',
+  },
+  'catalog_synced': {
+    'ru': 'Каталог обновлён',
+    'en': 'Library up to date',
+    'ja': 'ライブラリは最新です',
+  },
+  'catalog_offline': {
+    'ru': 'Сервер недоступен · музыка доступна офлайн',
+    'en': 'Server offline · downloaded music is available',
+    'ja': 'サーバー未接続・ダウンロード済みの音楽は再生できます',
+  },
+  'catalog_error': {
+    'ru': 'Не удалось обновить каталог · сохранённая музыка на месте',
+    'en': 'Library update failed · saved music is unchanged',
+    'ja': 'ライブラリの更新に失敗・保存済みの音楽は変更されていません',
+  },
+  'catalog_last_sync': {
+    'ru': 'Последняя проверка: {time}',
+    'en': 'Last checked: {time}',
+    'ja': '最終確認: {time}',
+  },
   'repeat_off': {'ru': 'Повтор выключен', 'en': 'Repeat off', 'ja': 'リピートなし'},
   'repeat_queue': {
     'ru': 'Повтор очереди',

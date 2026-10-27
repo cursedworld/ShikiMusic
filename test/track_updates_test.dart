@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shiki/track_updates.dart';
+import 'package:shiki/local_download_remover.dart';
 
 String digest(List<int> bytes) => sha256.convert(bytes).toString();
 
@@ -135,6 +136,38 @@ void main() {
     api.client.close();
     await directory.delete(recursive: true);
   });
+
+  test(
+    'transactional removal updates the live monitor only after success',
+    () async {
+      await monitor.checkNow();
+      final original = monitor.audioFile(1).path;
+      final failing = LocalDownloadRemover(
+        directory,
+        moveFile: (_, _) async {
+          throw const FileSystemException('Access denied');
+        },
+      );
+      await expectLater(
+        monitor.removeDownload(1, failing),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(monitor.audioFile(1).path, original);
+      expect(await monitor.audioFile(1).exists(), isTrue);
+      await monitor.removeDownload(1, LocalDownloadRemover(directory));
+      expect(await monitor.audioFile(1).exists(), isFalse);
+      expect(
+        (jsonDecode(
+                  await File(
+                    '${directory.path}/track_versions.json',
+                  ).readAsString(),
+                )
+                as Map)
+            .containsKey('1'),
+        isFalse,
+      );
+    },
+  );
 
   test('unchanged downloaded MP3 hashed once; later polls use ETag', () async {
     await monitor.checkNow();

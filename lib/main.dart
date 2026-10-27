@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'app_paths.dart';
+import 'app_build_info.dart';
 import 'atomic_file_store.dart';
 import 'globals.dart';
 import 'perf/frame_metrics.dart';
@@ -153,7 +154,7 @@ void main() async {
       100 * 1024 * 1024; // 100 MB
 
   // Load saved settings early so the first frame uses the right theme
-  await _loadSavedSettings();
+  await Future.wait([_loadSavedSettings(), loadAppBuildInfo()]);
 
   // Compiled out of normal builds. Benchmark builds opt in explicitly with
   // --dart-define=SHIKI_PERF_METRICS=true.

@@ -1,7 +1,7 @@
 name: shiki
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.11.1
@@ -19,6 +19,8 @@ dependencies:
   http: ^1.6.0
   audioplayers: ^6.6.0
   path_provider: ^2.1.5
+  package_info_plus: ^9.0.1
+  dbus: ^0.7.12
   flutter_discord_rpc:
     path: third_party/flutter_discord_rpc
   file_picker: ^10.3.10

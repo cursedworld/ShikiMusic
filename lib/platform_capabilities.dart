@@ -10,4 +10,14 @@ bool videoClipsSupportedOn(TargetPlatform platform) => switch (platform) {
 
 bool get supportsVideoClips => videoClipsSupportedOn(defaultTargetPlatform);
 
+bool vinylRotationSupportedOn(TargetPlatform platform) => switch (platform) {
+  TargetPlatform.windows ||
+  TargetPlatform.linux ||
+  TargetPlatform.macOS => true,
+  _ => false,
+};
+
+bool get supportsVinylRotation =>
+    vinylRotationSupportedOn(defaultTargetPlatform);
+
 bool get isMobilePlatform => !supportsVideoClips;

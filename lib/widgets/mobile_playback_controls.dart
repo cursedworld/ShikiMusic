@@ -10,23 +10,43 @@ class MobilePlaybackControls extends StatelessWidget {
     required this.isFavorite,
     required this.isPlaying,
     required this.loopMode,
+    required this.isShuffled,
     required this.onFavorite,
     required this.onPrevious,
     required this.onPlayPause,
     required this.onNext,
     required this.onRepeat,
+    required this.onShuffle,
   });
 
-  final bool isFavorite, isPlaying;
+  final bool isFavorite, isPlaying, isShuffled;
   final LoopMode loopMode;
-  final VoidCallback onFavorite, onPrevious, onPlayPause, onNext, onRepeat;
+  final VoidCallback onFavorite,
+      onPrevious,
+      onPlayPause,
+      onNext,
+      onRepeat,
+      onShuffle;
 
   @override
   Widget build(BuildContext context) => SizedBox(
-    width: 280,
+    width: 296,
     child: Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
+        IconButton(
+          key: const ValueKey('mobile_shuffle'),
+          tooltip: tr(
+            isShuffled ? 'shuffle_on_tooltip' : 'shuffle_off_tooltip',
+          ),
+          isSelected: isShuffled,
+          icon: Icon(
+            Icons.shuffle,
+            color: isShuffled ? Colors.redAccent : Colors.white38,
+            size: 22,
+          ),
+          onPressed: onShuffle,
+        ),
         IconButton(
           tooltip: tr(
             isFavorite ? 'taskbar_favorite_remove' : 'taskbar_favorite_add',

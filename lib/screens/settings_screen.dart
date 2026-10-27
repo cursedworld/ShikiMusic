@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
 import '../app_paths.dart';
+import '../app_build_info.dart';
 import '../atomic_file_store.dart';
 import '../globals.dart';
 import '../localization.dart';
@@ -357,18 +358,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             availableLanguages[_selectedLang] ?? _selectedLang,
                         onTap: _settingsReady ? _chooseLanguage : null,
                       ),
-                      _section(tr('settings_playback')),
-                      _toggle(
-                        key: const ValueKey('vinyl_rotation_switch'),
-                        title: tr('vinyl_rotation'),
-                        hint: tr('vinyl_rotation_hint'),
-                        value: _vinylRotation,
-                        onChanged: (value) {
-                          setState(() => _vinylRotation = value);
-                          vinylRotationNotifier.value = value;
-                          _saveSettings();
-                        },
-                      ),
+                      if (supportsVinylRotation || supportsVideoClips)
+                        _section(tr('settings_playback')),
+                      if (supportsVinylRotation)
+                        _toggle(
+                          key: const ValueKey('vinyl_rotation_switch'),
+                          title: tr('vinyl_rotation'),
+                          hint: tr('vinyl_rotation_hint'),
+                          value: _vinylRotation,
+                          onChanged: (value) {
+                            setState(() => _vinylRotation = value);
+                            vinylRotationNotifier.value = value;
+                            _saveSettings();
+                          },
+                        ),
                       if (supportsVideoClips)
                         _toggle(
                           key: const ValueKey('video_clip_switch'),
@@ -461,7 +464,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       _section(tr('about')),
                       _row(
                         title: 'ShikiMusic',
-                        value: '${tr('version')} 1.0.0',
+                        value: appBuildLabel.isEmpty
+                            ? null
+                            : '${tr('version')} $appBuildLabel',
                       ),
                       Text(
                         tr('personal_player'),

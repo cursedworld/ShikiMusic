@@ -75,8 +75,8 @@ void main() {
     if (settle) await tester.pumpAndSettle();
   }
 
-  for (final width in [320.0, 375.0, 768.0]) {
-    for (final scale in [1.0, 2.0]) {
+  for (final width in [320.0, 375.0, 768.0, 800.0, 1024.0, 1440.0]) {
+    for (final scale in [1.0, 1.5, 2.0]) {
       testWidgets('long active cue fits $width at text scale $scale', (
         tester,
       ) async {
@@ -162,57 +162,56 @@ void main() {
     expect(tester.binding.hasScheduledFrame, isFalse);
   });
 
-  testWidgets(
-    'phone overlay uses responsive lyrics; desktop retains its layout',
-    (tester) async {
-      final oldLines = globalLyrics,
-          oldLine = currentLine,
-          oldTrack = activeTrackNotifier.value;
-      final oldLoading = lrcLoading;
-      addTearDown(() {
-        globalLyrics = oldLines;
-        currentLine = oldLine;
-        activeTrackNotifier.value = oldTrack;
-        lrcLoading = oldLoading;
-        debugDefaultTargetPlatformOverride = null;
-      });
-      globalLyrics = lines;
-      currentLine = 4;
-      lrcLoading = false;
-      activeTrackNotifier.value = {'id': 1, 'title': 'Track', 'artists': []};
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      await tester.pumpWidget(
-        MaterialApp(home: PresentationOverlay(onSeekRequested: (_) {})),
-      );
-      await tester.pumpAndSettle();
-      expect(find.byType(SyncedLyricsView), findsOneWidget);
-      final replacement = [
-        for (var i = 0; i < 15; i++)
-          LyricLine(
-            Duration(seconds: i * 3),
-            '',
-            i == 4
-                ? 'Совершенно новый длинный текст другого трека, которому нужна новая высота строки'
-                : 'Другой трек, строка $i',
-          ),
-      ];
-      globalLyrics
-        ..clear()
-        ..addAll(replacement);
-      uiSignal.value++;
-      await tester.pumpAndSettle();
-      expect(find.text(replacement[4].txt), findsOneWidget);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
-      await tester.pumpWidget(
-        MaterialApp(home: PresentationOverlay(onSeekRequested: (_) {})),
-      );
-      await tester.pumpAndSettle();
-      expect(find.byType(SyncedLyricsView), findsNothing);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
+  testWidgets('phone and desktop overlays use complete responsive lyrics', (
+    tester,
+  ) async {
+    final oldLines = globalLyrics,
+        oldLine = currentLine,
+        oldTrack = activeTrackNotifier.value;
+    final oldLoading = lrcLoading;
+    addTearDown(() {
+      globalLyrics = oldLines;
+      currentLine = oldLine;
+      activeTrackNotifier.value = oldTrack;
+      lrcLoading = oldLoading;
       debugDefaultTargetPlatformOverride = null;
-    },
-  );
+    });
+    globalLyrics = lines;
+    currentLine = 4;
+    lrcLoading = false;
+    activeTrackNotifier.value = {'id': 1, 'title': 'Track', 'artists': []};
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    await tester.pumpWidget(
+      MaterialApp(home: PresentationOverlay(onSeekRequested: (_) {})),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(SyncedLyricsView), findsOneWidget);
+    final replacement = [
+      for (var i = 0; i < 15; i++)
+        LyricLine(
+          Duration(seconds: i * 3),
+          '',
+          i == 4
+              ? 'Совершенно новый длинный текст другого трека, которому нужна новая высота строки'
+              : 'Другой трек, строка $i',
+        ),
+    ];
+    globalLyrics
+      ..clear()
+      ..addAll(replacement);
+    uiSignal.value++;
+    await tester.pumpAndSettle();
+    expect(find.text(replacement[4].txt), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    await tester.pumpWidget(
+      MaterialApp(home: PresentationOverlay(onSeekRequested: (_) {})),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(SyncedLyricsView), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    debugDefaultTargetPlatformOverride = null;
+  });
 }

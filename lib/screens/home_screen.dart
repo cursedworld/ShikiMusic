@@ -21,6 +21,7 @@ import '../app_paths.dart';
 import '../async_task_limiter.dart';
 import '../atomic_file_store.dart';
 import '../cover_processing.dart';
+import '../catalog_sync.dart';
 import '../disposable_cache.dart';
 import '../discord_artwork.dart';
 import '../discord_cover.dart';
@@ -30,6 +31,8 @@ import '../globals.dart';
 import '../localization.dart';
 import '../lrc_parser.dart';
 import '../listening_statistics.dart';
+import '../local_download_remover.dart';
+import '../linux_media_session.dart';
 import '../statistics_store.dart';
 import '../media_file_downloader.dart';
 import '../music_import.dart';
@@ -46,6 +49,7 @@ import '../server_config.dart';
 import '../windows_taskbar_controls.dart';
 import '../track_updates.dart';
 import '../widgets/track_updates_dialog.dart';
+import '../widgets/catalog_sync_button.dart';
 import '../widgets/mobile_playback_controls.dart';
 import '../widgets/track_metadata_dialog.dart';
 import '../widgets/playlist_crop_dialog.dart';
@@ -155,6 +159,8 @@ class MainAppScreenState extends State<MainAppScreen>
   // ── flutter_media_session for Media3 notification ────────────────────────
   fms.FlutterMediaSession? _mediaSession;
   bool _mediaSessionActive = false;
+  LinuxMediaSession? _linuxMediaSession;
+  bool _linuxPlaybackStopped = false;
 
   /// Request notification permission on Android 13+ so background audio notification works.
   Future<void> _requestNotificationPermission() async {
@@ -169,43 +175,152 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
-  /// Initialize Media3 MediaSession for lock screen + notification.
+  /// System controls use this AudioPlayer on every supported platform.
   Future<void> _initMediaSession() async {
-    if (isDesktop) return;
+    // Diagnostic A/B only; eliminated from ordinary release builds.
+    if (PerformanceFrameMonitor.enabled &&
+        Platform.isWindows &&
+        Platform.environment['SHIKI_PERF_DISABLE_SMTC'] == '1') {
+      return;
+    }
+    if (Platform.isLinux) {
+      final session = LinuxMediaSession(
+        onAction: _onSystemMediaAction,
+        onShuffle: (enabled) {
+          if (isShuffled != enabled) toggleShuffle();
+        },
+        onRepeat: (mode) {
+          final selected = switch (mode) {
+            'Track' => LoopMode.one,
+            'Playlist' => LoopMode.list,
+            _ => LoopMode.off,
+          };
+          if (!mounted || _stateDisposing) return;
+          setState(() => loopMode = selected);
+          loopModeNotifier.value = selected;
+          _syncMediaSessionPlayback();
+          unawaited(_saveState());
+        },
+        onVolume: (value) {
+          if (!mounted || _stateDisposing) return;
+          setState(() {
+            volume = value;
+            _isMuted = value == 0;
+          });
+          unawaited(audioPlayer.setVolume(value));
+          _syncLinuxMediaSession();
+          unawaited(_saveState());
+        },
+      );
+      _linuxMediaSession = session;
+      _syncLinuxMediaSession();
+      await session.start();
+      if (_stateDisposing) await session.close();
+      return;
+    }
+    if (isDesktop && !Platform.isWindows) return;
     try {
       _mediaSession = fms.FlutterMediaSession();
       await _mediaSession!.activate();
+      if (_stateDisposing) {
+        await _mediaSession!.deactivate();
+        return;
+      }
       _mediaSessionActive = true;
 
       // Handle notification button presses
       _mediaSession!.setActionHandler(
         onPlay: () {
-          if (!isPlaying) pauseTrack();
+          _onSystemMediaAction('play', null);
         },
         onPause: () {
-          if (isPlaying) pauseTrack();
+          _onSystemMediaAction('pause', null);
         },
         onSkipToNext: () {
-          nextTrack();
+          _onSystemMediaAction('next', null);
         },
         onSkipToPrevious: () {
-          prevTrack();
+          _onSystemMediaAction('previous', null);
         },
         onStop: () {
-          if (isPlaying) pauseTrack();
+          _onSystemMediaAction('stop', null);
         },
         onSeekTo: (pos) {
-          seekTo(pos);
+          _onSystemMediaAction('seek', pos);
         },
+        onShuffle: toggleShuffle,
+        onRepeat: toggleLoopMode,
       );
+      _syncMediaSessionMetadata();
+      _syncMediaSessionPlayback();
     } catch (e) {
       debugPrint('FlutterMediaSession init failed: $e');
       _mediaSessionActive = false;
     }
   }
 
+  void _onSystemMediaAction(String action, Duration? position) {
+    if (_stateDisposing || !mounted || playingQueue.isEmpty) return;
+    switch (action) {
+      case 'play':
+        if (!isPlaying) pauseTrack();
+      case 'pause':
+        if (isPlaying) pauseTrack();
+      case 'stop':
+        if (Platform.isLinux) {
+          _stopPlaybackAtQueueEnd();
+          seekTo(Duration.zero);
+        } else if (isPlaying) {
+          pauseTrack();
+        }
+      case 'toggle':
+        pauseTrack();
+      case 'next':
+        nextTrack();
+      case 'previous':
+        prevTrack();
+      case 'seek':
+        if (position != null) seekTo(position);
+    }
+  }
+
+  void _syncLinuxMediaSession() {
+    final session = _linuxMediaSession;
+    if (session == null || _stateDisposing) return;
+    final track = playingIndex >= 0 && playingIndex < playingQueue.length
+        ? playingQueue[playingIndex]
+        : null;
+    final artists = [
+      for (final artist in track?['artists'] as List? ?? [])
+        if (artist is Map && artist['name'] is String) artist['name'] as String,
+    ];
+    if (track != null && artists.isEmpty) artists.add(trackArtistLabel(track));
+    session.update(
+      id: track?['id'] as int?,
+      title: track?['title']?.toString() ?? '',
+      artists: artists,
+      album: track?['album']?['title']?.toString(),
+      artwork: track == null ? null : getArtUri(track)?.toString(),
+      duration: fullDurationNotifier.value,
+      position: currentPositionNotifier.value,
+      playing: isPlaying,
+      stopped: _linuxPlaybackStopped,
+      canNext:
+          playingIndex + 1 < playingQueue.length || loopMode != LoopMode.off,
+      canPrevious: true,
+      shuffled: isShuffled,
+      loop: switch (loopMode) {
+        LoopMode.off => 'None',
+        LoopMode.list => 'Playlist',
+        LoopMode.one => 'Track',
+      },
+      volume: volume,
+    );
+  }
+
   /// Sync current track metadata to Media3 notification.
   void _syncMediaSessionMetadata() {
+    _syncLinuxMediaSession();
     if (!_mediaSessionActive || _mediaSession == null) return;
     if (playingQueue.isEmpty) return;
     final track = playingQueue[playingIndex];
@@ -225,17 +340,40 @@ class MainAppScreenState extends State<MainAppScreen>
 
   /// Sync playback state (playing/paused, position) to Media3.
   void _syncMediaSessionPlayback() {
+    _syncLinuxMediaSession();
     if (!_mediaSessionActive || _mediaSession == null) return;
     // flutter_media_session 2.x has no audioplayers adapter yet.
     // ignore: deprecated_member_use
     _mediaSession!.updatePlaybackState(
       fms.PlaybackState(
-        status: isPlaying
+        status: playingQueue.isEmpty
+            ? fms.PlaybackStatus.idle
+            : isPlaying
             ? fms.PlaybackStatus.playing
             : fms.PlaybackStatus.paused,
         position: currentPositionNotifier.value,
         speed: 1.0,
+        repeatMode: switch (loopMode) {
+          LoopMode.off => fms.MediaRepeatMode.none,
+          LoopMode.list => fms.MediaRepeatMode.all,
+          LoopMode.one => fms.MediaRepeatMode.one,
+        },
+        shuffleModeEnabled: isShuffled,
       ),
+    );
+    // No transport commands should be available with an empty queue.
+    // ignore: deprecated_member_use
+    _mediaSession!.updateAvailableActions(
+      playingQueue.isEmpty
+          ? {}
+          : {
+              fms.MediaAction.play,
+              fms.MediaAction.pause,
+              fms.MediaAction.stop,
+              fms.MediaAction.seekTo,
+              fms.MediaAction.skipToNext,
+              fms.MediaAction.skipToPrevious,
+            },
     );
   }
 
@@ -339,7 +477,7 @@ class MainAppScreenState extends State<MainAppScreen>
   int _syncTicks = 0;
 
   // ── Vinyl rotation animation (desktop) ───────────────────────────────────
-  late AnimationController _vinylController;
+  AnimationController? _vinylController;
   bool _vinylUserStopped = false;
 
   VideoPlayerController? _videoController;
@@ -348,6 +486,7 @@ class MainAppScreenState extends State<MainAppScreen>
   Duration? _lastBenchmarkVideoPosition;
   final MediaFileDownloader _mediaFileDownloader = MediaFileDownloader();
   TrackUpdateMonitor? _trackUpdates;
+  final catalogSyncStatus = CatalogSyncStatus();
   String _lastUpdateNotice = '';
   bool _updateDialogOpen = false;
   MediaFileDownloader? _foregroundVideoDownloader;
@@ -401,6 +540,9 @@ class MainAppScreenState extends State<MainAppScreen>
   String localPath = "";
   Set<int> downloadQueue = {};
   final Map<int, Future<TrackDownloadResult>> _mediaDownloadTasks = {};
+  final Map<int, dynamic> _pendingDownloadRemovals = {};
+  bool _drainingDownloadRemovals = false;
+  bool _downloadRecoveryFailed = false;
   final Map<int, String> _unavailableVideoSignatures = {};
   final ClipRetryGate _clipRetryGate = ClipRetryGate();
   bool _bulkDownloadActive = false;
@@ -478,10 +620,12 @@ class MainAppScreenState extends State<MainAppScreen>
       );
     }
 
-    _vinylController = AnimationController(
-      duration: const Duration(seconds: 10),
-      vsync: this,
-    );
+    if (supportsVinylRotation) {
+      _vinylController = AnimationController(
+        duration: const Duration(seconds: 10),
+        vsync: this,
+      );
+    }
 
     if (PerformanceFrameMonitor.enabled) {
       unawaited(_runBenchmarkScenario(startData));
@@ -549,6 +693,7 @@ class MainAppScreenState extends State<MainAppScreen>
           _audioSourceTrackId == activeTrackNotifier.value?['id']) {
         _statistics?.position(p);
         currentPositionNotifier.value = p;
+        _linuxMediaSession?.updatePosition(p);
       }
     });
 
@@ -624,6 +769,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _artistPhotoQueue.clear();
     _trackUpdates?.offers.removeListener(_onTrackUpdates);
     _trackUpdates?.dispose();
+    catalogSyncStatus.dispose();
     _trackRevision += 1;
     _transportRevision += 1;
     _seekRevision += 1;
@@ -677,9 +823,10 @@ class MainAppScreenState extends State<MainAppScreen>
     if (_mediaSessionActive) {
       _mediaSession?.deactivate();
     }
+    unawaited(_linuxMediaSession?.close());
     fullDurationNotifier.dispose();
     currentPositionNotifier.dispose();
-    _vinylController.dispose();
+    _vinylController?.dispose();
     _artistLibraryChanges.dispose();
 
     if (isDesktop) {
@@ -706,8 +853,9 @@ class MainAppScreenState extends State<MainAppScreen>
         !_videoLifecycleVisible;
     if (state == AppLifecycleState.resumed || restoredWithoutActivation) {
       _videoLifecycleVisible = true;
+      _updateCatalogActivity();
       if (isPlaying && vinylRotationNotifier.value && !_vinylUserStopped) {
-        _vinylController.repeat();
+        _vinylController?.repeat();
       }
       _reconcileVideoVisibility();
       return;
@@ -721,10 +869,11 @@ class MainAppScreenState extends State<MainAppScreen>
 
     final wasVisible = _videoLifecycleVisible;
     _videoLifecycleVisible = false;
+    _updateCatalogActivity();
     if (!wasVisible && state != AppLifecycleState.detached) {
       return;
     }
-    _vinylController.stop();
+    _vinylController?.stop();
     _reconcileVideoVisibility(
       releaseImmediately: state == AppLifecycleState.detached,
     );
@@ -1423,6 +1572,7 @@ class MainAppScreenState extends State<MainAppScreen>
     required _VideoOperation operation,
     required File destination,
   }) async {
+    if (_downloadRecoveryFailed) return;
     final source = request.videoUrl;
     if (source == null) return;
     try {
@@ -1513,6 +1663,7 @@ class MainAppScreenState extends State<MainAppScreen>
     }
     if (mounted && !_stateDisposing) setState(() {});
     await _disposeVideoController(controller);
+    unawaited(_drainDownloadRemovals());
     PerformanceFrameMonitor.markVideoControllerReleased();
   }
 
@@ -1535,13 +1686,15 @@ class MainAppScreenState extends State<MainAppScreen>
   /// and syncs the global [isPlayingNotifier].
   /// React when the user toggles vinyl rotation from Settings.
   void _onVinylRotationChanged() {
+    final controller = _vinylController;
+    if (controller == null) return;
     final enabled = vinylRotationNotifier.value;
     if (!enabled) {
-      _vinylController.stop();
-      _vinylController.value = 0.0;
+      controller.stop();
+      controller.value = 0.0;
       _vinylUserStopped = true;
     } else if (isPlaying && !_vinylUserStopped && _videoLifecycleVisible) {
-      _vinylController.repeat();
+      controller.repeat();
     }
   }
 
@@ -1589,16 +1742,18 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _setPlaying(bool value) {
+    if (value) _linuxPlaybackStopped = false;
     if (mounted) setState(() => isPlaying = value);
     isPlayingNotifier.value = value;
+    _updateCatalogActivity();
     if (value &&
         !_vinylUserStopped &&
         vinylRotationNotifier.value &&
         _videoLifecycleVisible) {
-      _vinylController.repeat();
+      _vinylController?.repeat();
     } else if (!value || !vinylRotationNotifier.value) {
-      _vinylController.stop();
-      if (!vinylRotationNotifier.value) _vinylController.value = 0.0;
+      _vinylController?.stop();
+      if (!vinylRotationNotifier.value) _vinylController?.value = 0.0;
     }
     // Wakelock: keep CPU alive while playing on mobile
     if (!isDesktop) {
@@ -1609,6 +1764,11 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     }
   }
+
+  void _updateCatalogActivity() => _trackUpdates?.setActivity(
+    visible: _videoLifecycleVisible,
+    playing: isPlaying,
+  );
 
   /// Cycle through loop modes and sync the global notifier.
   void toggleLoopMode() {
@@ -1622,6 +1782,7 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     });
     loopModeNotifier.value = loopMode;
+    _syncMediaSessionPlayback();
     _saveState();
   }
 
@@ -2208,6 +2369,18 @@ class MainAppScreenState extends State<MainAppScreen>
   Future<void> startData() async {
     final appDir = await getShikiDataDirectory();
     if (_stateDisposing) return;
+    localPath = appDir.path;
+    globalLocalPath = localPath;
+    try {
+      await LocalDownloadRemover(appDir).recover();
+    } catch (error) {
+      _downloadRecoveryFailed = true;
+      debugPrint('Local download recovery needs retry: $error');
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _downloadRemovalNotice('download_recovery_failed'),
+      );
+    }
+    if (_stateDisposing) return;
 
     // Migrate existing tracks, covers, and config files from root Documents directory
     if (!hasAppDataDirectoryOverride) {
@@ -2251,8 +2424,6 @@ class MainAppScreenState extends State<MainAppScreen>
     }
 
     if (_stateDisposing) return;
-    localPath = appDir.path;
-    globalLocalPath = localPath;
     if (!PerformanceFrameMonitor.enabled) {
       _statistics ??= ListeningStatistics(
         StatisticsStore('$localPath/listening_statistics.sqlite'),
@@ -2291,9 +2462,12 @@ class MainAppScreenState extends State<MainAppScreen>
         directory: appDir,
         tracks: () => cachedTracks,
         onCatalogChanged: _refreshLiveCatalog,
+        onCheckSucceeded: catalogSyncStatus.succeeded,
+        onCheckFailed: catalogSyncStatus.failed,
         includeVideo: supportsVideoClips,
       );
       _trackUpdates = monitor;
+      _updateCatalogActivity();
       await monitor.load();
       if (_stateDisposing) return;
       monitor.offers.addListener(_onTrackUpdates);
@@ -2798,6 +2972,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }) async {
     final revision = ++_databaseSyncRevision;
     final tracksUri = configuredServerUri('/api/tracks/');
+    catalogSyncStatus.checking();
 
     try {
       final res = await http.get(tracksUri).timeout(const Duration(seconds: 5));
@@ -2807,12 +2982,13 @@ class MainAppScreenState extends State<MainAppScreen>
           uri: tracksUri,
         );
       }
-      final decoded = json.decode(utf8.decode(res.bodyBytes));
-      if (decoded is! List) {
-        throw const FormatException('Track response must be a JSON list.');
-      }
+      final decoded = decodeTrackCatalog(
+        res.bodyBytes,
+        hasCachedTracks: cachedTracks.isNotEmpty,
+      );
       if (!_isCurrentDatabaseSync(revision)) return;
       _applyTracks(List<dynamic>.from(decoded));
+      catalogSyncStatus.succeeded();
       try {
         await _persistOfflineTracks();
       } catch (error) {
@@ -2821,20 +2997,12 @@ class MainAppScreenState extends State<MainAppScreen>
       if (refreshArtists) unawaited(_syncArtistsCache());
     } catch (e) {
       if (!_isCurrentDatabaseSync(revision)) return;
+      catalogSyncStatus.failed(e);
       if (reportFailure) rethrow;
       if (cachedTracks.isEmpty) {
         final offlineTracks = await _readOfflineTrackCache();
         if (!_isCurrentDatabaseSync(revision)) return;
         _applyTracks(offlineTracks ?? <dynamic>[]);
-      }
-      // Show a snackbar only when the user might care (i.e. we had no cache)
-      if (mounted && cachedTracks.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(tr('offline_mode')),
-            backgroundColor: Colors.orange,
-          ),
-        );
       }
     }
   }
@@ -3134,6 +3302,10 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> _showTrackUpdates() async {
+    if (_downloadRecoveryFailed) {
+      _downloadRemovalNotice('download_recovery_failed');
+      return;
+    }
     final monitor = _trackUpdates;
     if (monitor == null || _updateDialogOpen || !mounted) return;
     _updateDialogOpen = true;
@@ -3189,6 +3361,11 @@ class MainAppScreenState extends State<MainAppScreen>
         )
       : const SizedBox.shrink();
 
+  Widget _buildCatalogSyncButton() => CatalogSyncButton(
+    status: catalogSyncStatus,
+    onRefresh: () => unawaited(syncDatabase()),
+  );
+
   bool isTrackDownloadComplete(dynamic track) {
     if (localPath.isEmpty || track is! Map) return false;
     final rawTrackId = track['id'];
@@ -3205,6 +3382,10 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> deleteDownloadedTrack(dynamic track) async {
+    if (_downloadRecoveryFailed) {
+      _downloadRemovalNotice('download_recovery_failed');
+      return;
+    }
     if (track is! Map || localPath.isEmpty) return;
     final rawTrackId = track['id'];
     final trackId = rawTrackId is int
@@ -3212,60 +3393,73 @@ class MainAppScreenState extends State<MainAppScreen>
         : int.tryParse(rawTrackId?.toString() ?? '');
     if (trackId == null) return;
     if (downloadQueue.contains(trackId)) return;
-
+    if (_audioSourceTrackId == trackId ||
+        activeTrackNotifier.value?['id'] == trackId ||
+        _videoTrackId == trackId) {
+      _pendingDownloadRemovals[trackId] = track;
+      _downloadRemovalNotice('download_removal_deferred');
+      return;
+    }
+    downloadQueue.add(trackId);
     try {
-      final resolvedVideo = _localVideoFile(trackId);
-      await _trackUpdates?.forget(trackId);
-      final audioFile = File('$localPath/track_$trackId.mp3');
-      if (await audioFile.exists()) {
-        await audioFile.delete();
+      final monitor = _trackUpdates;
+      if (monitor == null) {
+        throw StateError('Download index is not ready');
       }
-      final lrcFile = File('$localPath/track_$trackId.lrc');
-      if (await lrcFile.exists()) {
-        await lrcFile.delete();
-      }
-      final videoFile = resolvedVideo;
-      if (await videoFile.exists()) {
-        await videoFile.delete();
-      }
-      final fallbackCover = File('$localPath/cover_$trackId.jpg');
-      if (await fallbackCover.exists()) {
-        await fallbackCover.delete();
-      }
-
-      final dir = Directory(localPath);
-      if (await dir.exists()) {
-        final prefix = 'cover_${trackId}_';
-        final versioned = RegExp(
-          '^track_${trackId}_[a-f0-9]{64}\\.(mp3|lrc)\$',
-        );
-        final versionedVideo = RegExp('^video_${trackId}_[a-f0-9]{64}\\.mp4\$');
-        await for (final entity in dir.list()) {
-          if (entity is File &&
-              (entity.uri.pathSegments.last.startsWith(prefix) ||
-                  versioned.hasMatch(entity.uri.pathSegments.last) ||
-                  versionedVideo.hasMatch(entity.uri.pathSegments.last))) {
-            try {
-              await entity.delete();
-            } catch (_) {}
-          }
-        }
-      }
-
+      final cleanupPending = await monitor.removeDownload(
+        trackId,
+        LocalDownloadRemover(Directory(localPath)),
+      );
       invalidateTrackCover(trackId);
-      if (mounted) {
-        setState(() {});
-        _notifyArtistLibraryChanged();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(tr('track_deleted_from_storage')),
-            backgroundColor: Colors.black87,
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
+      _downloadRemovalNotice(
+        cleanupPending
+            ? 'download_removal_cleanup_pending'
+            : 'track_deleted_from_storage',
+      );
     } catch (e) {
       debugPrint('Error deleting track files: $e');
+      if (await File(
+        '$localPath/.download_removals/track_$trackId/journal.json',
+      ).exists()) {
+        _downloadRecoveryFailed = true;
+      }
+      _downloadRemovalNotice(
+        _downloadRecoveryFailed
+            ? 'download_recovery_failed'
+            : 'download_removal_failed',
+      );
+    } finally {
+      downloadQueue.remove(trackId);
+      if (mounted && !_stateDisposing) {
+        setState(() {});
+        _notifyArtistLibraryChanged();
+      }
+    }
+  }
+
+  void _downloadRemovalNotice(String key) {
+    if (!mounted || _stateDisposing) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(tr(key))));
+  }
+
+  Future<void> _drainDownloadRemovals() async {
+    if (_stateDisposing || _drainingDownloadRemovals) return;
+    _drainingDownloadRemovals = true;
+    try {
+      for (final entry in _pendingDownloadRemovals.entries.toList()) {
+        if (_audioSourceTrackId == entry.key ||
+            activeTrackNotifier.value?['id'] == entry.key ||
+            _videoTrackId == entry.key ||
+            downloadQueue.contains(entry.key)) {
+          continue;
+        }
+        _pendingDownloadRemovals.remove(entry.key);
+        await deleteDownloadedTrack(entry.value);
+      }
+    } finally {
+      _drainingDownloadRemovals = false;
     }
   }
 
@@ -3315,7 +3509,10 @@ class MainAppScreenState extends State<MainAppScreen>
   }) {
     final id = downloadTrackId(mediaObj);
     final title = mediaObj is Map ? mediaObj['title']?.toString() ?? '$id' : '';
-    if (id == null || localPath.isEmpty || _stateDisposing) {
+    if (id == null ||
+        localPath.isEmpty ||
+        _stateDisposing ||
+        _downloadRecoveryFailed) {
       return Future.value(
         TrackDownloadResult(
           id: id ?? 0,
@@ -3324,7 +3521,11 @@ class MainAppScreenState extends State<MainAppScreen>
           videoReady: false,
           errors: {
             DownloadComponent.library: tr(
-              localPath.isEmpty ? 'library_not_ready' : 'invalid_track',
+              _downloadRecoveryFailed
+                  ? 'download_recovery_failed'
+                  : localPath.isEmpty
+                  ? 'library_not_ready'
+                  : 'invalid_track',
             ),
           },
         ),
@@ -3332,6 +3533,9 @@ class MainAppScreenState extends State<MainAppScreen>
     }
     final pending = _mediaDownloadTasks[id];
     if (pending != null) return pending;
+    // A new explicit download cancels a still-deferred removal, never the
+    // transaction that has already reserved downloadQueue below.
+    _pendingDownloadRemovals.remove(id);
     if (downloadQueue.contains(id)) {
       return Future.value(
         TrackDownloadResult(
@@ -3444,6 +3648,7 @@ class MainAppScreenState extends State<MainAppScreen>
             await _mediaFileDownloader.download(
               source: Uri.parse(_resolveAbsoluteUrl(audioUrl)),
               destination: audioFile,
+              expectedSha256: track['content_versions']?['audio'] as String?,
             );
           }
           audioReady = await _hasNonEmptyFile(audioFile);
@@ -3501,6 +3706,7 @@ class MainAppScreenState extends State<MainAppScreen>
               await _mediaFileDownloader.download(
                 source: Uri.parse(resolvedUrl),
                 destination: videoFile,
+                expectedSha256: track['content_versions']?['video'] as String?,
               );
             } on HttpException catch (error) {
               // A DB URL may outlive its server file. Regenerate once, retaining
@@ -4017,6 +4223,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
     _audioSourceTrackId = trackId;
     _settledTrackRevision = trackRevision;
+    unawaited(_drainDownloadRemovals());
     try {
       final duration = await audioPlayer.getDuration();
       if (!_isCurrentTrackRevision(trackRevision)) return;
@@ -4073,6 +4280,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
     _audioSourceTrackId = trackId;
     _settledTrackRevision = trackRevision;
+    unawaited(_drainDownloadRemovals());
     final duration = await audioPlayer.getDuration();
     if (!_isCurrentTrackRevision(trackRevision)) return;
     if (duration != null) {
@@ -4095,6 +4303,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _stopPlaybackAtQueueEnd() {
+    _linuxPlaybackStopped = true;
     final revision = ++_transportRevision;
     _setPlaying(false);
     _syncMediaSessionPlayback();
@@ -4136,6 +4345,7 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     });
     isShuffledNotifier.value = isShuffled;
+    _syncMediaSessionPlayback();
     _saveState();
   }
 
@@ -4158,6 +4368,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final trackRevision = _trackRevision;
     final seekRevision = ++_seekRevision;
     currentPositionNotifier.value = pos;
+    _linuxMediaSession?.seeked(pos);
     discordStart = isPlaying
         ? (DateTime.now().millisecondsSinceEpoch - pos.inMilliseconds)
         : null;
@@ -5295,6 +5506,9 @@ class MainAppScreenState extends State<MainAppScreen>
           statisticsTracks: cachedTracks,
           statisticsArtists: cachedArtists,
           beforeLibraryExport: () async {
+            if (_downloadRecoveryFailed) {
+              throw StateError(tr('download_recovery_failed'));
+            }
             await atomicFileStore.writeString(
               File('$localPath/my_playlists.json'),
               jsonEncode(myPlaylists),
@@ -5318,11 +5532,13 @@ class MainAppScreenState extends State<MainAppScreen>
     isFavorite: favs.contains(playingQueue[playingIndex]['id']),
     isPlaying: isPlaying,
     loopMode: loopMode,
+    isShuffled: isShuffled,
     onFavorite: () => toggleFavorite(playingQueue[playingIndex]['id']),
     onPrevious: prevTrack,
     onPlayPause: pauseTrack,
     onNext: nextTrack,
     onRepeat: toggleLoopMode,
+    onShuffle: toggleShuffle,
   );
 
   Widget buildMobileMiniPlayer() {
@@ -5468,32 +5684,37 @@ class MainAppScreenState extends State<MainAppScreen>
                 // ── Vinyl-style spinning cover art ──
                 // Tap to stop/resume, double-tap to reset to 0°.
                 GestureDetector(
-                  onTap: vinylRotationNotifier.value
+                  onTap: supportsVinylRotation && vinylRotationNotifier.value
                       ? () {
                           setState(() {
-                            if (_vinylController.isAnimating) {
-                              _vinylController.stop();
+                            if (_vinylController!.isAnimating) {
+                              _vinylController!.stop();
                               _vinylUserStopped = true;
                             } else if (isPlaying) {
-                              _vinylController.repeat();
+                              _vinylController!.repeat();
                               _vinylUserStopped = false;
                             }
                           });
                         }
                       : null,
-                  onDoubleTap: vinylRotationNotifier.value
+                  onDoubleTap:
+                      supportsVinylRotation && vinylRotationNotifier.value
                       ? () {
-                          _vinylController.stop();
-                          _vinylController.value = 0.0;
+                          _vinylController!.stop();
+                          _vinylController!.value = 0.0;
                           _vinylUserStopped = true;
                           setState(() {});
                         }
                       : null,
                   child: MouseRegion(
-                    cursor: SystemMouseCursors.click,
+                    cursor: supportsVinylRotation
+                        ? SystemMouseCursors.click
+                        : SystemMouseCursors.basic,
                     child: RepaintBoundary(
                       child: RotationTransition(
-                        turns: _vinylController,
+                        turns:
+                            _vinylController ??
+                            const AlwaysStoppedAnimation(0.0),
                         child: Container(
                           width: 240,
                           height: 240,
@@ -5576,6 +5797,7 @@ class MainAppScreenState extends State<MainAppScreen>
                           }
                         });
                         audioPlayer.setVolume(volume);
+                        _syncLinuxMediaSession();
                         _saveState();
                       },
                       child: Icon(
@@ -5601,6 +5823,7 @@ class MainAppScreenState extends State<MainAppScreen>
                             _isMuted = v == 0;
                           });
                           audioPlayer.setVolume(v);
+                          _syncLinuxMediaSession();
                         },
                         onChangeEnd: (v) => _saveState(),
                       ),
@@ -5819,6 +6042,7 @@ class MainAppScreenState extends State<MainAppScreen>
                             ),
                           ),
                           _buildTrackUpdatesButton(),
+                          _buildCatalogSyncButton(),
                         ],
                       ),
                       if (finalList.isNotEmpty)
@@ -5886,6 +6110,7 @@ class MainAppScreenState extends State<MainAppScreen>
                       Row(
                         children: [
                           _buildTrackUpdatesButton(),
+                          _buildCatalogSyncButton(),
                           if (finalList.isNotEmpty)
                             ElevatedButton.icon(
                               icon: const Icon(

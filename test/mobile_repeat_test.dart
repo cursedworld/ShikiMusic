@@ -65,6 +65,7 @@ void main() {
             },
           ];
         addTearDown(() {
+          state.catalogSyncStatus.dispose();
           state.searchInput.dispose();
           state.searchFocusNode.dispose();
           state.currentPositionNotifier.dispose();
@@ -93,7 +94,7 @@ void main() {
         await tester.pumpAndSettle();
         final repeat = find.byKey(const ValueKey('mobile_repeat'));
         expect(repeat, findsOneWidget);
-        expect(find.byType(IconButton), findsNWidgets(5));
+        expect(find.byType(IconButton), findsNWidgets(6));
         for (final button in find.byType(IconButton).evaluate()) {
           final size = tester.getSize(find.byWidget(button.widget));
           expect(size.width, greaterThanOrEqualTo(44));
@@ -119,6 +120,21 @@ void main() {
             findsOneWidget,
           );
         }
+        final original = List<dynamic>.from(state.playingQueue);
+        final current = state.playingQueue[state.playingIndex];
+        final oldShuffled = isShuffledNotifier.value;
+        addTearDown(() => isShuffledNotifier.value = oldShuffled);
+        final shuffle = find.byKey(const ValueKey('mobile_shuffle'));
+        await tester.tap(shuffle);
+        await tester.pumpAndSettle();
+        expect(state.isShuffled, isTrue);
+        expect(isShuffledNotifier.value, isTrue);
+        expect(state.playingQueue[state.playingIndex], same(current));
+        expect(tester.widget<IconButton>(shuffle).isSelected, isTrue);
+        await tester.tap(shuffle);
+        await tester.pumpAndSettle();
+        expect(state.playingQueue, original);
+        expect(state.isShuffled, isFalse);
         expect(tester.takeException(), isNull);
         if (width == 375 &&
             const bool.fromEnvironment('SHIKI_MOBILE_CAPTURE')) {
@@ -146,8 +162,8 @@ void main() {
     );
   }
 
-  testWidgets('all five playback callbacks remain independent', (tester) async {
-    final calls = List<int>.filled(5, 0);
+  testWidgets('all six playback callbacks remain independent', (tester) async {
+    final calls = List<int>.filled(6, 0);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -155,11 +171,13 @@ void main() {
             isFavorite: false,
             isPlaying: false,
             loopMode: LoopMode.off,
+            isShuffled: false,
             onFavorite: () => calls[0]++,
             onPrevious: () => calls[1]++,
             onPlayPause: () => calls[2]++,
             onNext: () => calls[3]++,
             onRepeat: () => calls[4]++,
+            onShuffle: () => calls[5]++,
           ),
         ),
       ),
@@ -170,10 +188,39 @@ void main() {
       Icons.play_circle_fill,
       Icons.skip_next_rounded,
       Icons.repeat,
+      Icons.shuffle,
     ]) {
       await tester.tap(find.byIcon(icon));
     }
     await tester.pumpAndSettle();
-    expect(calls, [1, 1, 1, 1, 1]);
+    expect(calls, [1, 1, 1, 1, 1, 1]);
   });
+
+  test(
+    'shuffle preserves a middle track and restores original queue order',
+    () {
+      final old = isShuffledNotifier.value;
+      final state = _MiniPlayerState()
+        ..playingQueue = [
+          for (var id = 1; id <= 20; id++) {'id': id},
+        ]
+        ..playingIndex = 9;
+      addTearDown(() {
+        isShuffledNotifier.value = old;
+        state.searchInput.dispose();
+        state.searchFocusNode.dispose();
+        state.currentPositionNotifier.dispose();
+        state.fullDurationNotifier.dispose();
+        state.catalogSyncStatus.dispose();
+      });
+      final original = List<dynamic>.from(state.playingQueue);
+      final current = state.playingQueue[9];
+      state.toggleShuffle();
+      expect(state.playingQueue.first, same(current));
+      expect(state.playingQueue.map((track) => track['id']).toSet().length, 20);
+      state.toggleShuffle();
+      expect(state.playingQueue, original);
+      expect(state.playingIndex, 9);
+    },
+  );
 }

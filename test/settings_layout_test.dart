@@ -142,10 +142,16 @@ void main() {
       try {
         await show(tester);
         await drive(tester, () => editable(tester));
-        await tester.scrollUntilVisible(
+        if (platform != TargetPlatform.android) {
+          await tester.scrollUntilVisible(
+            find.byKey(const ValueKey('vinyl_rotation_switch')),
+            200,
+            scrollable: find.byType(Scrollable).first,
+          );
+        }
+        expect(
           find.byKey(const ValueKey('vinyl_rotation_switch')),
-          200,
-          scrollable: find.byType(Scrollable).first,
+          platform == TargetPlatform.android ? findsNothing : findsOneWidget,
         );
         expect(
           find.byKey(const ValueKey('video_clip_switch')),

@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 
 import 'atomic_file_store.dart';
 import 'media_file_downloader.dart';
+import 'local_download_remover.dart';
 import 'server_config.dart';
 
 String _textHash(String text) => sha256.convert(utf8.encode(text)).toString();
@@ -114,6 +115,8 @@ class TrackUpdateMonitor {
     this.requestTimeout = const Duration(seconds: 5),
     this.localScanInterval = const Duration(minutes: 1),
     this.onCatalogChanged,
+    this.onCheckSucceeded,
+    this.onCheckFailed,
     this.includeVideo = true,
   }) : _base = serverBase ?? configuredServerBaseUrl,
        _client = client ?? http.Client(),
@@ -131,6 +134,8 @@ class TrackUpdateMonitor {
   final Duration requestTimeout;
   final Duration localScanInterval;
   final Future<void> Function()? onCatalogChanged;
+  final VoidCallback? onCheckSucceeded;
+  final void Function(Object error)? onCheckFailed;
   final bool includeVideo;
   final offers = ValueNotifier<List<TrackUpdateOffer>>(const []);
   final Map<int, _LocalTrack> _local = {};
@@ -140,6 +145,8 @@ class TrackUpdateMonitor {
   final MediaFileDownloader _downloader;
   Future<void> _tail = Future<void>.value();
   Timer? _timer;
+  bool _started = false;
+  bool _visible = true, _playing = false;
   bool _closed = false;
   bool _checking = false;
   String? _catalogEtag;
@@ -235,9 +242,33 @@ class TrackUpdateMonitor {
   }
 
   void start() {
-    if (_closed || _timer != null) return;
-    unawaited(checkNow());
-    _timer = Timer.periodic(interval, (_) => unawaited(checkNow()));
+    if (_closed || _started) return;
+    _started = true;
+    _schedulePolling(checkImmediately: _visible);
+  }
+
+  /// Only optional catalog work is throttled; audio and statistics are separate.
+  void setActivity({required bool visible, required bool playing}) {
+    if (_closed || (_visible == visible && _playing == playing)) return;
+    final returnedToForeground = visible && !_visible;
+    final scheduleChanged =
+        _visible != visible || (!_visible && _playing != playing);
+    _visible = visible;
+    _playing = playing;
+    if (_started && scheduleChanged) {
+      _schedulePolling(checkImmediately: returnedToForeground);
+    }
+  }
+
+  void _schedulePolling({required bool checkImmediately}) {
+    _timer?.cancel();
+    _timer = null;
+    if (!_visible && !_playing) return;
+    if (checkImmediately) unawaited(checkNow());
+    _timer = Timer.periodic(
+      _visible ? interval : const Duration(minutes: 1),
+      (_) => unawaited(checkNow()),
+    );
   }
 
   Future<T> _serial<T>(Future<T> Function() operation) {
@@ -526,7 +557,9 @@ class TrackUpdateMonitor {
         _lastFullCheck = DateTime.now();
         _checkedLocalGeneration = _localGeneration;
       });
-    } catch (_) {
+      if (!_closed) onCheckSucceeded?.call();
+    } catch (error) {
+      if (!_closed) onCheckFailed?.call(error);
       // Local server being offline is normal. Keep downloads and pending offers.
     } finally {
       _checking = false;
@@ -568,6 +601,7 @@ class TrackUpdateMonitor {
           resolveMediaUrlForBase(_base, track['audio_file'].toString()),
         ),
         destination: destination,
+        expectedSha256: remote.audio,
       );
       if (await _hash(destination.path) != remote.audio) {
         // Quarantine only this failed candidate; never touch the old playable file.
@@ -592,6 +626,7 @@ class TrackUpdateMonitor {
       await _downloader.download(
         source: Uri.parse(resolveMediaUrlForBase(_base, source)),
         destination: destination,
+        expectedSha256: remote.video,
       );
       if (await _hash(destination.path) != remote.video) {
         await destination.rename(
@@ -662,6 +697,19 @@ class TrackUpdateMonitor {
       id == null ? [] : offers.value.where((offer) => offer.id != id).toList(),
     );
   });
+
+  Future<bool> removeDownload(int id, LocalDownloadRemover remover) =>
+      _serial(() async {
+        final next = {..._local}..remove(id);
+        final cleanupPending = await remover.remove(
+          id,
+          commitIndex: () => _save(next),
+        );
+        _local.remove(id);
+        _localGeneration++;
+        _publish(offers.value.where((offer) => offer.id != id).toList());
+        return cleanupPending;
+      });
 
   void dispose() {
     if (_closed) return;

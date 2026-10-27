@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'resumable_media_transfer.dart';
 
 class MediaDownloadCancelledException implements Exception {
   const MediaDownloadCancelledException();
@@ -60,10 +61,19 @@ class MediaFileDownloader {
     Duration connectionTimeout = const Duration(seconds: 15),
     Duration idleTimeout = const Duration(seconds: 30),
     Future<void>? abortTrigger,
+    String? expectedSha256,
   }) {
     _throwIfClosed();
     _validateTimeout(connectionTimeout, 'connectionTimeout');
     _validateTimeout(idleTimeout, 'idleTimeout');
+    if (expectedSha256 != null &&
+        !RegExp(r'^[a-f0-9]{64}$').hasMatch(expectedSha256)) {
+      throw ArgumentError.value(
+        expectedSha256,
+        'expectedSha256',
+        'must be a SHA-256 digest',
+      );
+    }
 
     final absolutePath = destination.absolute.path;
     final destinationPath = Platform.isWindows
@@ -71,11 +81,19 @@ class MediaFileDownloader {
         : absolutePath;
     final existing = _inFlight[destinationPath];
     if (existing != null) {
+      if (existing.expectedSha256 != expectedSha256) {
+        return Future.error(
+          StateError(
+            'A different media version is already downloading to this path.',
+          ),
+        );
+      }
       return _subscribe(existing, abortTrigger: abortTrigger);
     }
 
     late final _SharedMediaDownload shared;
     shared = _SharedMediaDownload(
+      expectedSha256: expectedSha256,
       onAbandoned: () {
         if (identical(_inFlight[destinationPath], shared)) {
           _inFlight.remove(destinationPath);
@@ -92,6 +110,7 @@ class MediaFileDownloader {
         connectionTimeout: connectionTimeout,
         idleTimeout: idleTimeout,
         cancellation: cancellation,
+        expectedSha256: expectedSha256,
       ),
       onFinished: () {
         if (identical(_inFlight[destinationPath], shared)) {
@@ -150,6 +169,7 @@ class MediaFileDownloader {
     required Duration connectionTimeout,
     required Duration idleTimeout,
     required _TransferCancellation cancellation,
+    required String? expectedSha256,
   }) async {
     var acquiredSlot = false;
     try {
@@ -161,6 +181,7 @@ class MediaFileDownloader {
         connectionTimeout: connectionTimeout,
         idleTimeout: idleTimeout,
         cancellation: cancellation,
+        expectedSha256: expectedSha256,
       );
     } finally {
       if (acquiredSlot) {
@@ -207,6 +228,7 @@ class MediaFileDownloader {
     required Duration connectionTimeout,
     required Duration idleTimeout,
     required _TransferCancellation cancellation,
+    required String? expectedSha256,
   }) async {
     cancellation.throwIfCancelled();
     if (await _isUsable(destination)) {
@@ -232,6 +254,20 @@ class MediaFileDownloader {
       }
       await _deleteStalePartialFiles(destination);
       cancellation.throwIfCancelled();
+
+      if (expectedSha256 != null) {
+        return await transferVerifiedMedia(
+          client: _client,
+          source: source,
+          destination: destination,
+          expectedSha256: expectedSha256,
+          connectionTimeout: connectionTimeout,
+          idleTimeout: idleTimeout,
+          stalePartialAge: _stalePartialAge,
+          cancelled: cancellation.future,
+          checkCancelled: cancellation.throwIfCancelled,
+        );
+      }
 
       partial = File(_temporaryPathFor(destination));
       normalizedPartialPath = _normalizedAbsolutePath(partial.path);
@@ -442,10 +478,13 @@ class MediaFileDownloader {
 }
 
 class _SharedMediaDownload {
-  _SharedMediaDownload({required void Function() onAbandoned})
-    : _onAbandoned = onAbandoned;
+  _SharedMediaDownload({
+    required this.expectedSha256,
+    required void Function() onAbandoned,
+  }) : _onAbandoned = onAbandoned;
 
   final void Function() _onAbandoned;
+  final String? expectedSha256;
   final _TransferCancellation _cancellation = _TransferCancellation();
   final Set<_MediaDownloadSubscription> _subscribers =
       <_MediaDownloadSubscription>{};
