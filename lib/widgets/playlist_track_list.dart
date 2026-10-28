@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter/semantics.dart';
 
 import '../localization.dart';
@@ -131,53 +130,39 @@ class _PlaylistTrackDragHandleState extends State<PlaylistTrackDragHandle> {
         ),
       ),
     );
-    final shortcuts = <ShortcutActivator, VoidCallback>{};
     final semanticsActions = <CustomSemanticsAction, VoidCallback>{};
     if (up != null) {
-      shortcuts[const SingleActivator(
-            LogicalKeyboardKey.arrowUp,
-            control: true,
-          )] =
-          up;
       semanticsActions[CustomSemanticsAction(label: tr('playlist_move_up'))] =
           up;
     }
     if (down != null) {
-      shortcuts[const SingleActivator(
-            LogicalKeyboardKey.arrowDown,
-            control: true,
-          )] =
-          down;
       semanticsActions[CustomSemanticsAction(label: tr('playlist_move_down'))] =
           down;
     }
-    return CallbackShortcuts(
-      bindings: shortcuts,
-      child: Focus(
-        onFocusChange: (value) => setState(() => _focused = value),
-        child: Builder(
-          builder: (context) => Semantics(
-            label: tr(
-              widget.touchMode ? 'playlist_reorder_touch' : 'playlist_reorder',
-            ),
-            customSemanticsActions: semanticsActions,
-            child: MouseRegion(
-              cursor: SystemMouseCursors.grab,
-              onEnter: (_) => setState(() => _hovered = true),
-              onExit: (_) => setState(() => _hovered = false),
-              child: Tooltip(
-                message: tr(
-                  widget.touchMode
-                      ? 'playlist_reorder_touch'
-                      : 'playlist_reorder',
-                ),
-                child: !widget.touchMode
-                    ? ReorderableDragStartListener(index: index, child: grip)
-                    : ReorderableDelayedDragStartListener(
-                        index: index,
-                        child: grip,
-                      ),
+    return Focus(
+      onFocusChange: (value) => setState(() => _focused = value),
+      child: Builder(
+        builder: (context) => Semantics(
+          label: tr(
+            widget.touchMode ? 'playlist_reorder_touch' : 'playlist_reorder',
+          ),
+          customSemanticsActions: semanticsActions,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.grab,
+            onEnter: (_) => setState(() => _hovered = true),
+            onExit: (_) => setState(() => _hovered = false),
+            child: Tooltip(
+              message: tr(
+                widget.touchMode
+                    ? 'playlist_reorder_touch'
+                    : 'playlist_reorder',
               ),
+              child: !widget.touchMode
+                  ? ReorderableDragStartListener(index: index, child: grip)
+                  : ReorderableDelayedDragStartListener(
+                      index: index,
+                      child: grip,
+                    ),
             ),
           ),
         ),

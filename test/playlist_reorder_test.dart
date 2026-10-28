@@ -391,7 +391,9 @@ void main() {
     expect(decoration.boxShadow, isNull);
   });
 
-  testWidgets('keyboard reorders without triggering playback', (tester) async {
+  testWidgets('handle has no keyboard reorder binding or shortcut hint', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(1440, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -413,19 +415,16 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    final handle = find
-        .descendant(
-          of: find.byKey(const ValueKey('playlist_drag_2')),
-          matching: find.byType(ReorderableDragStartListener),
-        )
-        .first;
-    Focus.of(tester.element(handle)).requestFocus();
-    await tester.pump();
-    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
-    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-    await tester.pumpAndSettle();
-    expect(state.myPlaylists.first['tracks'], [2, 1, 3, 4]);
+    final handle = find.byKey(const ValueKey('playlist_drag_2'));
+    expect(
+      find.descendant(of: handle, matching: find.byType(CallbackShortcuts)),
+      findsNothing,
+    );
+    final tooltip = tester.widget<Tooltip>(
+      find.descendant(of: handle, matching: find.byType(Tooltip)),
+    );
+    expect(tooltip.message, 'Перетащить трек');
+    expect(state.myPlaylists.first['tracks'], [1, 2, 3, 4]);
     expect(state.playingQueue, isEmpty);
     expect(tester.takeException(), isNull);
     state.rebuild = null;

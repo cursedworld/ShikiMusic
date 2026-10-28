@@ -142,9 +142,9 @@ const Map<String, Map<String, String>> _translations = {
   'taskbar_pause': {'ru': 'Пауза', 'en': 'Pause', 'ja': '一時停止'},
   'playlist_rename': {'ru': 'Переименовать', 'en': 'Rename', 'ja': '名前を変更'},
   'playlist_reorder': {
-    'ru': 'Перетащить трек · Ctrl+↑/↓',
-    'en': 'Drag to reorder · Ctrl+↑/↓',
-    'ja': 'ドラッグして並べ替え · Ctrl+↑/↓',
+    'ru': 'Перетащить трек',
+    'en': 'Drag to reorder',
+    'ja': 'ドラッグして並べ替え',
   },
   'playlist_reorder_touch': {
     'ru': 'Удерживайте обложку и перетащите трек',
