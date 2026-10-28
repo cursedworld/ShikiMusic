@@ -141,6 +141,22 @@ const Map<String, Map<String, String>> _translations = {
   'taskbar_play': {'ru': 'Воспроизвести', 'en': 'Play', 'ja': '再生'},
   'taskbar_pause': {'ru': 'Пауза', 'en': 'Pause', 'ja': '一時停止'},
   'playlist_rename': {'ru': 'Переименовать', 'en': 'Rename', 'ja': '名前を変更'},
+  'playlist_reorder': {
+    'ru': 'Перетащить трек · Ctrl+↑/↓',
+    'en': 'Drag to reorder · Ctrl+↑/↓',
+    'ja': 'ドラッグして並べ替え · Ctrl+↑/↓',
+  },
+  'playlist_reorder_touch': {
+    'ru': 'Удерживайте обложку и перетащите трек',
+    'en': 'Hold the artwork and drag to reorder',
+    'ja': 'ジャケットを長押ししてドラッグで並べ替え',
+  },
+  'playlist_move_up': {'ru': 'Переместить выше', 'en': 'Move up', 'ja': '上に移動'},
+  'playlist_move_down': {
+    'ru': 'Переместить ниже',
+    'en': 'Move down',
+    'ja': '下に移動',
+  },
   'playlist_change_artwork': {
     'ru': 'Сменить обложку',
     'en': 'Change artwork',

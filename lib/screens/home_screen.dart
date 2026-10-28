@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart' show compute, listEquals;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -54,6 +54,7 @@ import '../widgets/mobile_playback_controls.dart';
 import '../widgets/track_metadata_dialog.dart';
 import '../widgets/playlist_crop_dialog.dart';
 import '../widgets/playlist_name_dialog.dart';
+import '../widgets/playlist_track_list.dart';
 import '../widgets/artist_library_view.dart';
 import 'artist_screen.dart';
 import 'lyrics_screen.dart';
@@ -457,6 +458,8 @@ class MainAppScreenState extends State<MainAppScreen>
   bool isPlaying = false;
   List<dynamic> playingQueue = [];
   int playingIndex = 0;
+  int? playingPlaylistId;
+  Future<void> _playlistReorderTail = Future<void>.value();
   int? discordStart;
   LoopMode loopMode = LoopMode.off;
   int navId = 0;
@@ -2505,6 +2508,7 @@ class MainAppScreenState extends State<MainAppScreen>
         'volume': volume,
         'loopMode': loopMode.index,
         'playingIndex': playingIndex,
+        'playingPlaylistId': playingPlaylistId,
         'playingQueue': playingQueue,
         'position': currentPositionNotifier.value.inMilliseconds,
         'isShuffled': isShuffled,
@@ -2550,6 +2554,9 @@ class MainAppScreenState extends State<MainAppScreen>
           return;
         }
         playingQueue = List<dynamic>.from(savedQueue);
+        playingPlaylistId = data['playingPlaylistId'] is int
+            ? data['playingPlaylistId'] as int
+            : null;
         final savedIndex = data['playingIndex'];
         playingIndex = savedIndex is int
             ? savedIndex.clamp(0, playingQueue.length - 1)
@@ -2694,6 +2701,90 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     }
     return false;
+  }
+
+  Future<bool> reorderPlaylist(
+    int playlistId,
+    List<int> visibleIds,
+    int oldIndex,
+    int newIndex,
+  ) {
+    final snapshot = List<int>.of(visibleIds);
+    final result = _playlistReorderTail.then(
+      (_) => _reorderPlaylist(playlistId, snapshot, oldIndex, newIndex),
+    );
+    _playlistReorderTail = result.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {},
+    );
+    return result;
+  }
+
+  Future<bool> _reorderPlaylist(
+    int playlistId,
+    List<int> visibleIds,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    if (_stateDisposing) return false;
+    final index = myPlaylists.indexWhere((p) => p['id'] == playlistId);
+    if (index < 0) return false;
+    final previous = List<dynamic>.from(myPlaylists[index]['tracks']);
+    final reordered = reorderPlaylistTracks(
+      previous,
+      visibleIds,
+      oldIndex,
+      newIndex,
+    );
+    if (listEquals(previous, reordered)) return false;
+    final expectedOrder = List<dynamic>.unmodifiable(reordered);
+    void apply() => myPlaylists[index]['tracks'] = reordered;
+    if (mounted) {
+      setState(apply);
+    } else {
+      apply();
+    }
+    final saved = await savePlaylists();
+    if (_stateDisposing) return saved;
+    final current = myPlaylists.indexWhere((p) => p['id'] == playlistId);
+    if (!saved) {
+      // Do not overwrite a newer drag, rename, or membership edit.
+      if (current >= 0 &&
+          identical(myPlaylists[current]['tracks'], reordered) &&
+          listEquals(myPlaylists[current]['tracks'] as List, expectedOrder)) {
+        void restore() => myPlaylists[current]['tracks'] = previous;
+        if (mounted) {
+          setState(restore);
+        } else {
+          restore();
+        }
+      }
+      return false;
+    }
+    if (current < 0 ||
+        playingPlaylistId != playlistId ||
+        playingQueue.isEmpty) {
+      return true;
+    }
+    final order = List<dynamic>.from(myPlaylists[current]['tracks']);
+    void updateQueue() {
+      if (isShuffled) {
+        _unshuffledQueue = playlistQueueInOrder(_unshuffledQueue, order);
+      } else {
+        final activeId = playingQueue[playingIndex]['id'];
+        playingQueue = playlistQueueInOrder(playingQueue, order);
+        playingIndex = playingQueue.indexWhere((t) => t['id'] == activeId);
+      }
+    }
+
+    if (mounted) {
+      setState(updateQueue);
+      _syncMediaSessionPlayback();
+    } else {
+      updateQueue();
+    }
+    await _saveState();
+    return true;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -4051,13 +4142,14 @@ class MainAppScreenState extends State<MainAppScreen>
   //  Playback
   // ═══════════════════════════════════════════════════════════════════════════
 
-  void startPlayback(List<dynamic> targetQueue, int index) {
+  void startPlayback(List<dynamic> targetQueue, int index, {int? playlistId}) {
     if (targetQueue.isEmpty || index < 0 || index >= targetQueue.length) return;
     if (isPremium) playCount++;
 
     setState(() {
       playingQueue = List.from(targetQueue);
       playingIndex = index;
+      playingPlaylistId = playlistId;
     });
     // Reset shuffle when starting fresh from a list tap
     isShuffled = false;
@@ -6015,6 +6107,18 @@ class MainAppScreenState extends State<MainAppScreen>
     List<dynamic> finalList = finalListToRender
         .where((track) => matchesTrackSearch(track, searchQuery))
         .toList();
+    final playlistId = navId >= 3 && navId - 3 < myPlaylists.length
+        ? myPlaylists[navId - 3]['id'] as int
+        : null;
+    final visibleTrackIds = playlistId == null
+        ? const <int>[]
+        : [for (final track in finalList) track['id'] as int];
+    void onPlaylistReorder(int oldIndex, int newIndex) {
+      if (playlistId == null) return;
+      unawaited(
+        reorderPlaylist(playlistId, visibleTrackIds, oldIndex, newIndex),
+      );
+    }
 
     var mainContent = Expanded(
       child: Padding(
@@ -6198,11 +6302,9 @@ class MainAppScreenState extends State<MainAppScreen>
                             ),
                     )
                   // ── Track list with smooth scroll ──
-                  : ListView.builder(
-                      physics: const BouncingScrollPhysics(
-                        parent: AlwaysScrollableScrollPhysics(),
-                      ),
-                      cacheExtent: 500,
+                  : PlaylistTrackList(
+                      key: ValueKey('track_list_$navId'),
+                      onReorder: playlistId == null ? null : onPlaylistReorder,
                       itemCount: finalList.length,
                       itemBuilder: (ctx, idx) {
                         final currentObject = finalList[idx];
@@ -6218,8 +6320,22 @@ class MainAppScreenState extends State<MainAppScreen>
                         );
                         final isDownloading = downloadQueue.contains(trackId);
                         final isFavorited = favs.contains(trackId);
+                        final cover = ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image(
+                            image: coverThumbnail(
+                              context,
+                              getPictureProvider(currentObject),
+                              50,
+                            ),
+                            width: 50,
+                            height: 50,
+                            fit: BoxFit.cover,
+                          ),
+                        );
 
                         return Container(
+                          key: ValueKey(trackId),
                           margin: const EdgeInsets.only(bottom: 10),
                           decoration: BoxDecoration(
                             color: isActiveTrack
@@ -6232,19 +6348,16 @@ class MainAppScreenState extends State<MainAppScreen>
                               horizontal: 10,
                               vertical: 5,
                             ),
-                            leading: ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: Image(
-                                image: coverThumbnail(
-                                  context,
-                                  getPictureProvider(currentObject),
-                                  50,
-                                ),
-                                width: 50,
-                                height: 50,
-                                fit: BoxFit.cover,
-                              ),
-                            ),
+                            leading: playlistId != null
+                                ? PlaylistTrackDragHandle(
+                                    key: ValueKey('playlist_drag_$trackId'),
+                                    index: idx,
+                                    itemCount: finalList.length,
+                                    onReorder: onPlaylistReorder,
+                                    artwork: cover,
+                                    touchMode: isMobile,
+                                  )
+                                : cover,
                             title: Text(
                               currentObject['title'],
                               style: TextStyle(
@@ -6381,7 +6494,11 @@ class MainAppScreenState extends State<MainAppScreen>
                                 ],
                               ),
                             ),
-                            onTap: () => startPlayback(finalList, idx),
+                            onTap: () => startPlayback(
+                              finalList,
+                              idx,
+                              playlistId: playlistId,
+                            ),
                           ),
                         );
                       },
