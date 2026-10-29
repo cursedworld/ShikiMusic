@@ -472,9 +472,14 @@ const Map<String, Map<String, String>> _translations = {
   'playlist_crop_apply': {'ru': 'Выбрать', 'en': 'Use image', 'ja': 'この画像を使用'},
   'settings': {'ru': 'Настройки', 'en': 'Settings', 'ja': '設定'},
   'search_hint_senpai': {
-    'ru': 'Поиск треков, исполнителей...',
-    'en': 'Search tracks, artists...',
-    'ja': '曲、アーティストを検索...',
+    'ru': 'Поиск треков, исполнителей, слов...',
+    'en': 'Search tracks, artists, lyrics...',
+    'ja': '曲、アーティスト、歌詞を検索...',
+  },
+  'search_lyrics_loading': {
+    'ru': 'Ищем в сохранённых текстах…',
+    'en': 'Searching saved lyrics…',
+    'ja': '保存された歌詞を検索中…',
   },
   'download_all': {
     'ru': 'Скачать всё',

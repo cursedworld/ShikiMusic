@@ -13,8 +13,11 @@ tested on Arch Linux.
 - Downloaded MP3 playback, a playback queue, shuffle, repeat, and favorites.
 - MP4 music video downloads and local playback, with an option to disable video.
 - Synced LRC lyrics and a dedicated full-screen lyrics view.
+- Offline search by title, artist, and phrases from saved lyrics.
+  Lyric words must be consecutive and in the same order; matching ignores
+  case, punctuation, and the Russian ё/е distinction.
 - Playlists with custom artwork and a circular crop preview.
-  Tracks follow the order in which they were added to the playlist.
+  Tracks follow their insertion order by default and can be reordered by dragging.
 - Artist pages with biographies, albums, and collaborations when the catalog
   contains the corresponding metadata.
 - Queued downloads for all tracks in a list or album.

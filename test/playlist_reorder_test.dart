@@ -10,11 +10,18 @@ import 'package:shiki/globals.dart';
 import 'package:shiki/atomic_file_store.dart';
 import 'package:shiki/screens/home_screen.dart';
 import 'package:shiki/widgets/playlist_track_list.dart';
+import 'package:shiki/lyrics_search.dart';
 
 class _PlaylistState extends MainAppScreenState {
   BuildContext? testContext;
   VoidCallback? rebuild;
   bool memoryOnly = false;
+  int networkSearches = 0;
+
+  @override
+  Future<void> downloadFromNetwork() async {
+    networkSearches++;
+  }
 
   @override
   bool get mounted => testContext != null;
@@ -92,6 +99,7 @@ void main() {
         () => '{}',
       );
       state.catalogSyncStatus.dispose();
+      state.lyricsSearchIndex.dispose();
       state.searchInput.dispose();
       state.searchFocusNode.dispose();
       state.currentPositionNotifier.dispose();
@@ -358,6 +366,78 @@ void main() {
     await mouse.removePointer();
     expect(tester.takeException(), isNull);
   });
+
+  for (final width in [375.0, 1440.0]) {
+    testWidgets(
+      'actual search finds ordered lyrics and keeps metadata search at $width',
+      (tester) async {
+        tester.view.physicalSize = Size(width, 900);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final state = createFixture(await widgetDirectory(tester))
+          ..memoryOnly = true
+          ..localPath = ''
+          ..navId = 0
+          ..cachedTracks = [
+            {...tracks[0], 'lyrics': '[00:01.00]Любовь из кучи обломков'},
+            {...tracks[1], 'lyrics': '[00:02.00]Обломков кучи из любовь'},
+          ];
+        state.lyricsSearchIndex.dispose();
+        state.lyricsSearchIndex = LyricsSearchIndex(
+          builder: (jobs) async => buildLyricsSearchDocuments(jobs),
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: ThemeData.dark(),
+            home: StatefulBuilder(
+              builder: (context, setState) {
+                state.testContext = context;
+                state.rebuild = () => setState(() {});
+                return state.build(context);
+              },
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final search = find.byType(TextField);
+        await tester.enterText(search, 'любовь из кучи');
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pumpAndSettle();
+        expect(find.text('Track 1'), findsOneWidget);
+        expect(find.text('Track 2'), findsNothing);
+        await tester.testTextInput.receiveAction(TextInputAction.done);
+        await tester.pumpAndSettle();
+        expect(state.networkSearches, 0);
+        await tester.enterText(search, 'кучи из любовь');
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pumpAndSettle();
+        expect(find.text('Track 2'), findsOneWidget);
+        expect(find.text('Track 1'), findsNothing);
+        await tester.enterText(search, 'Artist');
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pumpAndSettle();
+        expect(find.text('Track 1'), findsOneWidget);
+        expect(find.text('Track 2'), findsOneWidget);
+        await tester.enterText(search, 'Track 2');
+        await tester.pump(const Duration(milliseconds: 200));
+        await tester.pumpAndSettle();
+        expect(find.widgetWithText(ListTile, 'Track 2'), findsOneWidget);
+        expect(find.text('Track 1'), findsNothing);
+        await tester.tap(find.byIcon(Icons.clear));
+        await tester.pumpAndSettle();
+        expect(state.lyricsSearchIndex.isReady, isFalse);
+        expect(find.text('Track 1'), findsOneWidget);
+        expect(find.text('Track 2'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        expect(tester.binding.hasScheduledFrame, isFalse);
+        state.updateSearchQuery('');
+        state.rebuild = null;
+        state.testContext = null;
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
 
   testWidgets('drag decoration is translucent with no flat surface or shadow', (
     tester,

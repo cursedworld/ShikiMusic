@@ -30,6 +30,7 @@ import '../download_batch.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../lrc_parser.dart';
+import '../lyrics_search.dart';
 import '../listening_statistics.dart';
 import '../local_download_remover.dart';
 import '../linux_media_session.dart';
@@ -558,6 +559,10 @@ class MainAppScreenState extends State<MainAppScreen>
   final TextEditingController searchInput = TextEditingController();
   final FocusNode searchFocusNode = FocusNode();
   String searchQuery = "";
+  LyricsSearchIndex lyricsSearchIndex = LyricsSearchIndex();
+  Timer? _lyricsSearchTimer;
+  int _lyricsSearchQueryRevision = 0;
+  bool _preparingLyricsSearch = false;
   bool isSearchLoading = false;
   String? _albumImportProgress;
   bool _importErrorsOpen = false;
@@ -820,6 +825,8 @@ class MainAppScreenState extends State<MainAppScreen>
     unawaited(_audioCompleteSubscription?.cancel());
     HardwareKeyboard.instance.removeHandler(_handleGlobalKeys);
     searchInput.dispose();
+    _lyricsSearchTimer?.cancel();
+    lyricsSearchIndex.dispose();
     searchFocusNode.dispose();
     backgroundPollingTimer?.cancel();
     rpcThrottleTimer?.cancel();
@@ -2834,6 +2841,7 @@ class MainAppScreenState extends State<MainAppScreen>
       isLoading = false;
     }
     _notifyArtistLibraryChanged();
+    if (searchQuery.trim().isNotEmpty) _scheduleLyricsSearch();
     if (activeTrackNotifier.value != null) {
       uiSignal.value++;
       _syncMediaSessionMetadata();
@@ -4552,7 +4560,7 @@ class MainAppScreenState extends State<MainAppScreen>
         lyrics: parseLrcString(dbLyrics),
         plainText: dbLyrics,
       );
-      unawaited(_writeLyricsFile(localLrc, dbLyrics));
+      unawaited(_writeLyricsFile(localLrc, dbLyrics, trackId));
       return;
     }
 
@@ -4590,7 +4598,7 @@ class MainAppScreenState extends State<MainAppScreen>
             lyrics: parseLrcString(contents),
             plainText: contents,
           );
-          unawaited(_writeLyricsFile(localLrc, contents));
+          unawaited(_writeLyricsFile(localLrc, contents, trackId));
           unawaited(
             _saveLyricsToServer(trackId, contents, expectedLyricsVersion),
           );
@@ -4631,9 +4639,13 @@ class MainAppScreenState extends State<MainAppScreen>
     updateRPC(force: true);
   }
 
-  Future<void> _writeLyricsFile(File file, String contents) async {
+  Future<void> _writeLyricsFile(File file, String contents, int trackId) async {
     try {
       await atomicFileStore.writeString(file, contents);
+      lyricsSearchIndex.invalidate(trackId);
+      if (!_stateDisposing && searchQuery.trim().isNotEmpty) {
+        _scheduleLyricsSearch();
+      }
     } catch (error) {
       debugPrint('Lyrics cache write failed: $error');
     }
@@ -5196,6 +5208,75 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
+  void updateSearchQuery(String value) {
+    _lyricsSearchQueryRevision++;
+    _lyricsSearchTimer?.cancel();
+    void apply() {
+      searchQuery = value;
+      _preparingLyricsSearch =
+          value.trim().isNotEmpty && navId != -1 && !lyricsSearchIndex.isReady;
+    }
+
+    if (mounted) {
+      setState(apply);
+    } else {
+      apply();
+    }
+    if (value.trim().isEmpty) {
+      lyricsSearchIndex.clear();
+    } else if (navId != -1) {
+      _scheduleLyricsSearch();
+    }
+  }
+
+  void _selectNav(int id) {
+    setState(() => navId = id);
+    if (searchQuery.trim().isNotEmpty) updateSearchQuery(searchQuery);
+  }
+
+  void _scheduleLyricsSearch() {
+    _lyricsSearchTimer?.cancel();
+    _lyricsSearchTimer = Timer(
+      const Duration(milliseconds: 180),
+      () => unawaited(refreshLyricsSearch()),
+    );
+  }
+
+  Future<void> refreshLyricsSearch() async {
+    if (_stateDisposing || searchQuery.trim().isEmpty || navId == -1) return;
+    final revision = _lyricsSearchQueryRevision;
+    try {
+      await lyricsSearchIndex.prepare(
+        cachedTracks,
+        lyricsFile: (id) =>
+            _trackUpdates?.lyricsFile(id) ?? File('$localPath/track_$id.lrc'),
+      );
+    } catch (error) {
+      debugPrint('Lyrics search preparation failed: $error');
+    }
+    if (_stateDisposing || revision != _lyricsSearchQueryRevision) return;
+    if (mounted) {
+      setState(() => _preparingLyricsSearch = false);
+    } else {
+      _preparingLyricsSearch = false;
+    }
+  }
+
+  Future<void> submitSearch() async {
+    final submitted = searchQuery;
+    if (navId != -1 && normalizeLyricsSearch(submitted).isNotEmpty) {
+      await refreshLyricsSearch();
+      if (_stateDisposing || submitted != searchQuery) return;
+      final query = LyricsSearchQuery(submitted);
+      if (cachedTracks.any(
+        (track) => lyricsSearchIndex.matches(track['id'] as int, query),
+      )) {
+        return;
+      }
+    }
+    await downloadFromNetwork();
+  }
+
   Widget buildSearchField({bool isMobile = false}) {
     return Container(
       width: isMobile ? double.infinity : 250,
@@ -5229,7 +5310,7 @@ class MainAppScreenState extends State<MainAppScreen>
                   ),
                   onPressed: () {
                     searchInput.clear();
-                    setState(() => searchQuery = "");
+                    updateSearchQuery('');
                   },
                 ),
               IconButton(
@@ -5253,8 +5334,8 @@ class MainAppScreenState extends State<MainAppScreen>
             ],
           ),
         ),
-        onChanged: (val) => setState(() => searchQuery = val),
-        onSubmitted: (_) => downloadFromNetwork(),
+        onChanged: updateSearchQuery,
+        onSubmitted: (_) => unawaited(submitSearch()),
       ),
     );
   }
@@ -5279,7 +5360,7 @@ class MainAppScreenState extends State<MainAppScreen>
               color: navId == 0 ? Colors.white : Colors.white54,
             ),
             tooltip: tr('sidebar_home'),
-            onPressed: () => setState(() => navId = 0),
+            onPressed: () => _selectNav(0),
           ),
           const SizedBox(height: 20),
           IconButton(
@@ -5288,7 +5369,7 @@ class MainAppScreenState extends State<MainAppScreen>
               color: navId == 1 ? accentColorNotifier.value : Colors.white54,
             ),
             tooltip: tr('sidebar_favorites'),
-            onPressed: () => setState(() => navId = 1),
+            onPressed: () => _selectNav(1),
           ),
           const SizedBox(height: 20),
           IconButton(
@@ -5297,7 +5378,7 @@ class MainAppScreenState extends State<MainAppScreen>
               color: navId == 2 ? Colors.white : Colors.white54,
             ),
             tooltip: tr('sidebar_downloaded'),
-            onPressed: () => setState(() => navId = 2),
+            onPressed: () => _selectNav(2),
           ),
           const SizedBox(height: 20),
           IconButton(
@@ -5307,7 +5388,7 @@ class MainAppScreenState extends State<MainAppScreen>
             ),
             tooltip: tr('sidebar_artists'),
             onPressed: () {
-              setState(() => navId = -1);
+              _selectNav(-1);
               unawaited(_syncArtistsCache());
             },
           ),
@@ -5324,7 +5405,7 @@ class MainAppScreenState extends State<MainAppScreen>
                   child: Tooltip(
                     message: myPlaylists[i]['name'],
                     child: GestureDetector(
-                      onTap: () => setState(() => navId = i + 3),
+                      onTap: () => _selectNav(i + 3),
                       onSecondaryTapDown: (details) => showPlaylistContextMenu(
                         context,
                         details.globalPosition,
@@ -5507,7 +5588,7 @@ class MainAppScreenState extends State<MainAppScreen>
                     style: const TextStyle(color: Colors.white38, fontSize: 11),
                   ),
                   onTap: () {
-                    setState(() => navId = i + 3);
+                    _selectNav(i + 3);
                     Navigator.pop(context);
                   },
                   onLongPress: () {
@@ -5578,7 +5659,7 @@ class MainAppScreenState extends State<MainAppScreen>
         ),
       ),
       onTap: () {
-        setState(() => navId = id);
+        _selectNav(id);
         Navigator.pop(context);
         if (id == -1) {
           unawaited(_syncArtistsCache());
@@ -6104,8 +6185,13 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     }
 
+    final lyricsQuery = LyricsSearchQuery(searchQuery);
     List<dynamic> finalList = finalListToRender
-        .where((track) => matchesTrackSearch(track, searchQuery))
+        .where(
+          (track) =>
+              matchesTrackSearch(track, searchQuery) ||
+              lyricsSearchIndex.matches(track['id'] as int, lyricsQuery),
+        )
         .toList();
     final playlistId = navId >= 3 && navId - 3 < myPlaylists.length
         ? myPlaylists[navId - 3]['id'] as int
@@ -6244,6 +6330,13 @@ class MainAppScreenState extends State<MainAppScreen>
                   : isLoading
                   ? const Center(
                       child: CircularProgressIndicator(color: Colors.redAccent),
+                    )
+                  : finalList.isEmpty && _preparingLyricsSearch
+                  ? Center(
+                      child: Text(
+                        tr('search_lyrics_loading'),
+                        style: const TextStyle(color: Colors.white54),
+                      ),
                     )
                   : finalList.isEmpty
                   ? Center(
