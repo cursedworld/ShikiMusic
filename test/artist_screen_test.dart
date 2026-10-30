@@ -13,6 +13,17 @@ import 'package:image/image.dart' as img;
 import 'package:shiki/globals.dart';
 import 'package:shiki/screens/artist_screen.dart';
 
+Future<void> settleImages(WidgetTester tester) async {
+  for (var attempt = 0; attempt < 100; attempt++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 5)),
+    );
+    await tester.pump();
+    if (PaintingBinding.instance.imageCache.pendingImageCount == 0) return;
+  }
+  fail('Local images did not finish loading.');
+}
+
 void main() {
   setUpAll(() async {
     // Optional local fonts make generated previews readable; CI needs no fonts.
@@ -97,6 +108,10 @@ void main() {
     bool Function(int)? isDownloading,
     bool Function(int)? isFavorited,
     Future<void> Function(List<dynamic>)? onDownloadAlbum,
+    Future<void> Function(List<int>)? onToggleFavorites,
+    Future<bool> Function(int, List<int>)? onAddToPlaylist,
+    void Function(List<dynamic>, int)? onPlayTrack,
+    void Function(dynamic)? onDeleteDownloadedTrack,
     Map<String, dynamic>? initialArtistData,
   }) => MaterialApp(
     debugShowCheckedModeBanner: false,
@@ -105,11 +120,14 @@ void main() {
       artistName: 'Artist',
       initialArtistData: initialArtistData,
       getAllTracks: getTracks,
-      onPlayTrack: (_, _) {},
+      onPlayTrack: onPlayTrack ?? (_, _) {},
       onToggleFavorite: (_) {},
+      onToggleFavorites: onToggleFavorites,
+      getPlaylists: () => {42: 'Target playlist'},
+      onAddToPlaylist: onAddToPlaylist,
       onDownloadTrack: (_) {},
       onDownloadAlbum: onDownloadAlbum,
-      onDeleteDownloadedTrack: (_) {},
+      onDeleteDownloadedTrack: onDeleteDownloadedTrack ?? (_) {},
       isTrackDownloaded: isDownloaded ?? (_) => false,
       isTrackFavorited: isFavorited ?? (_) => false,
       isDownloading: isDownloading ?? (_) => false,
@@ -125,6 +143,101 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
   }
 
+  for (final width in [375.0, 1440.0]) {
+    testWidgets(
+      'artist row selection batches likes and downloads at width $width',
+      (tester) async {
+        tester.view.physicalSize = Size(width, 1800);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final tracks = [track(1001, 'First'), track(1002, 'Second')];
+        final favorites = <int>{1002};
+        final favoriteBatches = <List<int>>[];
+        final downloads = <int>[];
+        final played = <int>[];
+        final added = <int>[];
+        var deletes = 0;
+        final client = MockClient((_) async => http.Response('{}', 404));
+        addTearDown(client.close);
+        await tester.pumpWidget(
+          screen(
+            client: client,
+            getTracks: () => tracks,
+            initialArtistData: {'id': 7, 'name': 'Artist', 'bio': ''},
+            isFavorited: favorites.contains,
+            isDownloaded: (_) => true,
+            onToggleFavorites: (ids) async {
+              favoriteBatches.add(List<int>.of(ids));
+              if (ids.every(favorites.contains)) {
+                favorites.removeAll(ids);
+              } else {
+                favorites.addAll(ids);
+              }
+            },
+            onAddToPlaylist: (id, ids) async {
+              expect(id, 42);
+              added.addAll(ids);
+              return true;
+            },
+            onDownloadAlbum: (selected) async =>
+                downloads.addAll(selected.map((t) => t['id'] as int)),
+            onPlayTrack: (selected, _) =>
+                played.addAll(selected.map((t) => t['id'] as int)),
+            onDeleteDownloadedTrack: (_) => deletes++,
+          ),
+        );
+        await tester.pumpAndSettle();
+        await settleImages(tester);
+        if (width < 800) {
+          await tester.longPress(find.text('First'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Second'));
+        } else {
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+          await tester.tap(find.text('First'));
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+          await tester.pumpAndSettle();
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+          await tester.tap(find.text('Second'));
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        }
+        await tester.pumpAndSettle();
+        expect(find.text('Выбрано: 2'), findsOneWidget);
+        expect(played, isEmpty);
+        final row = tester.widget<Container>(
+          find.byKey(const ValueKey('artist_track_1001')),
+        );
+        expect(
+          (row.decoration as BoxDecoration).color,
+          Colors.black.withValues(alpha: 0.16),
+        );
+        await tester.tap(find.byKey(const ValueKey('artist_favorite_1002')));
+        await tester.pumpAndSettle();
+        expect(favoriteBatches, [
+          [1001, 1002],
+        ]);
+        expect(favorites, {1001, 1002});
+        await tester.tap(find.byKey(const ValueKey('selection_playlist')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Target playlist'));
+        await tester.pumpAndSettle();
+        expect(added, [1001, 1002]);
+        await tester.tap(find.byKey(const ValueKey('artist_download_1001')));
+        await tester.pumpAndSettle();
+        expect(downloads, [1001, 1002]);
+        expect(deletes, 0);
+        await tester.tap(find.byKey(const ValueKey('play_track_selection')));
+        await tester.pumpAndSettle();
+        expect(played, [1001, 1002]);
+        expect(find.text('Выбрано: 2'), findsNothing);
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+        await settleImages(tester);
+      },
+    );
+  }
+
   Future<void> driveUntil(WidgetTester tester, Completer<void> signal) async {
     for (var attempt = 0; attempt < 100; attempt++) {
       await tester.runAsync(
@@ -134,17 +247,6 @@ void main() {
       if (signal.isCompleted) return;
     }
     fail('Expected HTTP request was not made.');
-  }
-
-  Future<void> settleImages(WidgetTester tester) async {
-    for (var attempt = 0; attempt < 100; attempt++) {
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 5)),
-      );
-      await tester.pump();
-      if (PaintingBinding.instance.imageCache.pendingImageCount == 0) return;
-    }
-    fail('Local images did not finish loading.');
   }
 
   testWidgets('playback and library changes update the open artist screen', (

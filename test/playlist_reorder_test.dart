@@ -17,6 +17,31 @@ class _PlaylistState extends MainAppScreenState {
   VoidCallback? rebuild;
   bool memoryOnly = false;
   int networkSearches = 0;
+  int favoriteWrites = 0;
+  int playlistWrites = 0;
+  int playbackCalls = 0;
+  List<dynamic> lastPlaybackQueue = [];
+  List<dynamic> lastDownloadBatch = [];
+
+  @override
+  void startPlayback(List<dynamic> targetQueue, int index, {int? playlistId}) {
+    playbackCalls++;
+    lastPlaybackQueue = List<dynamic>.of(targetQueue);
+  }
+
+  @override
+  Future<void> downloadAllTracks(
+    List<dynamic> tracksToDownload, {
+    bool retryUnavailableVideo = false,
+  }) async {
+    lastDownloadBatch = List<dynamic>.of(tracksToDownload);
+  }
+
+  @override
+  Future<bool> saveFavorites() {
+    favoriteWrites++;
+    return memoryOnly ? Future.value(true) : super.saveFavorites();
+  }
 
   @override
   Future<void> downloadFromNetwork() async {
@@ -27,8 +52,10 @@ class _PlaylistState extends MainAppScreenState {
   bool get mounted => testContext != null;
 
   @override
-  Future<bool> savePlaylists() =>
-      memoryOnly ? Future.value(true) : super.savePlaylists();
+  Future<bool> savePlaylists() {
+    playlistWrites++;
+    return memoryOnly ? Future.value(true) : super.savePlaylists();
+  }
 
   @override
   BuildContext get context => testContext!;
@@ -118,6 +145,171 @@ void main() {
   List<int> queueIds(_PlaylistState state) => [
     for (final track in state.playingQueue) track['id'] as int,
   ];
+
+  Future<_PlaylistState> selectionScreen(
+    WidgetTester tester,
+    double width, {
+    int nav = 0,
+  }) async {
+    tester.view.physicalSize = Size(width, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final state = createFixture(await widgetDirectory(tester))
+      ..memoryOnly = true
+      ..localPath = ''
+      ..navId = nav;
+    addTearDown(() {
+      state.rebuild = null;
+      state.testContext = null;
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark().copyWith(
+          textTheme: ThemeData.dark().textTheme.apply(
+            fontFamily: 'PlaylistTest',
+          ),
+        ),
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            state.testContext = context;
+            state.rebuild = () => setState(() {});
+            return RepaintBoundary(
+              key: const ValueKey('selection_capture'),
+              child: state.build(context),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    return state;
+  }
+
+  for (final width in [320.0, 375.0, 1440.0]) {
+    testWidgets(
+      'selection groups row actions without an opaque background at $width',
+      (tester) async {
+        final state = await selectionScreen(tester, width);
+        state.favs = {2, 4};
+        if (width < 800) {
+          await tester.longPress(find.text('Track 1'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Track 2'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Track 3'));
+        } else {
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+          await tester.tap(find.text('Track 1'));
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+          await tester.pumpAndSettle();
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+          await tester.tap(find.text('Track 3'));
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        }
+        await tester.pumpAndSettle();
+        expect(state.trackSelection.ids, {1, 2, 3});
+        expect(state.playbackCalls, 0);
+        final row = tester.widget<Container>(find.byKey(const ValueKey(1)));
+        expect(
+          (row.decoration as BoxDecoration).color,
+          Colors.black.withValues(alpha: 0.16),
+        );
+        expect(find.text('Выбрано: 3'), findsOneWidget);
+        await tester.tap(find.byKey(const ValueKey('track_favorite_2')));
+        await tester.pumpAndSettle();
+        expect(state.favs, {1, 2, 3, 4});
+        expect(state.favoriteWrites, 1);
+        await tester.tap(find.byKey(const ValueKey('track_playlist_3')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Other').last);
+        await tester.pumpAndSettle();
+        expect(state.myPlaylists.last['tracks'], [4, 2, 1, 3]);
+        expect(state.playlistWrites, 1);
+        expect(state.myPlaylists.first['tracks'], [1, 2, 3, 4]);
+        await tester.tap(find.byKey(const ValueKey('track_download_1')));
+        await tester.pumpAndSettle();
+        expect(state.lastDownloadBatch.map((track) => track['id']), [1, 2, 3]);
+        expect(state.playbackCalls, 0);
+        if (const bool.fromEnvironment('SHIKI_SELECTION_CAPTURE')) {
+          await tester.runAsync(() async {
+            final boundary = tester.renderObject<RenderRepaintBoundary>(
+              find.byKey(const ValueKey('selection_capture')),
+            );
+            final image = await boundary.toImage();
+            try {
+              final bytes = await image.toByteData(
+                format: ui.ImageByteFormat.png,
+              );
+              await Directory('.omx/selection-qa').create(recursive: true);
+              await File(
+                '.omx/selection-qa/selected-${width.toInt()}.png',
+              ).writeAsBytes(bytes!.buffer.asUint8List());
+            } finally {
+              image.dispose();
+            }
+          });
+        }
+        await tester.tap(find.byKey(const ValueKey('play_track_selection')));
+        await tester.pumpAndSettle();
+        expect(state.lastPlaybackQueue.map((track) => track['id']), [1, 2, 3]);
+        expect(state.trackSelection.isNotEmpty, isFalse);
+        expect(state.playbackCalls, 1);
+        expect(tester.takeException(), isNull);
+        expect(tester.binding.hasScheduledFrame, isFalse);
+        state.rebuild = null;
+        state.testContext = null;
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
+
+  testWidgets(
+    'an unselected row action is isolated and clear restores ordinary clicks',
+    (tester) async {
+      final state = await selectionScreen(tester, 375);
+      await tester.longPress(find.text('Track 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Track 2'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('track_favorite_4')));
+      await tester.pumpAndSettle();
+      expect(state.favs, {4});
+      expect(state.trackSelection.ids, {1, 2});
+      await tester.tap(find.byKey(const ValueKey('clear_track_selection')));
+      await tester.pumpAndSettle();
+      expect(state.trackSelection.isNotEmpty, isFalse);
+      await tester.tap(find.text('Track 3'));
+      await tester.pumpAndSettle();
+      expect(state.playbackCalls, 1);
+      expect(tester.takeException(), isNull);
+      state.rebuild = null;
+      state.testContext = null;
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'removing selected playlist rows removes IDs only and clears selection',
+    (tester) async {
+      final state = await selectionScreen(tester, 375, nav: 3);
+      await tester.longPress(find.text('Track 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Track 2'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('track_remove_2')));
+      await tester.pumpAndSettle();
+      expect(state.myPlaylists.first['tracks'], [3, 4]);
+      expect(state.cachedTracks.length, 4);
+      expect(state.trackSelection.isNotEmpty, isFalse);
+      expect(state.playlistWrites, 1);
+      expect(state.playbackCalls, 0);
+      expect(tester.takeException(), isNull);
+      state.rebuild = null;
+      state.testContext = null;
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
 
   test(
     'reorder persists and updates playing playlist without changing position',

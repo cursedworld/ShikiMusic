@@ -146,6 +146,36 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Drag to reorder',
     'ja': 'ドラッグして並べ替え',
   },
+  'tracks_selected': {
+    'ru': 'Выбрано: {count}',
+    'en': 'Selected: {count}',
+    'ja': '選択中: {count}',
+  },
+  'clear_track_selection': {
+    'ru': 'Снять выделение',
+    'en': 'Clear selection',
+    'ja': '選択を解除',
+  },
+  'download_selected_tracks': {
+    'ru': 'Скачать выбранные',
+    'en': 'Download selected',
+    'ja': '選択した曲をダウンロード',
+  },
+  'play_selected_tracks': {
+    'ru': 'Слушать выбранные',
+    'en': 'Play selected',
+    'ja': '選択した曲を再生',
+  },
+  'add_selected_to_playlist': {
+    'ru': 'Добавить выбранные в плейлист',
+    'en': 'Add selected to playlist',
+    'ja': '選択した曲をプレイリストに追加',
+  },
+  'favorite_save_failed': {
+    'ru': 'Не удалось сохранить избранное. Изменения отменены.',
+    'en': 'Could not save favorites. Changes were reverted.',
+    'ja': 'お気に入りを保存できませんでした。変更を元に戻しました。',
+  },
   'playlist_reorder_touch': {
     'ru': 'Удерживайте обложку и перетащите трек',
     'en': 'Hold the artwork and drag to reorder',

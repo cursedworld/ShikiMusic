@@ -3,6 +3,7 @@ import '../album_order.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 import '../globals.dart';
@@ -10,6 +11,8 @@ import '../atomic_file_store.dart';
 import '../cover_processing.dart';
 import '../localization.dart';
 import '../server_config.dart';
+import '../track_selection.dart';
+import '../widgets/track_selection_bar.dart';
 
 class ArtistScreen extends StatefulWidget {
   final int artistId;
@@ -18,6 +21,9 @@ class ArtistScreen extends StatefulWidget {
   final List<dynamic> Function() getAllTracks;
   final Function(List<dynamic> queue, int index) onPlayTrack;
   final Function(int trackId) onToggleFavorite;
+  final Future<void> Function(List<int> ids)? onToggleFavorites;
+  final Map<int, String> Function()? getPlaylists;
+  final Future<bool> Function(int playlistId, List<int> ids)? onAddToPlaylist;
   final Function(dynamic track) onDownloadTrack;
   final Future<void> Function(List<dynamic> tracks)? onDownloadAlbum;
   final Function(dynamic track) onDeleteDownloadedTrack;
@@ -37,6 +43,9 @@ class ArtistScreen extends StatefulWidget {
     required this.getAllTracks,
     required this.onPlayTrack,
     required this.onToggleFavorite,
+    this.onToggleFavorites,
+    this.getPlaylists,
+    this.onAddToPlaylist,
     required this.onDownloadTrack,
     this.onDownloadAlbum,
     required this.onDeleteDownloadedTrack,
@@ -56,6 +65,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
   bool _isLoading = true;
   bool _isBioExpanded = false;
   int? _selectedAlbumId; // null = all albums
+  final _selection = TrackSelection();
   late final http.Client _httpClient;
   late final bool _ownsHttpClient;
   bool _hasFreshCatalog = false;
@@ -118,7 +128,10 @@ class _ArtistScreenState extends State<ArtistScreen> {
 
   void _onCatalogChanged() {
     if (!mounted) return;
-    setState(() => _hasFreshCatalog = true);
+    setState(() {
+      _hasFreshCatalog = true;
+      _selection.retain(_getArtistTracks().map((track) => track['id'] as int));
+    });
     _startMetadataWork(_reloadCachedMetadata());
   }
 
@@ -355,7 +368,19 @@ class _ArtistScreenState extends State<ArtistScreen> {
         : albumTrackOrder(
             tracks.where((t) => t['album']?['id'] == _selectedAlbumId),
           );
-    final downloadSelection = _selectedAlbumId == null
+    if (_selection.isNotEmpty) {
+      _selection.retain(filteredTracks.map((track) => track['id'] as int));
+    }
+    final selectedTracks = _selection.inOrder(filteredTracks);
+    final allSelectedFavorited =
+        selectedTracks.isNotEmpty &&
+        selectedTracks.every(
+          (track) => widget.isTrackFavorited(track['id'] as int),
+        );
+    final touchMode = MediaQuery.sizeOf(context).width < 800;
+    final downloadSelection = selectedTracks.isNotEmpty
+        ? selectedTracks
+        : _selectedAlbumId == null
         ? tracks
         : _albumDownloadTracks(_selectedAlbumId!);
 
@@ -365,15 +390,60 @@ class _ArtistScreenState extends State<ArtistScreen> {
       _artistData ?? {'id': widget.artistId, 'photo': photoUrl},
     );
 
-    return Scaffold(
+    void tapTrack(int index) {
+      var consumed = false;
+      setState(() {
+        consumed = _selection.tap(
+          filteredTracks[index]['id'] as int,
+          [for (final track in filteredTracks) track['id'] as int],
+          control:
+              HardwareKeyboard.instance.isControlPressed ||
+              HardwareKeyboard.instance.isMetaPressed,
+          shift: HardwareKeyboard.instance.isShiftPressed,
+          touch: touchMode,
+        );
+      });
+      if (!consumed) widget.onPlayTrack(filteredTracks, index);
+    }
+
+    Future<void> favoriteTracks(List<dynamic> targets) async {
+      final ids = targets.map((track) => track['id'] as int).toList();
+      if (widget.onToggleFavorites != null) {
+        await widget.onToggleFavorites!(ids);
+      } else {
+        final add = !ids.every(widget.isTrackFavorited);
+        for (final id in ids) {
+          if (widget.isTrackFavorited(id) != add) widget.onToggleFavorite(id);
+        }
+      }
+      if (mounted) setState(() {});
+    }
+
+    void downloadTracks(List<dynamic> targets) {
+      if (widget.onDownloadAlbum != null) {
+        unawaited(widget.onDownloadAlbum!(List<dynamic>.of(targets)));
+      } else {
+        for (final track in targets) {
+          widget.onDownloadTrack(track);
+        }
+      }
+    }
+
+    final screen = Scaffold(
       backgroundColor: const Color(0xFF161416),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
         surfaceTintColor: Colors.transparent,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
+          icon: Icon(
+            _selection.isNotEmpty ? Icons.close : Icons.arrow_back,
+            color: Colors.white,
+          ),
+          tooltip: _selection.isNotEmpty ? tr('clear_track_selection') : null,
+          onPressed: () => _selection.isNotEmpty
+              ? setState(_selection.clear)
+              : Navigator.pop(context),
         ),
       ),
       body: ValueListenableBuilder<String?>(
@@ -450,8 +520,10 @@ class _ArtistScreenState extends State<ArtistScreen> {
                             if (i == 0) {
                               final isAllSelected = _selectedAlbumId == null;
                               return GestureDetector(
-                                onTap: () =>
-                                    setState(() => _selectedAlbumId = null),
+                                onTap: () => setState(() {
+                                  _selectedAlbumId = null;
+                                  _selection.clear();
+                                }),
                                 child: Container(
                                   width: 120,
                                   margin: const EdgeInsets.only(right: 14),
@@ -525,6 +597,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
 
                             return GestureDetector(
                               onTap: () => setState(() {
+                                _selection.clear();
                                 if (_selectedAlbumId == aId) {
                                   _selectedAlbumId = null; // Toggle off
                                 } else {
@@ -641,7 +714,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                   key: const ValueKey(
                                     'download_artist_selection',
                                   ),
-                                  tooltip: _selectedAlbumId == null
+                                  tooltip: selectedTracks.isNotEmpty
+                                      ? tr('download_selected_tracks')
+                                      : _selectedAlbumId == null
                                       ? tr('download_all_tracks')
                                       : '${tr('download_album')} (${downloadSelection.length})',
                                   icon: const Icon(
@@ -668,6 +743,34 @@ class _ArtistScreenState extends State<ArtistScreen> {
                   ),
 
                   // ── Tracks List ──
+                  if (selectedTracks.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: TrackSelectionBar(
+                          count: selectedTracks.length,
+                          onClear: () => setState(_selection.clear),
+                          playlists: widget.getPlaylists?.call() ?? const {},
+                          onPlaylistSelected: widget.onAddToPlaylist == null
+                              ? null
+                              : (id) {
+                                  unawaited(
+                                    widget.onAddToPlaylist!(
+                                      id,
+                                      selectedTracks
+                                          .map((track) => track['id'] as int)
+                                          .toList(),
+                                    ),
+                                  );
+                                },
+                          onPlay: () {
+                            final queue = List<dynamic>.of(selectedTracks);
+                            setState(_selection.clear);
+                            widget.onPlayTrack(queue, 0);
+                          },
+                        ),
+                      ),
+                    ),
                   SliverPadding(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 16,
@@ -682,16 +785,26 @@ class _ArtistScreenState extends State<ArtistScreen> {
                         final isDownloaded = widget.isTrackDownloaded(track);
                         final isDownloading = widget.isDownloading(trackId);
                         final isFav = widget.isTrackFavorited(trackId);
+                        final isSelected = _selection.contains(trackId as int);
+                        final targets = isSelected ? selectedTracks : [track];
+                        final rowFav = isSelected
+                            ? allSelectedFavorited
+                            : isFav;
 
                         return Container(
+                          key: ValueKey('artist_track_$trackId'),
                           margin: const EdgeInsets.only(bottom: 8),
                           decoration: BoxDecoration(
-                            color: activeTrackId == trackId
+                            color: isSelected
+                                ? Colors.black.withValues(alpha: 0.16)
+                                : activeTrackId == trackId
                                 ? Colors.white.withValues(alpha: 0.1)
                                 : Colors.transparent,
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: ListTile(
+                            selected: isSelected,
+                            selectedTileColor: Colors.transparent,
                             leading: ClipRRect(
                               borderRadius: BorderRadius.circular(8),
                               child: Image(
@@ -730,21 +843,32 @@ class _ArtistScreenState extends State<ArtistScreen> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 IconButton(
+                                  key: ValueKey('artist_favorite_$trackId'),
                                   icon: Icon(
-                                    isFav
+                                    rowFav
                                         ? Icons.favorite
                                         : Icons.favorite_border,
-                                    color: isFav
+                                    color: rowFav
                                         ? Colors.redAccent
                                         : Colors.white54,
                                     size: 22,
                                   ),
                                   onPressed: () {
-                                    widget.onToggleFavorite(trackId);
-                                    setState(() {});
+                                    unawaited(favoriteTracks(targets));
                                   },
                                 ),
-                                if (isDownloading)
+                                if (isSelected)
+                                  IconButton(
+                                    key: ValueKey('artist_download_$trackId'),
+                                    tooltip: tr('download_selected_tracks'),
+                                    onPressed: () => downloadTracks(targets),
+                                    icon: const Icon(
+                                      Icons.download,
+                                      color: Colors.white54,
+                                      size: 22,
+                                    ),
+                                  )
+                                else if (isDownloading)
                                   const SizedBox(
                                     width: 24,
                                     height: 24,
@@ -790,8 +914,11 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                 ),
                               ],
                             ),
-                            onTap: () =>
-                                widget.onPlayTrack(filteredTracks, idx),
+                            onTap: () => tapTrack(idx),
+                            onLongPress: touchMode
+                                ? () =>
+                                      setState(() => _selection.toggle(trackId))
+                                : null,
                           ),
                         );
                       }, childCount: filteredTracks.length),
@@ -802,6 +929,18 @@ class _ArtistScreenState extends State<ArtistScreen> {
                 ],
               ),
       ),
+    );
+    return Focus(
+      onKeyEvent: (_, event) {
+        if (event is KeyDownEvent &&
+            event.logicalKey == LogicalKeyboardKey.escape &&
+            _selection.isNotEmpty) {
+          setState(_selection.clear);
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: screen,
     );
   }
 

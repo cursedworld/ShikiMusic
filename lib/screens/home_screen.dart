@@ -49,8 +49,10 @@ import '../safe_file_migration.dart';
 import '../server_config.dart';
 import '../windows_taskbar_controls.dart';
 import '../track_updates.dart';
+import '../track_selection.dart';
 import '../widgets/track_updates_dialog.dart';
 import '../widgets/catalog_sync_button.dart';
+import '../widgets/track_selection_bar.dart';
 import '../widgets/mobile_playback_controls.dart';
 import '../widgets/track_metadata_dialog.dart';
 import '../widgets/playlist_crop_dialog.dart';
@@ -464,6 +466,8 @@ class MainAppScreenState extends State<MainAppScreen>
   int? discordStart;
   LoopMode loopMode = LoopMode.off;
   int navId = 0;
+  final trackSelection = TrackSelection();
+  Future<void> _favoritesTail = Future<void>.value();
   double volume = 0.5;
   double _savedVolume = 0.5; // for mute toggle
   bool _isMuted = false;
@@ -1855,8 +1859,16 @@ class MainAppScreenState extends State<MainAppScreen>
     return tr('track_many');
   }
 
-  bool _handleGlobalKeys(KeyEvent event) =>
-      handlePlaybackSpace(event, onToggle: pauseTrack);
+  bool _handleGlobalKeys(KeyEvent event) {
+    if (trackSelection.isNotEmpty &&
+        event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.escape &&
+        ModalRoute.of(context)?.isCurrent == true) {
+      clearTrackSelection();
+      return true;
+    }
+    return handlePlaybackSpace(event, onToggle: pauseTrack);
+  }
 
   String formatDuration(Duration d) {
     return "${d.inMinutes.remainder(60).toString().padLeft(2, '0')}:${d.inSeconds.remainder(60).toString().padLeft(2, '0')}";
@@ -2813,6 +2825,7 @@ class MainAppScreenState extends State<MainAppScreen>
       for (final track in tracks)
         if (track is Map) track['id']: track,
     };
+    trackSelection.retain(freshById.keys.whereType<int>());
     // Metadata only: keep the current source and loaded lyrics untouched.
     for (final track in playingQueue) {
       if (track is! Map) continue;
@@ -3563,6 +3576,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _openArtistScreen(int artistId, String artistName) {
+    if (trackSelection.isNotEmpty) clearTrackSelection();
     final artist = cachedArtists
         .whereType<Map>()
         .where((a) => a['id'] == artistId)
@@ -3579,6 +3593,12 @@ class MainAppScreenState extends State<MainAppScreen>
           getAllTracks: () => cachedTracks,
           onPlayTrack: (queue, idx) => startPlayback(queue, idx),
           onToggleFavorite: (id) => toggleFavorite(id),
+          onToggleFavorites: (ids) => toggleTrackFavorites(ids),
+          getPlaylists: () => {
+            for (final playlist in myPlaylists)
+              playlist['id'] as int: playlist['name'].toString(),
+          },
+          onAddToPlaylist: (id, ids) => changePlaylistTracks(id, ids),
           onDownloadTrack: (t) => downloadMediaFile(t),
           onDownloadAlbum: (tracks) => downloadAllTracks(tracks),
           onDeleteDownloadedTrack: (t) => deleteDownloadedTrack(t),
@@ -4093,23 +4113,172 @@ class MainAppScreenState extends State<MainAppScreen>
   //  Favorites / playlists
   // ═══════════════════════════════════════════════════════════════════════════
 
-  Future<void> toggleFavorite(int id) async {
-    setState(() {
-      if (favs.contains(id)) {
-        favs.remove(id);
+  Future<void> toggleFavorite(int id) => toggleTrackFavorites([id]);
+
+  Future<void> toggleTrackFavorites(Iterable<int> trackIds) {
+    final ids = trackIds.toSet();
+    final work = _favoritesTail.then((_) async {
+      if (ids.isEmpty || _stateDisposing) return;
+      final previous = {for (final id in ids) id: favs.contains(id)};
+      final add = !ids.every(favs.contains);
+      void apply() {
+        if (add) {
+          favs.addAll(ids);
+        } else {
+          favs.removeAll(ids);
+        }
+      }
+
+      if (mounted) {
+        setState(apply);
       } else {
-        favs.add(id);
+        apply();
+      }
+      _syncTaskbarControls();
+      _notifyArtistLibraryChanged();
+      if (!await saveFavorites()) {
+        if (_stateDisposing) return;
+        void restore() {
+          for (final entry in previous.entries) {
+            if (entry.value) {
+              favs.add(entry.key);
+            } else {
+              favs.remove(entry.key);
+            }
+          }
+        }
+
+        if (mounted) {
+          setState(restore);
+        } else {
+          restore();
+        }
+        _syncTaskbarControls();
+        _notifyArtistLibraryChanged();
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(tr('favorite_save_failed'))));
+        }
+      } else if (!add && navId == 1 && !_stateDisposing) {
+        if (mounted) {
+          setState(() => trackSelection.removeAll(ids));
+        } else {
+          trackSelection.removeAll(ids);
+        }
       }
     });
-    _syncTaskbarControls();
-    _notifyArtistLibraryChanged();
+    _favoritesTail = work.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return work;
+  }
+
+  Future<bool> saveFavorites() async {
     final favFile = File('$localPath/liked_tracks.json');
     final snapshot = json.encode(favs.toList());
     try {
       await atomicFileStore.writeString(favFile, snapshot);
+      return true;
     } catch (error) {
       debugPrint('Favorite save failed: $error');
+      return false;
     }
+  }
+
+  Future<bool> changePlaylistTracks(
+    int playlistId,
+    Iterable<int> trackIds, {
+    bool remove = false,
+  }) {
+    final ids = trackIds.toSet();
+    final work = _playlistReorderTail.then((_) async {
+      if (_stateDisposing || ids.isEmpty) return false;
+      final index = myPlaylists.indexWhere((p) => p['id'] == playlistId);
+      if (index < 0) return false;
+      final previous = List<dynamic>.from(myPlaylists[index]['tracks']);
+      final existingIds = previous.toSet();
+      final next = remove
+          ? previous.where((id) => !ids.contains(id)).toList()
+          : [...previous, ...ids.where((id) => !existingIds.contains(id))];
+      if (listEquals(previous, next)) return true;
+      final expected = List<dynamic>.of(next);
+      void apply() => myPlaylists[index]['tracks'] = next;
+      if (mounted) {
+        setState(apply);
+      } else {
+        apply();
+      }
+      if (await savePlaylists()) {
+        if (remove &&
+            !_stateDisposing &&
+            navId >= 3 &&
+            navId - 3 < myPlaylists.length &&
+            myPlaylists[navId - 3]['id'] == playlistId) {
+          if (mounted) {
+            setState(() => trackSelection.removeAll(ids));
+          } else {
+            trackSelection.removeAll(ids);
+          }
+        }
+        return true;
+      }
+      final current = myPlaylists.indexWhere((p) => p['id'] == playlistId);
+      if (!_stateDisposing &&
+          current >= 0 &&
+          identical(myPlaylists[current]['tracks'], next) &&
+          listEquals(myPlaylists[current]['tracks'] as List, expected)) {
+        void restore() => myPlaylists[current]['tracks'] = previous;
+        if (mounted) {
+          setState(restore);
+        } else {
+          restore();
+        }
+      }
+      return false;
+    });
+    _playlistReorderTail = work.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return work;
+  }
+
+  void clearTrackSelection() {
+    if (mounted) {
+      setState(trackSelection.clear);
+    } else {
+      trackSelection.clear();
+    }
+  }
+
+  void handleTrackTap(
+    List<dynamic> tracks,
+    int index, {
+    required bool touch,
+    int? playlistId,
+  }) {
+    final id = tracks[index]['id'] as int;
+    var selected = false;
+    void select() {
+      selected = trackSelection.tap(
+        id,
+        [for (final track in tracks) track['id'] as int],
+        control:
+            HardwareKeyboard.instance.isControlPressed ||
+            HardwareKeyboard.instance.isMetaPressed,
+        shift: HardwareKeyboard.instance.isShiftPressed,
+        touch: touch,
+      );
+    }
+
+    if (mounted) {
+      setState(select);
+    } else {
+      select();
+    }
+    if (!selected) startPlayback(tracks, index, playlistId: playlistId);
   }
 
   ImageProvider getPlaylistImage(String pathOrUrl) {
@@ -4954,6 +5123,7 @@ class MainAppScreenState extends State<MainAppScreen>
       setState(() {
         if (navId == currentIndex + 3) {
           navId = 0;
+          trackSelection.clear();
         } else if (navId > currentIndex + 3) {
           navId--;
         }
@@ -5209,6 +5379,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void updateSearchQuery(String value) {
+    trackSelection.clear();
     _lyricsSearchQueryRevision++;
     _lyricsSearchTimer?.cancel();
     void apply() {
@@ -5230,7 +5401,10 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _selectNav(int id) {
-    setState(() => navId = id);
+    setState(() {
+      navId = id;
+      trackSelection.clear();
+    });
     if (searchQuery.trim().isNotEmpty) updateSearchQuery(searchQuery);
   }
 
@@ -6193,6 +6367,15 @@ class MainAppScreenState extends State<MainAppScreen>
               lyricsSearchIndex.matches(track['id'] as int, lyricsQuery),
         )
         .toList();
+    // Drop selection for rows hidden by live catalog or lyric-search updates.
+    if (trackSelection.isNotEmpty) {
+      trackSelection.retain(finalList.map((track) => track['id'] as int));
+    }
+    final selectedTracks = trackSelection.inOrder(finalList);
+    final allSelectedFavorited =
+        selectedTracks.isNotEmpty &&
+        selectedTracks.every((track) => favs.contains(track['id']));
+    final downloadTargets = selectedTracks.isEmpty ? finalList : selectedTracks;
     final playlistId = navId >= 3 && navId - 3 < myPlaylists.length
         ? myPlaylists[navId - 3]['id'] as int
         : null;
@@ -6255,7 +6438,13 @@ class MainAppScreenState extends State<MainAppScreen>
                               Icons.download_for_offline,
                               size: 18,
                             ),
-                            label: Text(tr('download_all')),
+                            label: Text(
+                              tr(
+                                selectedTracks.isEmpty
+                                    ? 'download_all'
+                                    : 'download_selected_tracks',
+                              ),
+                            ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.white10,
                               foregroundColor: Colors.white,
@@ -6263,7 +6452,7 @@ class MainAppScreenState extends State<MainAppScreen>
                             ),
                             onPressed: _bulkDownloadActive
                                 ? null
-                                : () => downloadAllTracks(finalList),
+                                : () => downloadAllTracks(downloadTargets),
                           ),
                         ),
                       const SizedBox(height: 10),
@@ -6307,7 +6496,13 @@ class MainAppScreenState extends State<MainAppScreen>
                                 Icons.download_for_offline,
                                 size: 18,
                               ),
-                              label: Text(tr('download_all')),
+                              label: Text(
+                                tr(
+                                  selectedTracks.isEmpty
+                                      ? 'download_all'
+                                      : 'download_selected_tracks',
+                                ),
+                              ),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.white10,
                                 foregroundColor: Colors.white,
@@ -6315,7 +6510,7 @@ class MainAppScreenState extends State<MainAppScreen>
                               ),
                               onPressed: _bulkDownloadActive
                                   ? null
-                                  : () => downloadAllTracks(finalList),
+                                  : () => downloadAllTracks(downloadTargets),
                             ),
                           const SizedBox(width: 15),
                           buildSearchField(),
@@ -6324,6 +6519,26 @@ class MainAppScreenState extends State<MainAppScreen>
                     ],
                   ),
             const SizedBox(height: 20),
+            if (selectedTracks.isNotEmpty)
+              TrackSelectionBar(
+                count: selectedTracks.length,
+                onClear: clearTrackSelection,
+                playlists: {
+                  for (final playlist in myPlaylists)
+                    playlist['id'] as int: playlist['name'].toString(),
+                },
+                onPlaylistSelected: (id) => unawaited(
+                  changePlaylistTracks(
+                    id,
+                    selectedTracks.map((track) => track['id'] as int),
+                  ),
+                ),
+                onPlay: () {
+                  final queue = List<dynamic>.of(selectedTracks);
+                  clearTrackSelection();
+                  startPlayback(queue, 0, playlistId: playlistId);
+                },
+              ),
             Expanded(
               child: navId == -1
                   ? _buildArtistsView(isMobile)
@@ -6413,6 +6628,15 @@ class MainAppScreenState extends State<MainAppScreen>
                         );
                         final isDownloading = downloadQueue.contains(trackId);
                         final isFavorited = favs.contains(trackId);
+                        final isSelected = trackSelection.contains(
+                          trackId as int,
+                        );
+                        final actionTracks = isSelected
+                            ? selectedTracks
+                            : [currentObject];
+                        final rowFavorited = isSelected
+                            ? allSelectedFavorited
+                            : isFavorited;
                         final cover = ClipRRect(
                           borderRadius: BorderRadius.circular(8),
                           child: Image(
@@ -6431,12 +6655,16 @@ class MainAppScreenState extends State<MainAppScreen>
                           key: ValueKey(trackId),
                           margin: const EdgeInsets.only(bottom: 10),
                           decoration: BoxDecoration(
-                            color: isActiveTrack
+                            color: isSelected
+                                ? Colors.black.withValues(alpha: 0.16)
+                                : isActiveTrack
                                 ? Colors.white.withValues(alpha: 0.1)
                                 : Colors.transparent,
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: ListTile(
+                            selected: isSelected,
+                            selectedTileColor: Colors.transparent,
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: 10,
                               vertical: 5,
@@ -6466,6 +6694,22 @@ class MainAppScreenState extends State<MainAppScreen>
                               cursor: SystemMouseCursors.click,
                               child: GestureDetector(
                                 onTap: () {
+                                  if (trackSelection.isNotEmpty ||
+                                      HardwareKeyboard
+                                          .instance
+                                          .isControlPressed ||
+                                      HardwareKeyboard.instance.isMetaPressed ||
+                                      HardwareKeyboard
+                                          .instance
+                                          .isShiftPressed) {
+                                    handleTrackTap(
+                                      finalList,
+                                      idx,
+                                      touch: isMobile,
+                                      playlistId: playlistId,
+                                    );
+                                    return;
+                                  }
                                   final a = currentObject['album']?['artist'];
                                   final aId = a?['id'] is int
                                       ? a['id'] as int
@@ -6494,32 +6738,33 @@ class MainAppScreenState extends State<MainAppScreen>
                                         Icons.remove_circle_outline,
                                         color: Colors.white54,
                                       ),
-                                      onPressed: () {
-                                        setState(() {
-                                          myPlaylists[navId - 3]['tracks']
-                                              .remove(trackId);
-                                          savePlaylists();
-                                        });
-                                      },
+                                      key: ValueKey('track_remove_$trackId'),
+                                      onPressed: () => unawaited(
+                                        changePlaylistTracks(
+                                          playlistId!,
+                                          actionTracks.map(
+                                            (t) => t['id'] as int,
+                                          ),
+                                          remove: true,
+                                        ),
+                                      ),
                                     )
                                   else if (myPlaylists.isNotEmpty)
                                     PopupMenuButton<int>(
+                                      key: ValueKey('track_playlist_$trackId'),
                                       icon: const Icon(
                                         Icons.add_circle_outline,
                                         color: Colors.white54,
                                       ),
                                       color: const Color(0xFF1A0000),
-                                      onSelected: (pId) {
-                                        setState(() {
-                                          final pl = myPlaylists.firstWhere(
-                                            (p) => p['id'] == pId,
-                                          );
-                                          if (!pl['tracks'].contains(trackId)) {
-                                            pl['tracks'].add(trackId);
-                                            savePlaylists();
-                                          }
-                                        });
-                                      },
+                                      onSelected: (pId) => unawaited(
+                                        changePlaylistTracks(
+                                          pId,
+                                          actionTracks.map(
+                                            (t) => t['id'] as int,
+                                          ),
+                                        ),
+                                      ),
                                       itemBuilder: (ctx) => myPlaylists
                                           .map(
                                             (p) => PopupMenuItem<int>(
@@ -6535,17 +6780,35 @@ class MainAppScreenState extends State<MainAppScreen>
                                           .toList(),
                                     ),
                                   IconButton(
+                                    key: ValueKey('track_favorite_$trackId'),
                                     icon: Icon(
-                                      isFavorited
+                                      rowFavorited
                                           ? Icons.favorite
                                           : Icons.favorite_border,
-                                      color: isFavorited
+                                      color: rowFavorited
                                           ? Colors.redAccent
                                           : Colors.white54,
                                     ),
-                                    onPressed: () => toggleFavorite(trackId),
+                                    onPressed: () => unawaited(
+                                      toggleTrackFavorites(
+                                        actionTracks.map((t) => t['id'] as int),
+                                      ),
+                                    ),
                                   ),
-                                  if (isDownloading)
+                                  if (isSelected)
+                                    IconButton(
+                                      key: ValueKey('track_download_$trackId'),
+                                      tooltip: tr('download_selected_tracks'),
+                                      onPressed: _bulkDownloadActive
+                                          ? null
+                                          : () =>
+                                                downloadAllTracks(actionTracks),
+                                      icon: const Icon(
+                                        Icons.download,
+                                        color: Colors.white54,
+                                      ),
+                                    )
+                                  else if (isDownloading)
                                     const SizedBox(
                                       width: 24,
                                       height: 24,
@@ -6587,11 +6850,17 @@ class MainAppScreenState extends State<MainAppScreen>
                                 ],
                               ),
                             ),
-                            onTap: () => startPlayback(
+                            onTap: () => handleTrackTap(
                               finalList,
                               idx,
+                              touch: isMobile,
                               playlistId: playlistId,
                             ),
+                            onLongPress: isMobile
+                                ? () => setState(
+                                    () => trackSelection.toggle(trackId),
+                                  )
+                                : null,
                           ),
                         );
                       },

@@ -18,6 +18,9 @@ tested on Arch Linux.
   case, punctuation, and the Russian ё/е distinction.
 - Playlists with custom artwork and a circular crop preview.
   Tracks follow their insertion order by default and can be reordered by dragging.
+- Multi-track selection: Ctrl/Shift-click on desktop, long-press a row on mobile.
+  Favorite, playlist, and download actions on a selected row apply to the group.
+  Selected tracks can also be played as a separate queue.
 - Artist pages with biographies, albums, and collaborations when the catalog
   contains the corresponding metadata.
 - Queued downloads for all tracks in a list or album.
