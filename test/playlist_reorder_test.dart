@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -19,6 +20,8 @@ class _PlaylistState extends MainAppScreenState {
   int networkSearches = 0;
   int favoriteWrites = 0;
   int playlistWrites = 0;
+  bool playlistSaveFails = false;
+  Completer<bool>? playlistSaveGate;
   int playbackCalls = 0;
   List<dynamic> lastPlaybackQueue = [];
   List<dynamic> lastDownloadBatch = [];
@@ -54,7 +57,8 @@ class _PlaylistState extends MainAppScreenState {
   @override
   Future<bool> savePlaylists() {
     playlistWrites++;
-    return memoryOnly ? Future.value(true) : super.savePlaylists();
+    return playlistSaveGate?.future ??
+        (memoryOnly ? Future.value(!playlistSaveFails) : super.savePlaylists());
   }
 
   @override
@@ -185,6 +189,171 @@ void main() {
     await tester.pumpAndSettle();
     return state;
   }
+
+  for (final width in [320.0, 375.0, 768.0, 1440.0]) {
+    testWidgets('create playlist from selection at width $width', (
+      tester,
+    ) async {
+      final state = await selectionScreen(tester, width, nav: 3);
+      state.myPlaylists.first['tracks'] = [4, 2, 1, 3];
+      state.trackSelection.toggle(3);
+      state.trackSelection.toggle(4);
+      state.rebuild!();
+      await tester.pumpAndSettle();
+      final create = find.byKey(
+        const ValueKey('create_playlist_from_selection'),
+      );
+      expect(tester.getSize(create).width, greaterThanOrEqualTo(44));
+      await tester.tap(create);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Отмена'));
+      await tester.pumpAndSettle();
+      expect(state.myPlaylists.length, 2);
+      expect(state.playlistWrites, 0);
+      expect(state.trackSelection.ids, {3, 4});
+
+      await tester.tap(create);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Создать').last);
+      await tester.pumpAndSettle();
+      expect(state.playlistWrites, 0);
+      await tester.enterText(
+        find.byKey(const ValueKey('playlist_name')),
+        '  Music for walks  ',
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.tap(find.text('Создать').last);
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(state.myPlaylists.length, 3);
+      expect(state.myPlaylists.last['name'], 'Music for walks');
+      expect(state.myPlaylists.last['tracks'], [4, 3]);
+      expect(state.myPlaylists.first['tracks'], [4, 2, 1, 3]);
+      expect(state.playlistWrites, 1);
+      expect(state.trackSelection.ids, {3, 4});
+      expect(state.playbackCalls, 0);
+      expect(tester.takeException(), isNull);
+      state.rebuild = null;
+      state.testContext = null;
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  testWidgets(
+    'first playlist supports failed save, retry and frozen selection',
+    (tester) async {
+      final state = await selectionScreen(tester, 375);
+      state.myPlaylists = [];
+      state.trackSelection.toggle(1);
+      state.trackSelection.toggle(3);
+      state.rebuild!();
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('create_playlist_from_selection')),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('playlist_name')),
+        'My first playlist',
+      );
+      state.playlistSaveFails = true;
+      await tester.tap(find.text('Создать').last);
+      await tester.pumpAndSettle();
+      expect(state.myPlaylists, isEmpty);
+      expect(find.byType(AlertDialog), findsOneWidget);
+      expect(state.trackSelection.ids, {1, 3});
+      expect(state.playlistWrites, 1);
+      state.playlistSaveFails = false;
+      state.trackSelection.clear();
+      state.trackSelection.toggle(4);
+      state.playlistSaveGate = Completer<bool>();
+      await tester.tap(find.text('Создать').last);
+      await tester.pump();
+      expect(state.myPlaylists.single['tracks'], [1, 3]);
+      expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Создать'))
+            .onPressed,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<TextButton>(find.widgetWithText(TextButton, 'Отмена'))
+            .onPressed,
+        isNull,
+      );
+      state.playlistSaveGate!.complete(true);
+      await tester.pumpAndSettle();
+      expect(state.playlistWrites, 2);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(state.myPlaylists.single['tracks'], [1, 3]);
+      expect(state.playbackCalls, 0);
+      expect(tester.takeException(), isNull);
+      state.rebuild = null;
+      state.testContext = null;
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  test(
+    'playlist creation persists a deduplicated snapshot without changing playback',
+    () async {
+      final state = await fixture();
+      final ids = [3, 1, 3, 0, -1, 4];
+      state.playingQueue = [tracks[1], tracks[3]];
+      state.playingIndex = 1;
+      state.isPlaying = true;
+      state.currentPositionNotifier.value = const Duration(seconds: 42);
+      final result = state.createPlaylist('  Selected songs  ', trackIds: ids);
+      ids.clear();
+      expect(await result, isTrue);
+      expect(state.myPlaylists.last['tracks'], [3, 1, 4]);
+      expect(state.myPlaylists.last['name'], 'Selected songs');
+      expect(state.myPlaylists.first['tracks'], [1, 2, 3, 4]);
+      expect(queueIds(state), [2, 4]);
+      expect(state.playingIndex, 1);
+      expect(state.currentPositionNotifier.value, const Duration(seconds: 42));
+      expect(state.isPlaying, isTrue);
+      final persisted =
+          jsonDecode(
+                await File(
+                  '${state.localPath}/my_playlists.json',
+                ).readAsString(),
+              )
+              as List;
+      expect(persisted.last['tracks'], [3, 1, 4]);
+      state.myPlaylists = [];
+      await state.readPlaylists();
+      expect(state.myPlaylists.last['tracks'], [3, 1, 4]);
+      expect(await state.createPlaylist('   ', trackIds: [2]), isFalse);
+      expect(state.myPlaylists.length, 3);
+    },
+  );
+
+  test(
+    'creation failure preserves playlists and shares the reorder write queue',
+    () async {
+      final state = await fixture();
+      final directory = state.localPath;
+      final blocker = File('$directory/blocker');
+      await blocker.writeAsString('not a directory');
+      state.localPath = blocker.path;
+      expect(await state.createPlaylist('Fail', trackIds: [4, 2]), isFalse);
+      expect(state.myPlaylists.length, 2);
+      state.memoryOnly = true;
+      final results = await Future.wait([
+        state.reorderPlaylist(42, [1, 2, 3, 4], 0, 4),
+        state.createPlaylist('First', trackIds: [3, 1], playlistId: 42),
+        state.createPlaylist('Second', trackIds: [2], playlistId: 42),
+      ]);
+      expect(results, [true, true, true]);
+      expect(state.myPlaylists.first['tracks'], [2, 3, 4, 1]);
+      expect(state.myPlaylists[2]['tracks'], [3, 1]);
+      expect(state.myPlaylists[3]['tracks'], [2]);
+      expect(state.myPlaylists.map((p) => p['id']).toSet().length, 4);
+      state.localPath = directory;
+    },
+  );
 
   for (final width in [320.0, 375.0, 1440.0]) {
     testWidgets(

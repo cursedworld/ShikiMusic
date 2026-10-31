@@ -2722,6 +2722,51 @@ class MainAppScreenState extends State<MainAppScreen>
     return false;
   }
 
+  Future<bool> createPlaylist(
+    String name, {
+    Iterable<int> trackIds = const [],
+    String image = '',
+    int? playlistId,
+  }) {
+    final title = name.trim();
+    if (title.isEmpty) return Future.value(false);
+    // Snapshot before waiting: selection and catalog may change while saving.
+    final ids = trackIds.where((id) => id > 0).toSet().toList();
+    final work = _playlistReorderTail.then((_) async {
+      if (_stateDisposing) return false;
+      var id = playlistId ?? DateTime.now().microsecondsSinceEpoch;
+      while (myPlaylists.any((playlist) => playlist['id'] == id)) {
+        id++;
+      }
+      final playlist = <String, dynamic>{
+        'id': id,
+        'name': title,
+        'image': image,
+        'tracks': ids,
+      };
+      void add() => myPlaylists.add(playlist);
+      if (mounted) {
+        setState(add);
+      } else {
+        add();
+      }
+      if (await savePlaylists()) return true;
+      // Only undo this creation; never replace unrelated playlists or edits.
+      void restore() => myPlaylists.removeWhere((p) => identical(p, playlist));
+      if (mounted) {
+        setState(restore);
+      } else {
+        restore();
+      }
+      return false;
+    });
+    _playlistReorderTail = work.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {},
+    );
+    return work;
+  }
+
   Future<bool> reorderPlaylist(
     int playlistId,
     List<int> visibleIds,
@@ -3599,6 +3644,8 @@ class MainAppScreenState extends State<MainAppScreen>
               playlist['id'] as int: playlist['name'].toString(),
           },
           onAddToPlaylist: (id, ids) => changePlaylistTracks(id, ids),
+          onCreatePlaylist: (ids) =>
+              showCreatePlaylistDialog(initialTrackIds: ids),
           onDownloadTrack: (t) => downloadMediaFile(t),
           onDownloadAlbum: (tracks) => downloadAllTracks(tracks),
           onDeleteDownloadedTrack: (t) => deleteDownloadedTrack(t),
@@ -5171,19 +5218,23 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
-  void showCreatePlaylistDialog() {
+  Future<bool> showCreatePlaylistDialog({
+    Iterable<int> initialTrackIds = const [],
+  }) async {
     Tooltip.dismissAllToolTips();
+    final trackIds = initialTrackIds.where((id) => id > 0).toSet().toList();
     String pName = "";
     CroppedPlaylistArtwork? selectedArtwork;
     bool selectingImage = false;
     bool saving = false;
 
-    showDialog(
+    final result = await showDialog<bool>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setStateDialog) {
-            return AlertDialog(
+            final dialog = AlertDialog(
+              scrollable: true,
               backgroundColor: const Color(0xFF1A0000),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(15),
@@ -5196,6 +5247,15 @@ class MainAppScreenState extends State<MainAppScreen>
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (trackIds.isNotEmpty) ...[
+                    Text(
+                      tr(
+                        'tracks_selected',
+                      ).replaceAll('{count}', '${trackIds.length}'),
+                      style: const TextStyle(color: Colors.white54),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   TextField(
                     key: const ValueKey('playlist_name'),
                     autofocus: true,
@@ -5278,7 +5338,7 @@ class MainAppScreenState extends State<MainAppScreen>
               ),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(ctx),
+                  onPressed: saving ? null : () => Navigator.pop(ctx, false),
                   child: Text(
                     tr('cancel'),
                     style: const TextStyle(color: Colors.white54),
@@ -5288,6 +5348,7 @@ class MainAppScreenState extends State<MainAppScreen>
                   onPressed: saving || selectingImage
                       ? null
                       : () async {
+                          if (saving || selectingImage) return;
                           if (pName.trim().isNotEmpty) {
                             setStateDialog(() => saving = true);
                             final playlistId =
@@ -5315,17 +5376,15 @@ class MainAppScreenState extends State<MainAppScreen>
                               }
                             }
                             if (!mounted || !ctx.mounted) return;
-                            setState(() {
-                              myPlaylists.add({
-                                "id": playlistId,
-                                "name": pName.trim(),
-                                "image": image,
-                                "tracks": [],
-                              });
-                            });
-                            await savePlaylists();
+                            final saved = await createPlaylist(
+                              pName,
+                              trackIds: trackIds,
+                              image: image,
+                              playlistId: playlistId,
+                            );
                             if (!ctx.mounted) return;
-                            Navigator.pop(ctx);
+                            setStateDialog(() => saving = false);
+                            if (saved) Navigator.pop(ctx, true);
                           }
                         },
                   child: Text(
@@ -5338,10 +5397,12 @@ class MainAppScreenState extends State<MainAppScreen>
                 ),
               ],
             );
+            return PopScope(canPop: !saving, child: dialog);
           },
         );
       },
     );
+    return result ?? false;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -6523,6 +6584,11 @@ class MainAppScreenState extends State<MainAppScreen>
               TrackSelectionBar(
                 count: selectedTracks.length,
                 onClear: clearTrackSelection,
+                onCreatePlaylist: () => showCreatePlaylistDialog(
+                  initialTrackIds: selectedTracks.map(
+                    (track) => track['id'] as int,
+                  ),
+                ),
                 playlists: {
                   for (final playlist in myPlaylists)
                     playlist['id'] as int: playlist['name'].toString(),

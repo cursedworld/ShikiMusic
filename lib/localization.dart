@@ -171,6 +171,11 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Add selected to playlist',
     'ja': '選択した曲をプレイリストに追加',
   },
+  'create_playlist_from_selection': {
+    'ru': 'Создать плейлист из выбранных',
+    'en': 'Create playlist from selected tracks',
+    'ja': '選択した曲からプレイリストを作成',
+  },
   'favorite_save_failed': {
     'ru': 'Не удалось сохранить избранное. Изменения отменены.',
     'en': 'Could not save favorites. Changes were reverted.',

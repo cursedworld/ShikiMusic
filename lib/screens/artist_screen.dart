@@ -24,6 +24,7 @@ class ArtistScreen extends StatefulWidget {
   final Future<void> Function(List<int> ids)? onToggleFavorites;
   final Map<int, String> Function()? getPlaylists;
   final Future<bool> Function(int playlistId, List<int> ids)? onAddToPlaylist;
+  final Future<bool> Function(List<int> ids)? onCreatePlaylist;
   final Function(dynamic track) onDownloadTrack;
   final Future<void> Function(List<dynamic> tracks)? onDownloadAlbum;
   final Function(dynamic track) onDeleteDownloadedTrack;
@@ -46,6 +47,7 @@ class ArtistScreen extends StatefulWidget {
     this.onToggleFavorites,
     this.getPlaylists,
     this.onAddToPlaylist,
+    this.onCreatePlaylist,
     required this.onDownloadTrack,
     this.onDownloadAlbum,
     required this.onDeleteDownloadedTrack,
@@ -750,6 +752,15 @@ class _ArtistScreenState extends State<ArtistScreen> {
                         child: TrackSelectionBar(
                           count: selectedTracks.length,
                           onClear: () => setState(_selection.clear),
+                          onCreatePlaylist: widget.onCreatePlaylist == null
+                              ? null
+                              : () async {
+                                  final ids = selectedTracks
+                                      .map((track) => track['id'] as int)
+                                      .toList();
+                                  await widget.onCreatePlaylist!(ids);
+                                  if (mounted) setState(() {});
+                                },
                           playlists: widget.getPlaylists?.call() ?? const {},
                           onPlaylistSelected: widget.onAddToPlaylist == null
                               ? null

@@ -19,6 +19,7 @@ tested on Arch Linux.
 - Playlists with custom artwork and a circular crop preview.
   Tracks follow their insertion order by default and can be reordered by dragging.
 - Multi-track selection: Ctrl/Shift-click on desktop, long-press a row on mobile.
+- Create a playlist from selected tracks, with a name, optional artwork, and the current list order preserved.
   Favorite, playlist, and download actions on a selected row apply to the group.
   Selected tracks can also be played as a separate queue.
 - Artist pages with biographies, albums, and collaborations when the catalog

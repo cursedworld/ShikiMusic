@@ -9,6 +9,7 @@ class TrackSelectionBar extends StatelessWidget {
     required this.count,
     required this.onClear,
     this.onPlay,
+    this.onCreatePlaylist,
     this.playlists = const {},
     this.onPlaylistSelected,
   });
@@ -16,6 +17,7 @@ class TrackSelectionBar extends StatelessWidget {
   final int count;
   final VoidCallback onClear;
   final VoidCallback? onPlay;
+  final VoidCallback? onCreatePlaylist;
   final Map<int, String> playlists;
   final ValueChanged<int>? onPlaylistSelected;
 
@@ -24,11 +26,25 @@ class TrackSelectionBar extends StatelessWidget {
     height: 44,
     child: Row(
       children: [
-        Text(
-          tr('tracks_selected').replaceAll('{count}', '$count'),
-          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        Expanded(
+          child: Text(
+            tr('tracks_selected').replaceAll('{count}', '$count'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
+          ),
         ),
-        const Spacer(),
+        if (onCreatePlaylist != null)
+          IconButton(
+            key: const ValueKey('create_playlist_from_selection'),
+            tooltip: tr('create_playlist_from_selection'),
+            onPressed: onCreatePlaylist,
+            icon: const Icon(
+              Icons.playlist_add_circle_outlined,
+              color: Colors.white70,
+              size: 20,
+            ),
+          ),
         if (playlists.isNotEmpty && onPlaylistSelected != null)
           PopupMenuButton<int>(
             key: const ValueKey('selection_playlist'),

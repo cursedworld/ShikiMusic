@@ -110,6 +110,7 @@ void main() {
     Future<void> Function(List<dynamic>)? onDownloadAlbum,
     Future<void> Function(List<int>)? onToggleFavorites,
     Future<bool> Function(int, List<int>)? onAddToPlaylist,
+    Future<bool> Function(List<int>)? onCreatePlaylist,
     void Function(List<dynamic>, int)? onPlayTrack,
     void Function(dynamic)? onDeleteDownloadedTrack,
     Map<String, dynamic>? initialArtistData,
@@ -125,6 +126,7 @@ void main() {
       onToggleFavorites: onToggleFavorites,
       getPlaylists: () => {42: 'Target playlist'},
       onAddToPlaylist: onAddToPlaylist,
+      onCreatePlaylist: onCreatePlaylist,
       onDownloadTrack: (_) {},
       onDownloadAlbum: onDownloadAlbum,
       onDeleteDownloadedTrack: onDeleteDownloadedTrack ?? (_) {},
@@ -157,6 +159,7 @@ void main() {
         final downloads = <int>[];
         final played = <int>[];
         final added = <int>[];
+        final created = <int>[];
         var deletes = 0;
         final client = MockClient((_) async => http.Response('{}', 404));
         addTearDown(client.close);
@@ -178,6 +181,10 @@ void main() {
             onAddToPlaylist: (id, ids) async {
               expect(id, 42);
               added.addAll(ids);
+              return true;
+            },
+            onCreatePlaylist: (ids) async {
+              created.addAll(ids);
               return true;
             },
             onDownloadAlbum: (selected) async =>
@@ -223,6 +230,12 @@ void main() {
         await tester.tap(find.text('Target playlist'));
         await tester.pumpAndSettle();
         expect(added, [1001, 1002]);
+        await tester.tap(
+          find.byKey(const ValueKey('create_playlist_from_selection')),
+        );
+        await tester.pumpAndSettle();
+        expect(created, [1001, 1002]);
+        expect(find.text('Выбрано: 2'), findsOneWidget);
         await tester.tap(find.byKey(const ValueKey('artist_download_1001')));
         await tester.pumpAndSettle();
         expect(downloads, [1001, 1002]);
