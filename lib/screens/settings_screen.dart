@@ -142,6 +142,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _selectedLang = languageNotifier.value;
   bool _vinylRotation = vinylRotationNotifier.value;
   bool _playVideoClip = playVideoClipNotifier.value;
+  bool _smoothTrackTransitions = smoothTrackTransitionsNotifier.value;
   bool _discordShowGitHubButton = discordShowGitHubButtonNotifier.value;
   bool _discordLyricsStatus = discordLyricsStatusNotifier.value;
   late final Future<Directory> Function() _getDataDirectory;
@@ -207,6 +208,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _selectedLang = data['language'] ?? _selectedLang;
           _vinylRotation = data['vinylRotation'] ?? true;
           _playVideoClip = data['playVideoClip'] ?? false;
+          _smoothTrackTransitions = data['smoothTrackTransitions'] == true;
           _discordShowGitHubButton = data['discordShowGitHubButton'] ?? true;
           _discordLyricsStatus = data['discordLyricsStatus'] == true;
           final server = data['serverBaseUrl'];
@@ -226,6 +228,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         languageNotifier.value = _selectedLang;
         vinylRotationNotifier.value = _vinylRotation;
         playVideoClipNotifier.value = _playVideoClip;
+        smoothTrackTransitionsNotifier.value = _smoothTrackTransitions;
         discordShowGitHubButtonNotifier.value = _discordShowGitHubButton;
         discordLyricsStatusNotifier.value = _discordLyricsStatus;
       }
@@ -241,6 +244,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'language': _selectedLang,
       'vinylRotation': _vinylRotation,
       'playVideoClip': _playVideoClip,
+      'smoothTrackTransitions': _smoothTrackTransitions,
       'discordShowGitHubButton': _discordShowGitHubButton,
       'discordLyricsStatus': _discordLyricsStatus,
       'serverBaseUrl': _serverBaseUrl,
@@ -358,8 +362,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             availableLanguages[_selectedLang] ?? _selectedLang,
                         onTap: _settingsReady ? _chooseLanguage : null,
                       ),
-                      if (supportsVinylRotation || supportsVideoClips)
-                        _section(tr('settings_playback')),
+                      _section(tr('settings_playback')),
+                      _toggle(
+                        key: const ValueKey('smooth_track_transitions_switch'),
+                        title: tr('smooth_track_transitions'),
+                        hint: tr('smooth_track_transitions_hint'),
+                        value: _smoothTrackTransitions,
+                        onChanged: (value) {
+                          setState(() => _smoothTrackTransitions = value);
+                          smoothTrackTransitionsNotifier.value = value;
+                          _saveSettings();
+                        },
+                      ),
                       if (supportsVinylRotation)
                         _toggle(
                           key: const ValueKey('vinyl_rotation_switch'),

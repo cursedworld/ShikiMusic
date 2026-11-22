@@ -16,7 +16,7 @@ void main() {
   late Color oldAccent;
   late String oldLanguage;
   late String? oldBackground;
-  late bool oldVinyl, oldVideo, oldGitHub, oldLyrics;
+  late bool oldVinyl, oldVideo, oldGitHub, oldLyrics, oldFade;
   const capture = bool.fromEnvironment('SHIKI_SETTINGS_SCREENSHOT');
   const fontPath = String.fromEnvironment('SHIKI_TEST_FONT');
   const iconsPath = String.fromEnvironment('SHIKI_TEST_ICONS');
@@ -46,6 +46,7 @@ void main() {
     oldVideo = playVideoClipNotifier.value;
     oldGitHub = discordShowGitHubButtonNotifier.value;
     oldLyrics = discordLyricsStatusNotifier.value;
+    oldFade = smoothTrackTransitionsNotifier.value;
     accentColorNotifier.value = themeColors['color_purple']!;
     languageNotifier.value = 'ru';
     customBackgroundNotifier.value = null;
@@ -53,6 +54,7 @@ void main() {
     playVideoClipNotifier.value = true;
     discordShowGitHubButtonNotifier.value = false;
     discordLyricsStatusNotifier.value = true;
+    smoothTrackTransitionsNotifier.value = false;
   });
   tearDown(() async {
     accentColorNotifier.value = oldAccent;
@@ -62,6 +64,7 @@ void main() {
     playVideoClipNotifier.value = oldVideo;
     discordShowGitHubButtonNotifier.value = oldGitHub;
     discordLyricsStatusNotifier.value = oldLyrics;
+    smoothTrackTransitionsNotifier.value = oldFade;
     final prefix =
         '${Directory.systemTemp.absolute.path}${Platform.pathSeparator}shiki-settings-layout-';
     if (!directory.absolute.path.startsWith(prefix)) {
@@ -142,6 +145,15 @@ void main() {
       try {
         await show(tester);
         await drive(tester, () => editable(tester));
+        final fade = find.byKey(
+          const ValueKey('smooth_track_transitions_switch'),
+        );
+        await tester.scrollUntilVisible(
+          fade,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        expect(tester.widget<SwitchListTile>(fade).value, isFalse);
         if (platform != TargetPlatform.android) {
           await tester.scrollUntilVisible(
             find.byKey(const ValueKey('vinyl_rotation_switch')),
@@ -165,6 +177,65 @@ void main() {
       }
     });
   }
+
+  testWidgets(
+    'smooth transitions save and reload without affecting other toggles',
+    (tester) async {
+      final file = File('${directory.path}/shiki_settings.json');
+      file.writeAsStringSync(jsonEncode({'playVideoClip': true}));
+      final fade = find.byKey(
+        const ValueKey('smooth_track_transitions_switch'),
+      );
+      expect(smoothTrackTransitionsNotifier.value, isFalse);
+
+      Future<void> open() async {
+        await show(tester, width: 320);
+        await drive(tester, () => editable(tester));
+        await tester.scrollUntilVisible(
+          fade,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(fade);
+        await tester.pumpAndSettle();
+      }
+
+      bool saved(bool value) {
+        try {
+          final data =
+              jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+          return data['smoothTrackTransitions'] == value &&
+              data['playVideoClip'] == true;
+        } on FileSystemException catch (error) {
+          if (error.osError?.errorCode == 32) return false;
+          rethrow;
+        }
+      }
+
+      Future<void> toggle(bool value) async {
+        // Keep the static settings write queue on the real IO zone so it
+        // can also be used after this widget test's fake clock is gone.
+        final onChanged = tester.widget<SwitchListTile>(fade).onChanged!;
+        await tester.runAsync(() async => onChanged(value));
+      }
+
+      await open();
+      expect(tester.widget<SwitchListTile>(fade).value, isFalse);
+      await toggle(true);
+      expect(smoothTrackTransitionsNotifier.value, isTrue);
+      await drive(tester, () => saved(true));
+
+      await tester.pumpWidget(const SizedBox());
+      smoothTrackTransitionsNotifier.value = false;
+      await open();
+      expect(smoothTrackTransitionsNotifier.value, isTrue);
+      expect(tester.widget<SwitchListTile>(fade).value, isTrue);
+
+      await toggle(false);
+      expect(smoothTrackTransitionsNotifier.value, isFalse);
+      await drive(tester, () => saved(false));
+    },
+  );
 
   testWidgets('first frame shows the current purple selection, not red', (
     tester,
@@ -215,6 +286,7 @@ void main() {
           'language': 'en',
           'vinylRotation': false,
           'playVideoClip': true,
+          'smoothTrackTransitions': true,
           'discordShowGitHubButton': false,
           'discordLyricsStatus': true,
           'serverBaseUrl': 'http://localhost:8000',
@@ -239,6 +311,7 @@ void main() {
       });
       expect(saved['language'], 'en');
       expect(saved['playVideoClip'], isTrue);
+      expect(saved['smoothTrackTransitions'], isTrue);
       expect(saved['vinylRotation'], isFalse);
       expect(saved['discordShowGitHubButton'], isFalse);
       expect(saved['discordLyricsStatus'], isTrue);

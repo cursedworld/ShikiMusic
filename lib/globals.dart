@@ -39,6 +39,7 @@ ValueNotifier<String> languageNotifier = ValueNotifier('ru');
 ValueNotifier<bool> vinylRotationNotifier = ValueNotifier(true);
 ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
 ValueNotifier<bool> playVideoClipNotifier = ValueNotifier(false);
+final smoothTrackTransitionsNotifier = ValueNotifier(false);
 ValueNotifier<bool> discordShowGitHubButtonNotifier = ValueNotifier(true);
 ValueNotifier<bool> discordLyricsStatusNotifier = ValueNotifier(false);
 

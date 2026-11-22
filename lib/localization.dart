@@ -529,6 +529,16 @@ const Map<String, Map<String, String>> _translations = {
   'settings_title': {'ru': 'Настройки', 'en': 'Settings', 'ja': '設定'},
   'settings_appearance': {'ru': 'Внешний вид', 'en': 'Appearance', 'ja': '外観'},
   'settings_playback': {'ru': 'Воспроизведение', 'en': 'Playback', 'ja': '再生'},
+  'smooth_track_transitions': {
+    'ru': 'Плавные переходы',
+    'en': 'Smooth transitions',
+    'ja': 'なめらかな曲の切り替え',
+  },
+  'smooth_track_transitions_hint': {
+    'ru': 'Звук нарастает в начале и затухает в конце трека',
+    'en': 'Fade in at the start and fade out at the end of each track',
+    'ja': '曲の始めにフェードインし、終わりにフェードアウト',
+  },
   'settings_data': {'ru': 'Данные', 'en': 'Data', 'ja': 'データ'},
   'settings_accent': {
     'ru': 'Цвет акцента',

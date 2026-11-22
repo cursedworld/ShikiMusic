@@ -47,6 +47,7 @@ import '../platform_capabilities.dart';
 import '../mobile_motion.dart';
 import '../safe_file_migration.dart';
 import '../server_config.dart';
+import '../track_fade.dart';
 import '../windows_taskbar_controls.dart';
 import '../track_updates.dart';
 import '../track_selection.dart';
@@ -158,6 +159,7 @@ class MainAppScreen extends StatefulWidget {
 class MainAppScreenState extends State<MainAppScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   late final AudioPlayer audioPlayer;
+  late final TrackFade _trackFade;
   int _benchmarkPositionEvents = 0;
 
   // ── flutter_media_session for Media3 notification ────────────────────────
@@ -211,7 +213,7 @@ class MainAppScreenState extends State<MainAppScreen>
             volume = value;
             _isMuted = value == 0;
           });
-          unawaited(audioPlayer.setVolume(value));
+          unawaited(_trackFade.setVolume(value));
           _syncLinuxMediaSession();
           unawaited(_saveState());
         },
@@ -521,6 +523,7 @@ class MainAppScreenState extends State<MainAppScreen>
   int _trackRevision = 0;
   int _transportRevision = 0;
   int _seekRevision = 0;
+  int? _fadeSeekRevision;
   int _databaseSyncRevision = 0;
   int? _audioSourceTrackId;
   int _settledTrackRevision = -1;
@@ -596,6 +599,14 @@ class MainAppScreenState extends State<MainAppScreen>
 
     // Create a single AudioPlayer and share it with AudioPlayerHandler
     audioPlayer = AudioPlayer();
+    _trackFade = TrackFade(
+      readPosition: audioPlayer.getCurrentPosition,
+      writeVolume: audioPlayer.setVolume,
+      onError: (error) => debugPrint('Audio gain update failed: $error'),
+      volume: volume,
+      enabled: smoothTrackTransitionsNotifier.value,
+    );
+    smoothTrackTransitionsNotifier.addListener(_onTrackFadeChanged);
     // Playback itself runs in the native engine. Polling position need not
     // request a Flutter frame; the UI currently displays whole seconds.
     audioPlayer.positionUpdater = playbackPositionUpdater(
@@ -681,10 +692,18 @@ class MainAppScreenState extends State<MainAppScreen>
       state,
     ) {
       if (!_stateDisposing) {
-        _statistics?.setPlaying(state == PlayerState.playing);
+        final playing = state == PlayerState.playing;
+        _statistics?.setPlaying(playing);
+        if (_trackFade.enabled) {
+          if (playing) {
+            unawaited(_syncTrackFade(currentPositionNotifier.value));
+          } else {
+            _trackFade.hold();
+          }
+        }
       }
     });
-    audioPlayer.setVolume(volume);
+    unawaited(_trackFade.setVolume(volume));
     _audioDurationSubscription = audioPlayer.onDurationChanged.listen((d) {
       // Cache track duration for playlist stats
       final sourceTrackId = _audioSourceTrackId;
@@ -706,6 +725,7 @@ class MainAppScreenState extends State<MainAppScreen>
         _statistics?.position(p);
         currentPositionNotifier.value = p;
         _linuxMediaSession?.updatePosition(p);
+        if (_trackFade.enabled) unawaited(_syncTrackFade(p));
       }
     });
 
@@ -764,6 +784,8 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void dispose() {
     _stateDisposing = true;
+    smoothTrackTransitionsNotifier.removeListener(_onTrackFadeChanged);
+    _trackFade.dispose();
     activeTrackNotifier.removeListener(_syncTaskbarControls);
     isPlayingNotifier.removeListener(_syncTaskbarControls);
     languageNotifier.removeListener(_syncTaskbarControls);
@@ -1969,7 +1991,7 @@ class MainAppScreenState extends State<MainAppScreen>
     } else {
       await _prepareBenchmarkAudio(command.runId, _benchmarkVideo30TrackId);
     }
-    await audioPlayer.setVolume(0);
+    await _trackFade.setVolume(0);
     final covered =
         command.scenario == 'focused-settings' ||
         command.scenario == 'focused-artist';
@@ -2551,7 +2573,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
         if (data['volume'] != null) {
           volume = (data['volume'] as num).toDouble();
-          await audioPlayer.setVolume(volume);
+          await _trackFade.setVolume(volume);
         }
         final savedLoopMode = data['loopMode'];
         if (savedLoopMode is int &&
@@ -4366,6 +4388,32 @@ class MainAppScreenState extends State<MainAppScreen>
   //  Playback
   // ═══════════════════════════════════════════════════════════════════════════
 
+  Future<void>? _syncTrackFade(Duration position, {bool? playing}) {
+    if (!_trackFade.enabled ||
+        _stateDisposing ||
+        _fadeSeekRevision == _seekRevision ||
+        _settledTrackRevision != _trackRevision ||
+        _audioSourceTrackId == null) {
+      return null;
+    }
+    final state = audioPlayer.state;
+    if (playing != false &&
+        (state == PlayerState.completed || state == PlayerState.stopped)) {
+      return null;
+    }
+    return _trackFade.updatePosition(
+      position,
+      fullDurationNotifier.value,
+      playing: playing ?? (isPlaying && state == PlayerState.playing),
+    );
+  }
+
+  void _onTrackFadeChanged() {
+    final enabled = smoothTrackTransitionsNotifier.value;
+    unawaited(_trackFade.setEnabled(enabled));
+    if (enabled) unawaited(_syncTrackFade(currentPositionNotifier.value));
+  }
+
   void startPlayback(List<dynamic> targetQueue, int index, {int? playlistId}) {
     if (targetQueue.isEmpty || index < 0 || index >= targetQueue.length) return;
     if (isPremium) playCount++;
@@ -4387,6 +4435,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (playingQueue.isEmpty) return;
     final shouldPlay = !isPlaying;
     final revision = ++_transportRevision;
+    if (!shouldPlay && _trackFade.enabled) _trackFade.hold();
     _setPlaying(shouldPlay);
     _syncMediaSessionPlayback();
     unawaited(_saveState());
@@ -4395,6 +4444,14 @@ class MainAppScreenState extends State<MainAppScreen>
         if (_stateDisposing || revision != _transportRevision) return;
         try {
           if (shouldPlay) {
+            final gain = _syncTrackFade(
+              currentPositionNotifier.value,
+              playing: false,
+            );
+            if (gain != null) {
+              await gain;
+              if (_stateDisposing || revision != _transportRevision) return;
+            }
             await audioPlayer.resume();
           } else {
             await audioPlayer.pause();
@@ -4465,6 +4522,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _activateTrackForPlayback(dynamic targetTrack) {
+    if (_trackFade.enabled) _trackFade.hold();
     _statistics?.endTrack();
     final trackRevision = ++_trackRevision;
     final transportRevision = ++_transportRevision;
@@ -4520,6 +4578,16 @@ class MainAppScreenState extends State<MainAppScreen>
     _audioSourceTrackId = null;
     _settledTrackRevision = -1;
     try {
+      if (_trackFade.enabled) {
+        // Some backends prepare a new source while already playing. Set the
+        // initial gain before replacing it so the new track cannot pop in.
+        await _trackFade.updatePosition(
+          Duration.zero,
+          Duration.zero,
+          playing: false,
+        );
+        if (!_isCurrentTrackRevision(trackRevision)) return;
+      }
       if (hasLocalTrack) {
         await audioPlayer.setSource(DeviceFileSource(localTrackPath.path));
       } else {
@@ -4528,6 +4596,9 @@ class MainAppScreenState extends State<MainAppScreen>
         );
       }
     } catch (_) {
+      if (_isCurrentTrackRevision(trackRevision) && _trackFade.enabled) {
+        unawaited(_trackFade.reset());
+      }
       if (_isCurrentTrackRevision(trackRevision) &&
           transportRevision == _transportRevision) {
         _setPlaying(false);
@@ -4550,12 +4621,23 @@ class MainAppScreenState extends State<MainAppScreen>
 
       _statistics?.beginTrack(targetTrack as Map, duration: duration);
       _statistics?.setPlaying(audioPlayer.state == PlayerState.playing);
+      if (_trackFade.enabled) {
+        await _trackFade.updatePosition(
+          Duration.zero,
+          fullDurationNotifier.value,
+          playing: false,
+        );
+        if (!_isCurrentTrackRevision(trackRevision)) return;
+      }
       if (isPlaying) {
         await audioPlayer.resume();
       } else {
         await audioPlayer.pause();
       }
     } catch (_) {
+      if (_isCurrentTrackRevision(trackRevision) && _trackFade.enabled) {
+        unawaited(_trackFade.reset());
+      }
       if (_isCurrentTrackRevision(trackRevision) &&
           transportRevision == _transportRevision) {
         _setPlaying(false);
@@ -4621,6 +4703,7 @@ class MainAppScreenState extends State<MainAppScreen>
   void _stopPlaybackAtQueueEnd() {
     _linuxPlaybackStopped = true;
     final revision = ++_transportRevision;
+    if (_trackFade.enabled) _trackFade.hold();
     _setPlaying(false);
     _syncMediaSessionPlayback();
     updateRPC(force: true);
@@ -4628,9 +4711,17 @@ class MainAppScreenState extends State<MainAppScreen>
     unawaited(
       _enqueueAudioWork(() async {
         if (_stateDisposing || revision != _transportRevision) return;
-        await audioPlayer.stop();
-        if (_stateDisposing || revision != _transportRevision) return;
-        _audioSourceTrackId = null;
+        try {
+          await audioPlayer.stop();
+          if (_stateDisposing || revision != _transportRevision) return;
+          _audioSourceTrackId = null;
+        } finally {
+          if (!_stateDisposing &&
+              revision == _transportRevision &&
+              _trackFade.enabled) {
+            unawaited(_trackFade.reset());
+          }
+        }
       }),
     );
   }
@@ -4683,6 +4774,8 @@ class MainAppScreenState extends State<MainAppScreen>
   void seekTo(Duration pos) {
     final trackRevision = _trackRevision;
     final seekRevision = ++_seekRevision;
+    _fadeSeekRevision = seekRevision;
+    if (_trackFade.enabled) _trackFade.hold();
     currentPositionNotifier.value = pos;
     _linuxMediaSession?.seeked(pos);
     discordStart = isPlaying
@@ -4702,12 +4795,14 @@ class MainAppScreenState extends State<MainAppScreen>
         try {
           await audioPlayer.seek(pos);
         } finally {
+          if (_fadeSeekRevision == seekRevision) _fadeSeekRevision = null;
           _statistics?.setSeeking(false);
         }
         if (!_isCurrentTrackRevision(trackRevision) ||
             seekRevision != _seekRevision) {
           return;
         }
+        unawaited(_syncTrackFade(pos));
 
         // Serialize video seek with initialize/dispose. Audio stays authoritative.
         _enqueueVideoWork(() async {
@@ -6204,7 +6299,7 @@ class MainAppScreenState extends State<MainAppScreen>
                             volume = 0;
                           }
                         });
-                        audioPlayer.setVolume(volume);
+                        unawaited(_trackFade.setVolume(volume));
                         _syncLinuxMediaSession();
                         _saveState();
                       },
@@ -6230,7 +6325,7 @@ class MainAppScreenState extends State<MainAppScreen>
                             volume = v;
                             _isMuted = v == 0;
                           });
-                          audioPlayer.setVolume(v);
+                          unawaited(_trackFade.setVolume(v));
                           _syncLinuxMediaSession();
                         },
                         onChangeEnd: (v) => _saveState(),

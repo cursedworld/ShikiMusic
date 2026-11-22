@@ -262,6 +262,7 @@ void _validateJson(String name, dynamic value) {
           [
             'vinylRotation',
             'playVideoClip',
+            'smoothTrackTransitions',
             'discordShowGitHubButton',
             'discordLyricsStatus',
           ].every((key) => value[key] == null || value[key] is bool) &&

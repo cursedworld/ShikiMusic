@@ -55,6 +55,7 @@ void main() {
     await json(source, 'shiki_settings.json', {
       'language': 'en',
       'themeColor': 'color_purple',
+      'smoothTrackTransitions': true,
     });
     await File('${source.path}/playlist_artwork_5.png').writeAsBytes([1, 2, 3]);
     await File('${source.path}/track_1.mp3').writeAsBytes([4, 5, 6]);
@@ -82,12 +83,11 @@ void main() {
       );
       expect(await File('${target.path}/track_1.mp3').readAsBytes(), [4, 5, 6]);
       expect(await File('${target.path}/video_1.mp4').exists(), isTrue);
-      expect(
-        jsonDecode(
-          await File('${target.path}/shiki_settings.json').readAsString(),
-        )['language'],
-        'en',
+      final settings = jsonDecode(
+        await File('${target.path}/shiki_settings.json').readAsString(),
       );
+      expect(settings['language'], 'en');
+      expect(settings['smoothTrackTransitions'], isTrue);
       expect(await applyPendingLibraryImport(target), isFalse);
     },
   );

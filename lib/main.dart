@@ -114,6 +114,8 @@ Future<void> _loadSavedSettings() async {
 
       // Restore video clip setting
       playVideoClipNotifier.value = data['playVideoClip'] ?? false;
+      smoothTrackTransitionsNotifier.value =
+          data['smoothTrackTransitions'] == true;
 
       // Restore discord github button setting
       discordShowGitHubButtonNotifier.value =
