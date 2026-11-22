@@ -13,6 +13,7 @@ import '../localization.dart';
 import '../server_config.dart';
 import '../track_selection.dart';
 import '../widgets/track_selection_bar.dart';
+import '../widgets/play_next_panel.dart';
 
 class ArtistScreen extends StatefulWidget {
   final int artistId;
@@ -20,6 +21,8 @@ class ArtistScreen extends StatefulWidget {
   final Map<String, dynamic>? initialArtistData;
   final List<dynamic> Function() getAllTracks;
   final Function(List<dynamic> queue, int index) onPlayTrack;
+  final bool Function()? canPlayNext;
+  final ValueChanged<List<dynamic>>? onPlayNext;
   final Function(int trackId) onToggleFavorite;
   final Future<void> Function(List<int> ids)? onToggleFavorites;
   final Map<int, String> Function()? getPlaylists;
@@ -43,6 +46,8 @@ class ArtistScreen extends StatefulWidget {
     this.initialArtistData,
     required this.getAllTracks,
     required this.onPlayTrack,
+    this.canPlayNext,
+    this.onPlayNext,
     required this.onToggleFavorite,
     this.onToggleFavorites,
     this.getPlaylists,
@@ -361,6 +366,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
   Widget build(BuildContext context) {
     final accent = accentColorNotifier.value;
     final activeTrackId = activeTrackNotifier.value?['id'];
+    final canPlayNext =
+        widget.canPlayNext?.call() == true && widget.onPlayNext != null;
     final isPlaying = isPlayingNotifier.value;
     final tracks = _getArtistTracks();
     final albums = _getArtistAlbums();
@@ -751,6 +758,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 24),
                         child: TrackSelectionBar(
                           count: selectedTracks.length,
+                          onPlayNext: canPlayNext
+                              ? () => widget.onPlayNext!(selectedTracks)
+                              : null,
                           onClear: () => setState(_selection.clear),
                           onCreatePlaylist: widget.onCreatePlaylist == null
                               ? null
@@ -912,6 +922,13 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                       widget.onDownloadTrack(track);
                                       setState(() {});
                                     },
+                                  ),
+                                if (canPlayNext)
+                                  TrackPlayNextMenu(
+                                    key: ValueKey('artist_play_next_$trackId'),
+                                    onPlayNext: () =>
+                                        widget.onPlayNext!(targets),
+                                    playNextCount: targets.length,
                                   ),
                                 const SizedBox(width: 8),
                                 Icon(

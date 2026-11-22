@@ -9,6 +9,7 @@ class TrackSelectionBar extends StatelessWidget {
     required this.count,
     required this.onClear,
     this.onPlay,
+    this.onPlayNext,
     this.onCreatePlaylist,
     this.playlists = const {},
     this.onPlaylistSelected,
@@ -17,6 +18,7 @@ class TrackSelectionBar extends StatelessWidget {
   final int count;
   final VoidCallback onClear;
   final VoidCallback? onPlay;
+  final VoidCallback? onPlayNext;
   final VoidCallback? onCreatePlaylist;
   final Map<int, String> playlists;
   final ValueChanged<int>? onPlaylistSelected;
@@ -66,6 +68,18 @@ class TrackSelectionBar extends StatelessWidget {
             tooltip: tr('play_selected_tracks'),
             onPressed: onPlay,
             icon: const Icon(Icons.play_arrow, color: Colors.white70, size: 20),
+          ),
+        if (onPlayNext != null)
+          IconButton(
+            key: const ValueKey('play_selection_next'),
+            tooltip: tr('play_next_selection'),
+            onPressed: onPlayNext,
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(
+              Icons.playlist_play,
+              color: Colors.white70,
+              size: 21,
+            ),
           ),
         IconButton(
           key: const ValueKey('clear_track_selection'),

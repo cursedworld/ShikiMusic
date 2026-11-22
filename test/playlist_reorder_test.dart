@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/globals.dart';
 import 'package:shiki/atomic_file_store.dart';
 import 'package:shiki/screens/home_screen.dart';
+import 'package:shiki/widgets/play_next_panel.dart';
 import 'package:shiki/widgets/playlist_track_list.dart';
 import 'package:shiki/lyrics_search.dart';
 
@@ -154,6 +155,7 @@ void main() {
     WidgetTester tester,
     double width, {
     int nav = 0,
+    bool active = false,
   }) async {
     tester.view.physicalSize = Size(width, 900);
     tester.view.devicePixelRatio = 1;
@@ -163,6 +165,10 @@ void main() {
       ..memoryOnly = true
       ..localPath = ''
       ..navId = nav;
+    if (active) {
+      state.playingQueue = List.of(tracks);
+      state.playingIndex = 0;
+    }
     addTearDown(() {
       state.rebuild = null;
       state.testContext = null;
@@ -188,6 +194,66 @@ void main() {
     );
     await tester.pumpAndSettle();
     return state;
+  }
+
+  for (final (width, nav) in [(320.0, 3), (1024.0, 0)]) {
+    testWidgets('Play next adds single and selected tracks at width $width', (
+      tester,
+    ) async {
+      final state = await selectionScreen(
+        tester,
+        width,
+        nav: nav,
+        active: true,
+      );
+      final menu = find.byKey(
+        ValueKey(nav == 3 ? 'track_play_next_2' : 'track_playlist_2'),
+      );
+      await tester.tap(menu);
+      await tester.pumpAndSettle();
+      expect(find.text('Сыграть следующим'), findsOneWidget);
+      await tester.tap(find.text('Сыграть следующим'));
+      await tester.pumpAndSettle();
+      expect(state.isPlaying, isFalse);
+
+      state.trackSelection.toggle(4);
+      state.trackSelection.toggle(3);
+      state.rebuild!();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('play_selection_next')));
+      await tester.pumpAndSettle();
+      final open = find.byKey(const ValueKey('open_play_next'));
+      expect(tester.getSize(open).width, greaterThanOrEqualTo(44));
+      await tester.tap(open);
+      await tester.pumpAndSettle();
+      final panel = find.byKey(const ValueKey('clear_play_next'));
+      expect(panel, findsOneWidget);
+      List<String?> panelTracks() => tester
+          .widgetList<Text>(
+            find.descendant(
+              of: find.byType(PlayNextPanel),
+              matching: find.textContaining(RegExp(r'^Track [234]$')),
+            ),
+          )
+          .map((text) => text.data)
+          .toList();
+      expect(panelTracks(), ['Track 3', 'Track 4', 'Track 2']);
+      await tester.tap(find.byTooltip('Убрать из «Следом»').first);
+      await tester.pumpAndSettle();
+      expect(panelTracks(), ['Track 4', 'Track 2']);
+      await tester.tap(panel);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Нет вставок'), findsOneWidget);
+      expect(state.trackSelection.ids, {3, 4});
+      expect(queueIds(state), [1, 2, 3, 4]);
+      expect(state.myPlaylists.first['tracks'], [1, 2, 3, 4]);
+      expect(state.playingTrack['id'], 1);
+      expect(state.currentPositionNotifier.value, Duration.zero);
+      expect(state.playlistWrites, 0);
+      expect(state.playbackCalls, 0);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
   }
 
   for (final width in [320.0, 375.0, 768.0, 1440.0]) {

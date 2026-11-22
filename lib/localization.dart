@@ -80,6 +80,53 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '最終確認: {time}',
   },
   'repeat_off': {'ru': 'Повтор выключен', 'en': 'Repeat off', 'ja': 'リピートなし'},
+  'play_next_queue': {'ru': 'Следом', 'en': 'Up next', 'ja': '次に再生'},
+  'play_next_track': {
+    'ru': 'Сыграть следующим',
+    'en': 'Play next',
+    'ja': '次に再生する',
+  },
+  'play_next_selection': {
+    'ru': 'Сыграть следующими',
+    'en': 'Play selected next',
+    'ja': '選択した曲を次に再生',
+  },
+  'play_next_now_playing': {
+    'ru': 'Сейчас: {title}',
+    'en': 'Now: {title}',
+    'ja': '再生中: {title}',
+  },
+  'play_next_clear': {'ru': 'Очистить', 'en': 'Clear', 'ja': 'クリア'},
+  'play_next_empty': {
+    'ru': 'Нет вставок. Добавь трек через «Сыграть следующим».',
+    'en': 'No insertions. Use Play next on a track to add one.',
+    'ja': '追加された曲はありません。「次に再生する」から曲を追加できます。',
+  },
+  'play_next_remove': {
+    'ru': 'Убрать из «Следом»',
+    'en': 'Remove from Up next',
+    'ja': '次に再生から取り除く',
+  },
+  'play_next_starting': {
+    'ru': 'Уже начинается',
+    'en': 'Already starting',
+    'ja': '再生開始済み',
+  },
+  'play_next_added': {
+    'ru': 'Добавлено в «Следом»: {count}',
+    'en': 'Added to Up next: {count}',
+    'ja': '次に再生へ追加: {count} 曲',
+  },
+  'play_next_unavailable': {
+    'ru': 'Трек недоступен, пропущен: {title}',
+    'en': 'Skipped unavailable track: {title}',
+    'ja': '利用できない曲をスキップしました: {title}',
+  },
+  'track_actions': {
+    'ru': 'Действия трека',
+    'en': 'Track actions',
+    'ja': '曲の操作',
+  },
   'repeat_queue': {
     'ru': 'Повтор очереди',
     'en': 'Repeat queue',

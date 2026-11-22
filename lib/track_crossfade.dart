@@ -8,7 +8,7 @@ abstract interface class CrossfadeDeck {
   Future<void> dispose();
 }
 
-typedef CrossfadeSource = ({int trackId, String path});
+typedef CrossfadeSource = ({int slot, int trackId, String path});
 typedef CrossfadeHandoff<T> = ({
   T deck,
   Duration duration,
@@ -25,11 +25,13 @@ class TrackCrossfade<T extends CrossfadeDeck> {
     required CrossfadeSource? Function() nextSource,
     required void Function(Object) onError,
     required void Function() onReleased,
+    void Function()? onAudibleChanged,
   }) : _createDeck = createDeck,
        _fileReady = fileReady,
        _nextSource = nextSource,
        _onError = onError,
-       _onReleased = onReleased;
+       _onReleased = onReleased,
+       _onAudibleChanged = onAudibleChanged;
 
   static const overlap = Duration(milliseconds: 600);
   static const prepareWithin = Duration(milliseconds: 1400);
@@ -41,6 +43,7 @@ class TrackCrossfade<T extends CrossfadeDeck> {
   final CrossfadeSource? Function() _nextSource;
   final void Function(Object) _onError;
   final void Function() _onReleased;
+  final void Function()? _onAudibleChanged;
 
   _CrossfadeAttempt<T>? _attempt;
   _CrossfadeAttempt<T>? _retiring;
@@ -50,6 +53,20 @@ class TrackCrossfade<T extends CrossfadeDeck> {
 
   bool holdsTrack(int id) =>
       _attempt?.source.trackId == id || _retiring?.source.trackId == id;
+
+  /// Once a nonzero level has been requested, queue edits must not cut off
+  /// the incoming track. A muted but prepared decoder is not reserved.
+  CrossfadeSource? get audibleSource {
+    final attempt = _attempt;
+    return attempt != null && attempt.audible && attempt.deck!.playing
+        ? attempt.source
+        : null;
+  }
+
+  void reconcileNextSource() {
+    final attempt = _attempt;
+    if (attempt == null || !_canUse(attempt)) cancel(allowRetry: true);
+  }
 
   void update(Duration remaining, double volume) {
     _remaining = remaining;
@@ -154,6 +171,10 @@ class TrackCrossfade<T extends CrossfadeDeck> {
     final volume = _volume * t * t * (3 - 2 * t);
     if (volume == attempt.lastVolume) return;
     attempt.lastVolume = volume;
+    if (volume > 0 && !attempt.audible) {
+      attempt.audible = true;
+      _onAudibleChanged?.call();
+    }
     unawaited(
       attempt.deck!.setPrerollVolume(volume).catchError((Object error) {
         _fail(attempt, error);
@@ -174,6 +195,7 @@ class TrackCrossfade<T extends CrossfadeDeck> {
       return null;
     }
     _attempt = null;
+    if (attempt.audible) _onAudibleChanged?.call();
     attempt.deadline?.cancel();
     _tried = false;
     final position = started.elapsed;
@@ -200,6 +222,7 @@ class TrackCrossfade<T extends CrossfadeDeck> {
   void _cancelAttempt(_CrossfadeAttempt<T> attempt) {
     if (!identical(_attempt, attempt)) return;
     _attempt = null;
+    if (attempt.audible) _onAudibleChanged?.call();
     attempt.deadline?.cancel();
     _retiring = attempt;
     unawaited(_retire(attempt));
@@ -236,6 +259,7 @@ class _CrossfadeAttempt<T extends CrossfadeDeck> {
   Future<void>? work;
   Timer? deadline;
   bool starting = false;
+  bool audible = false;
   Stopwatch? started;
   Duration startRemaining = Duration.zero;
   double lastVolume = 0;

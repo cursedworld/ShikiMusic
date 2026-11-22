@@ -112,6 +112,7 @@ void main() {
     Future<bool> Function(int, List<int>)? onAddToPlaylist,
     Future<bool> Function(List<int>)? onCreatePlaylist,
     void Function(List<dynamic>, int)? onPlayTrack,
+    ValueChanged<List<dynamic>>? onPlayNext,
     void Function(dynamic)? onDeleteDownloadedTrack,
     Map<String, dynamic>? initialArtistData,
   }) => MaterialApp(
@@ -122,6 +123,8 @@ void main() {
       initialArtistData: initialArtistData,
       getAllTracks: getTracks,
       onPlayTrack: onPlayTrack ?? (_, _) {},
+      canPlayNext: () => onPlayNext != null,
+      onPlayNext: onPlayNext,
       onToggleFavorite: (_) {},
       onToggleFavorites: onToggleFavorites,
       getPlaylists: () => {42: 'Target playlist'},
@@ -158,6 +161,7 @@ void main() {
         final favoriteBatches = <List<int>>[];
         final downloads = <int>[];
         final played = <int>[];
+        final nextBatches = <List<int>>[];
         final added = <int>[];
         final created = <int>[];
         var deletes = 0;
@@ -191,6 +195,8 @@ void main() {
                 downloads.addAll(selected.map((t) => t['id'] as int)),
             onPlayTrack: (selected, _) =>
                 played.addAll(selected.map((t) => t['id'] as int)),
+            onPlayNext: (selected) =>
+                nextBatches.add(selected.map((t) => t['id'] as int).toList()),
             onDeleteDownloadedTrack: (_) => deletes++,
           ),
         );
@@ -240,6 +246,18 @@ void main() {
         await tester.pumpAndSettle();
         expect(downloads, [1001, 1002]);
         expect(deletes, 0);
+        await tester.tap(find.byKey(const ValueKey('artist_play_next_1002')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Сыграть следующими'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('play_selection_next')));
+        await tester.pumpAndSettle();
+        expect(nextBatches, [
+          [1001, 1002],
+          [1001, 1002],
+        ]);
+        expect(played, isEmpty);
+        expect(find.text('Выбрано: 2'), findsOneWidget);
         await tester.tap(find.byKey(const ValueKey('play_track_selection')));
         await tester.pumpAndSettle();
         expect(played, [1001, 1002]);

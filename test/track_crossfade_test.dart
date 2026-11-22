@@ -1,11 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shiki/globals.dart' show LoopMode;
+import 'package:shiki/playback_order.dart';
 import 'package:shiki/track_crossfade.dart';
 import 'package:shiki/track_transition_mode.dart';
 
 const _duration = Duration(seconds: 12);
-const _source = (trackId: 8, path: 'track_8.mp3');
+const _source = (slot: 1, trackId: 8, path: 'track_8.mp3');
 Future<void> _flush() => Future<void>.delayed(Duration.zero);
 
 class _Deck implements CrossfadeDeck {
@@ -207,10 +209,90 @@ void main() {
     await _flush();
     playback.remaining(600);
     await _flush();
-    playback.next = (trackId: 9, path: 'track_9.mp3');
+    playback.next = (slot: 2, trackId: 9, path: 'track_9.mp3');
     expect(playback.crossfade.takeAtEnd(), isNull);
     await _flush();
     expect(playback.deck.disposals, 1);
+  });
+
+  test(
+    'another occurrence of the same file invalidates a silent deck',
+    () async {
+      final playback = _Playback();
+      playback.remaining(1300);
+      await _flush();
+      expect(playback.deck.paths, [_source.path]);
+      expect(playback.crossfade.audibleSource, isNull);
+
+      playback.next = (slot: 2, trackId: _source.trackId, path: _source.path);
+      playback.crossfade.reconcileNextSource();
+      await _flush();
+      expect(playback.deck.disposals, 1);
+      expect(playback.deck.starts, 0);
+      expect(playback.crossfade.takeAtEnd(), isNull);
+    },
+  );
+
+  test('an audible base handoff stays ahead of newly queued tracks', () async {
+    final order = PlaybackOrder()
+      ..reset([
+        {'id': 1},
+        {'id': 2},
+        {'id': 3},
+      ], 0);
+    final deck = _Deck();
+    late final TrackCrossfade<_Deck> crossfade;
+    CrossfadeSource? nextSource() {
+      final entry = order
+          .next(
+            LoopMode.off,
+            automatic: true,
+            alreadyStarting: crossfade.audibleSource?.slot,
+          )
+          ?.entry;
+      if (entry == null) return null;
+      return (
+        slot: entry.slot,
+        trackId: entry.trackId,
+        path: 'track_${entry.trackId}.mp3',
+      );
+    }
+
+    crossfade = TrackCrossfade(
+      createDeck: () => deck,
+      fileReady: (_) async => true,
+      nextSource: nextSource,
+      onError: (error) => fail('$error'),
+      onReleased: () {},
+    );
+    crossfade.update(const Duration(milliseconds: 1400), 0.8);
+    await _flush();
+    crossfade.update(const Duration(milliseconds: 600), 0.8);
+    await _flush();
+    crossfade.update(const Duration(milliseconds: 430), 0.8);
+    final slot = crossfade.audibleSource!.slot;
+    order.insertNext([
+      {'id': 4},
+      {'id': 5},
+    ], alreadyStarting: slot);
+    crossfade.reconcileNextSource();
+    final handoff = crossfade.takeAtEnd()!;
+    expect(handoff.source, (slot: slot, trackId: 2, path: 'track_2.mp3'));
+    expect(deck.starts, 1);
+    expect(deck.disposals, 0);
+    order.take(
+      order.next(
+        LoopMode.off,
+        automatic: true,
+        alreadyStarting: handoff.source.slot,
+      )!,
+    );
+    expect(order.current!.trackId, 2);
+    for (final id in [4, 5, 3]) {
+      final move = order.next(LoopMode.off, automatic: true)!;
+      order.take(move);
+      expect(order.current!.trackId, id);
+    }
   });
 
   test(

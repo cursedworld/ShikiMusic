@@ -48,6 +48,7 @@ import '../playlist_artwork.dart';
 import '../playlist_tracks.dart';
 import '../player_shortcuts.dart';
 import '../playback_deck.dart';
+import '../playback_order.dart';
 import '../playback_position.dart';
 import '../platform_capabilities.dart';
 import '../mobile_motion.dart';
@@ -63,6 +64,7 @@ import '../widgets/track_updates_dialog.dart';
 import '../widgets/catalog_sync_button.dart';
 import '../widgets/track_selection_bar.dart';
 import '../widgets/mobile_playback_controls.dart';
+import '../widgets/play_next_panel.dart';
 import '../widgets/track_metadata_dialog.dart';
 import '../widgets/playlist_crop_dialog.dart';
 import '../widgets/playlist_name_dialog.dart';
@@ -309,7 +311,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final session = _linuxMediaSession;
     if (session == null || _stateDisposing) return;
     final track = playingIndex >= 0 && playingIndex < playingQueue.length
-        ? playingQueue[playingIndex]
+        ? playingTrack
         : null;
     final artists = [
       for (final artist in track?['artists'] as List? ?? [])
@@ -326,8 +328,7 @@ class MainAppScreenState extends State<MainAppScreen>
       position: currentPositionNotifier.value,
       playing: isPlaying,
       stopped: _linuxPlaybackStopped,
-      canNext:
-          playingIndex + 1 < playingQueue.length || loopMode != LoopMode.off,
+      canNext: _canPlayNext,
       canPrevious: true,
       shuffled: isShuffled,
       loop: switch (loopMode) {
@@ -344,7 +345,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _syncLinuxMediaSession();
     if (!_mediaSessionActive || _mediaSession == null) return;
     if (playingQueue.isEmpty) return;
-    final track = playingQueue[playingIndex];
+    final track = playingTrack;
     final dur = trackDurations[track['id']];
     // flutter_media_session 2.x has no audioplayers adapter yet.
     // ignore: deprecated_member_use
@@ -392,7 +393,7 @@ class MainAppScreenState extends State<MainAppScreen>
               fms.MediaAction.pause,
               fms.MediaAction.stop,
               fms.MediaAction.seekTo,
-              fms.MediaAction.skipToNext,
+              if (_canPlayNext) fms.MediaAction.skipToNext,
               fms.MediaAction.skipToPrevious,
             },
     );
@@ -476,8 +477,13 @@ class MainAppScreenState extends State<MainAppScreen>
   final ValueNotifier<int> _artistLibraryChanges = ValueNotifier<int>(0);
   bool isLoading = true;
   bool isPlaying = false;
-  List<dynamic> playingQueue = [];
-  int playingIndex = 0;
+  final _playbackOrder = PlaybackOrder();
+  final _playNextChanges = ValueNotifier<int>(0);
+  List<dynamic> get playingQueue => _playbackOrder.baseTracks;
+  int get playingIndex => _playbackOrder.baseIndex;
+  dynamic get playingTrack => _playbackOrder.current?.track;
+  set playingQueue(List<dynamic> value) => _playbackOrder.reset(value, 0);
+  set playingIndex(int value) => _playbackOrder.jumpToBase(value);
   int? playingPlaylistId;
   Future<void> _playlistReorderTail = Future<void>.value();
   int? discordStart;
@@ -490,8 +496,7 @@ class MainAppScreenState extends State<MainAppScreen>
   bool _isMuted = false;
 
   // Shuffle
-  bool isShuffled = false;
-  List<dynamic> _unshuffledQueue = [];
+  bool get isShuffled => _playbackOrder.shuffled;
 
   Timer? backgroundPollingTimer;
   Timer? rpcThrottleTimer;
@@ -754,6 +759,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _videoRevision += 1;
     _lyricsRevision += 1;
     _lyricTiming.dispose();
+    _playNextChanges.dispose();
     _lyricTimingProposals?.close();
     _discordActivityRevision += 1;
     _videoOperation?.cancel();
@@ -1100,9 +1106,9 @@ class MainAppScreenState extends State<MainAppScreen>
           playVideoClipNotifier.value &&
           activeTrackNotifier.value?['id'] == trackId;
       var changed = false;
-      for (var i = 0; i < playingQueue.length; i++) {
-        if (playingQueue[i]['id'] == trackId) {
-          playingQueue[i]['video_file'] = videoUrl;
+      for (final track in _playbackOrder.retainedTracks) {
+        if (track['id'] == trackId) {
+          track['video_file'] = videoUrl;
           changed = true;
         }
       }
@@ -1264,7 +1270,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (primaryUrl != null) return primaryUrl;
     final activeUrl = match(activeTrackNotifier.value);
     if (activeUrl != null) return activeUrl;
-    for (final track in playingQueue) {
+    for (final track in _playbackOrder.retainedTracks) {
       final url = match(track);
       if (url != null) return url;
     }
@@ -1687,8 +1693,7 @@ class MainAppScreenState extends State<MainAppScreen>
   void _syncTaskbarControls() {
     if (_stateDisposing || _taskbarControls == null) return;
     final hasTrack = playingIndex >= 0 && playingIndex < playingQueue.length;
-    final favorite =
-        hasTrack && favs.contains(playingQueue[playingIndex]['id']);
+    final favorite = hasTrack && favs.contains(playingTrack['id']);
     unawaited(
       _taskbarControls!.update(
         hasTrack: hasTrack,
@@ -1713,7 +1718,7 @@ class MainAppScreenState extends State<MainAppScreen>
     }
     switch (action) {
       case 'favorite':
-        await toggleFavorite(playingQueue[playingIndex]['id'] as int);
+        await toggleFavorite(playingTrack['id'] as int);
       case 'previous':
         prevTrack();
       case 'toggle':
@@ -2430,8 +2435,7 @@ class MainAppScreenState extends State<MainAppScreen>
           if (!_stateDisposing &&
               playingIndex >= 0 &&
               playingIndex < playingQueue.length &&
-              DiscordCoverLookup.trackKey(playingQueue[playingIndex]) ==
-                  trackKey) {
+              DiscordCoverLookup.trackKey(playingTrack) == trackKey) {
             updateRPC();
           }
         },
@@ -2442,8 +2446,7 @@ class MainAppScreenState extends State<MainAppScreen>
           if (!_stateDisposing &&
               playingIndex >= 0 &&
               playingIndex < playingQueue.length &&
-              DiscordAnimatedArtwork.albumKey(playingQueue[playingIndex]) ==
-                  albumKey) {
+              DiscordAnimatedArtwork.albumKey(playingTrack) == albumKey) {
             updateRPC();
           }
         },
@@ -2496,12 +2499,9 @@ class MainAppScreenState extends State<MainAppScreen>
       final data = {
         'volume': volume,
         'loopMode': loopMode.index,
-        'playingIndex': playingIndex,
         'playingPlaylistId': playingPlaylistId,
-        'playingQueue': playingQueue,
         'position': currentPositionNotifier.value.inMilliseconds,
-        'isShuffled': isShuffled,
-        'unshuffledQueue': _unshuffledQueue,
+        ..._playbackOrder.snapshot(),
       };
       await atomicFileStore.writeString(f, json.encode(data));
     } catch (e) {
@@ -2529,29 +2529,20 @@ class MainAppScreenState extends State<MainAppScreen>
             savedLoopMode < LoopMode.values.length) {
           loopMode = LoopMode.values[savedLoopMode];
         }
-        if (data['isShuffled'] is bool) {
-          isShuffled = data['isShuffled'] as bool;
-        }
-        if (data['unshuffledQueue'] is List) {
-          _unshuffledQueue = List<dynamic>.from(data['unshuffledQueue']);
-        }
-
         final savedQueue = data['playingQueue'];
         if (revisionBeforeRead != _trackRevision ||
             savedQueue is! List ||
             savedQueue.isEmpty) {
           return;
         }
-        playingQueue = List<dynamic>.from(savedQueue);
+        _playbackOrder.restore(data);
+        if (_playbackOrder.current == null) return;
+        isShuffledNotifier.value = isShuffled;
+        loopModeNotifier.value = loopMode;
         playingPlaylistId = data['playingPlaylistId'] is int
             ? data['playingPlaylistId'] as int
             : null;
-        final savedIndex = data['playingIndex'];
-        playingIndex = savedIndex is int
-            ? savedIndex.clamp(0, playingQueue.length - 1)
-            : 0;
-
-        final targetTrack = playingQueue[playingIndex];
+        final targetTrack = playingTrack;
         final trackRevision = ++_trackRevision;
         _transportRevision += 1;
         _seekRevision += 1;
@@ -2801,23 +2792,13 @@ class MainAppScreenState extends State<MainAppScreen>
       return true;
     }
     final order = List<dynamic>.from(myPlaylists[current]['tracks']);
-    void updateQueue() {
-      if (isShuffled) {
-        _unshuffledQueue = playlistQueueInOrder(_unshuffledQueue, order);
-      } else {
-        final activeId = playingQueue[playingIndex]['id'];
-        playingQueue = playlistQueueInOrder(playingQueue, order);
-        playingIndex = playingQueue.indexWhere((t) => t['id'] == activeId);
-        _crossfade?.cancel(allowRetry: true);
-      }
-    }
-
     if (mounted) {
-      setState(updateQueue);
-      _syncMediaSessionPlayback();
+      setState(() => _playbackOrder.reorderBase(order));
     } else {
-      updateQueue();
+      _playbackOrder.reorderBase(order);
     }
+    _crossfade?.reconcileNextSource();
+    _syncMediaSessionPlayback();
     await _saveState();
     return true;
   }
@@ -2843,8 +2824,7 @@ class MainAppScreenState extends State<MainAppScreen>
     };
     trackSelection.retain(freshById.keys.whereType<int>());
     // Metadata only: keep the current source and loaded lyrics untouched.
-    for (final track in playingQueue) {
-      if (track is! Map) continue;
+    for (final track in _playbackOrder.retainedTracks) {
       final fresh = freshById[track['id']];
       if (fresh == null) continue;
       for (final key in [
@@ -3459,7 +3439,7 @@ class MainAppScreenState extends State<MainAppScreen>
               }
               _applyTracks(updated);
               // Leave current lyrics in place; the versioned LRC is read on next start.
-              for (final queued in playingQueue) {
+              for (final queued in _playbackOrder.retainedTracks) {
                 if (queued['id'] == offer.id) {
                   queued['lyrics'] = track['lyrics'];
                 }
@@ -3614,6 +3594,8 @@ class MainAppScreenState extends State<MainAppScreen>
               : Map<String, dynamic>.from(artist),
           getAllTracks: () => cachedTracks,
           onPlayTrack: (queue, idx) => startPlayback(queue, idx),
+          canPlayNext: () => playingTrack != null,
+          onPlayNext: playTracksNext,
           onToggleFavorite: (id) => toggleFavorite(id),
           onToggleFavorites: (ids) => toggleTrackFavorites(ids),
           getPlaylists: () => {
@@ -3881,7 +3863,10 @@ class MainAppScreenState extends State<MainAppScreen>
               ),
             );
             track['video_file'] = resolvedUrl;
-            for (final item in [...playingQueue, ...cachedTracks]) {
+            for (final item in [
+              ..._playbackOrder.retainedTracks,
+              ...cachedTracks,
+            ]) {
               if (_VideoRequest.from(item).trackId == id) {
                 item['video_file'] = resolvedUrl;
               }
@@ -4093,13 +4078,15 @@ class MainAppScreenState extends State<MainAppScreen>
     if (localPath.isEmpty) return false;
     final protectedTracks = <int>{};
     final protectedArtists = <int>{};
-    for (final track in [...cachedTracks, ...playingQueue]) {
+    final retained = _playbackOrder.retainedTracks.toList();
+    final retainedIds = {for (final track in retained) track['id']};
+    for (final track in [...cachedTracks, ...retained]) {
       if (track is! Map || track['id'] is! int) continue;
       final id = track['id'] as int;
       final localLyrics =
           _trackUpdates?.lyricsFile(id) ?? File('$localPath/track_$id.lrc');
       if (isTrackDownloadComplete(track) ||
-          playingQueue.any((playing) => playing['id'] == id) ||
+          retainedIds.contains(id) ||
           await (_trackUpdates?.videoFile(id) ??
                   File('$localPath/video_$id.mp4'))
               .exists() ||
@@ -4427,24 +4414,119 @@ class MainAppScreenState extends State<MainAppScreen>
     });
     _audioCompleteSubscription = player.onPlayerComplete.listen((_) {
       if (!stillCurrent() || !sourceSettled()) return;
-      final index = _automaticNextIndex();
       final handoff = _crossfade?.takeAtEnd();
-      if (index == null) {
+      final next = _playbackOrder.next(
+        loopMode,
+        automatic: true,
+        alreadyStarting: handoff?.source.slot,
+      );
+      if (next == null) {
         _statistics?.endTrack();
         _stopPlaybackAtQueueEnd();
       } else {
-        _playIndex(index, handoff: handoff);
+        _advancePlayback(next, handoff: handoff);
       }
     });
     if (alreadyPlaying) updater.start();
   }
 
-  int? _automaticNextIndex() {
-    if (playingIndex < 0 || playingIndex >= playingQueue.length) return null;
-    if (loopMode == LoopMode.one) return playingIndex;
-    if (playingIndex + 1 < playingQueue.length) return playingIndex + 1;
-    return loopMode == LoopMode.list ? 0 : null;
+  int? get _startingQueueSlot => _crossfade?.audibleSource?.slot;
+
+  bool get _canPlayNext =>
+      _playbackOrder.next(loopMode, automatic: false) != null;
+
+  void _notifyPlayNext() {
+    if (!_stateDisposing) _playNextChanges.value++;
   }
+
+  void _savePlayNextEdit() {
+    _crossfade?.reconcileNextSource();
+    _notifyPlayNext();
+    _syncMediaSessionPlayback();
+    unawaited(_saveState());
+  }
+
+  void playTracksNext(List<dynamic> tracks) {
+    if (!mounted || _stateDisposing) return;
+    final added = _playbackOrder.insertNext(
+      tracks,
+      alreadyStarting: _startingQueueSlot,
+    );
+    if (added == 0) return;
+    _savePlayNextEdit();
+    _playNextNotice(tr('play_next_added').replaceFirst('{count}', '$added'));
+  }
+
+  void _playNextNotice(String text) {
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text(text), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  void showPlayNext() {
+    if (_playbackOrder.current == null || _stateDisposing) return;
+    final panel = ValueListenableBuilder<int>(
+      valueListenable: _playNextChanges,
+      builder: (context, revision, child) => PlayNextPanel(
+        playing: playingTrack as Map?,
+        insertions: _playbackOrder.insertions.toList(),
+        startingSlot: _startingQueueSlot,
+        onRemove: (slot) {
+          if (_playbackOrder.removeInsertion(
+            slot,
+            alreadyStarting: _startingQueueSlot,
+          )) {
+            _savePlayNextEdit();
+          }
+        },
+        onClear: () {
+          if (_playbackOrder.clearInsertions(
+            alreadyStarting: _startingQueueSlot,
+          )) {
+            _savePlayNextEdit();
+          }
+        },
+      ),
+    );
+    if (MediaQuery.sizeOf(context).width < 800) {
+      unawaited(
+        showModalBottomSheet<void>(
+          context: context,
+          useSafeArea: true,
+          isScrollControlled: true,
+          backgroundColor: const Color(0xFF242124),
+          builder: (context) => panel,
+        ),
+      );
+    } else {
+      unawaited(
+        showDialog<void>(
+          context: context,
+          builder: (context) =>
+              Dialog(backgroundColor: const Color(0xFF242124), child: panel),
+        ),
+      );
+    }
+  }
+
+  Widget _buildPlayNextButton() => ValueListenableBuilder<int>(
+    valueListenable: _playNextChanges,
+    builder: (context, revision, child) {
+      final count = _playbackOrder.insertionCount;
+      return PlaybackShortcutScope(
+        child: IconButton(
+          key: const ValueKey('open_play_next'),
+          tooltip: tr('play_next_queue'),
+          onPressed: showPlayNext,
+          icon: Badge.count(
+            count: count,
+            isLabelVisible: count > 0,
+            child: const Icon(Icons.queue_music_rounded, color: Colors.white70),
+          ),
+        ),
+      );
+    },
+  );
 
   CrossfadeSource? _nextCrossfadeSource() {
     if (_stateDisposing ||
@@ -4458,10 +4540,11 @@ class MainAppScreenState extends State<MainAppScreen>
         (Platform.isAndroid && _androidPlaybackFocus?.available != true)) {
       return null;
     }
-    final index = _automaticNextIndex();
-    if (index == null) return null;
-    final next = playingQueue[index];
-    final nextId = next['id'] as int;
+    final next = _playbackOrder
+        .next(loopMode, automatic: true, alreadyStarting: _startingQueueSlot)
+        ?.entry;
+    if (next == null) return null;
+    final nextId = next.trackId;
     if (nextId == _audioSourceTrackId ||
         downloadQueue.contains(nextId) ||
         _pendingDownloadRemovals.containsKey(nextId)) {
@@ -4472,10 +4555,14 @@ class MainAppScreenState extends State<MainAppScreen>
         (_videoController != null ||
             _initializingVideoController != null ||
             _VideoRequest.from(activeTrackNotifier.value).videoUrl != null ||
-            _VideoRequest.from(next).videoUrl != null)) {
+            _VideoRequest.from(next.track).videoUrl != null)) {
       return null;
     }
-    return (trackId: nextId, path: _localAudioFile(nextId).path);
+    return (
+      slot: next.slot,
+      trackId: nextId,
+      path: _localAudioFile(nextId).path,
+    );
   }
 
   void _configureFadeTail() {
@@ -4496,6 +4583,7 @@ class MainAppScreenState extends State<MainAppScreen>
       nextSource: _nextCrossfadeSource,
       onError: _logAudioError,
       onReleased: () => unawaited(_drainDownloadRemovals()),
+      onAudibleChanged: _notifyPlayNext,
     )).update(remaining, userVolume);
   }
 
@@ -4588,21 +4676,25 @@ class MainAppScreenState extends State<MainAppScreen>
     if (isPremium) playCount++;
 
     setState(() {
-      playingQueue = List.from(targetQueue);
-      playingIndex = index;
+      _playbackOrder.reset(targetQueue, index);
       playingPlaylistId = playlistId;
     });
-    // Reset shuffle when starting fresh from a list tap
-    isShuffled = false;
-    _unshuffledQueue = [];
-
-    final targetTrack = playingQueue[playingIndex];
-    _activateTrackForPlayback(targetTrack);
+    isShuffledNotifier.value = false;
+    if (playingTrack != null) _activateTrackForPlayback(playingTrack);
   }
 
   void pauseTrack() {
     if (playingQueue.isEmpty) return;
     final shouldPlay = !isPlaying;
+    final entry = _playbackOrder.current;
+    if (shouldPlay &&
+        entry != null &&
+        entry.inserted &&
+        (_settledTrackRevision != _trackRevision ||
+            _audioSourceTrackId != entry.trackId)) {
+      _activateTrackForPlayback(entry.track);
+      return;
+    }
     final revision = ++_transportRevision;
     if (!shouldPlay) {
       _crossfade?.cancel();
@@ -4656,51 +4748,78 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void nextTrack() {
-    if (playingQueue.isEmpty) return;
-    if (playingIndex < playingQueue.length - 1) {
-      _playIndex(playingIndex + 1);
+    if (_playbackOrder.current == null) return;
+    final next = _playbackOrder.next(loopMode, automatic: false);
+    if (next != null) {
+      _advancePlayback(next);
     } else {
-      if (loopMode == LoopMode.list || loopMode == LoopMode.one) {
-        _playIndex(0);
-      } else {
-        _stopPlaybackAtQueueEnd();
-      }
+      _stopPlaybackAtQueueEnd();
     }
   }
 
   void prevTrack() {
     if (playingQueue.isEmpty) return;
-    if (currentPositionNotifier.value.inSeconds > 3) {
+    if (currentPositionNotifier.value > const Duration(seconds: 3)) {
+      seekTo(Duration.zero);
+      return;
+    }
+    final previous = _playbackOrder.previous(loopMode);
+    if (previous == null) {
       seekTo(Duration.zero);
     } else {
-      if (playingIndex > 0) {
-        _playIndex(playingIndex - 1);
-      } else {
-        if (loopMode == LoopMode.list || loopMode == LoopMode.one) {
-          _playIndex(playingQueue.length - 1);
-        } else {
-          seekTo(Duration.zero);
-        }
-      }
+      _activateTrackForPlayback(previous.track);
     }
   }
 
-  /// Internal: play a specific index within the *current* queue (preserves
-  /// shuffle state).
-  void _playIndex(int index, {CrossfadeHandoff<PlaybackDeck>? handoff}) {
+  /// Benchmark control: jump directly to a slot in the base list.
+  void _playIndex(int index) {
     if (playingQueue.isEmpty || index < 0 || index >= playingQueue.length) {
       return;
     }
+    _playbackOrder.jumpToBase(index);
+    _activateTrackForPlayback(playingTrack);
+  }
 
-    setState(() => playingIndex = index);
+  void _advancePlayback(
+    PlaybackMove move, {
+    CrossfadeHandoff<PlaybackDeck>? handoff,
+  }) {
+    _playbackOrder.take(move);
+    _activateTrackForPlayback(move.entry.track, handoff: handoff);
+  }
 
-    final targetTrack = playingQueue[playingIndex];
-    _activateTrackForPlayback(targetTrack, handoff: handoff);
+  bool _skipUnavailableInsertion(
+    PlaybackEntry? entry,
+    int trackRevision,
+    int transportRevision,
+  ) {
+    if (entry == null ||
+        !mounted ||
+        !_isCurrentTrackRevision(trackRevision) ||
+        transportRevision != _transportRevision ||
+        !_playbackOrder.discardFailedInsertion(entry)) {
+      return false;
+    }
+    _playNextNotice(
+      tr(
+        'play_next_unavailable',
+      ).replaceFirst('{title}', entry.track['title']?.toString() ?? ''),
+    );
+    // Do not repeat a failed occurrence, even with repeat-one enabled.
+    final next = _playbackOrder.next(loopMode, automatic: false);
+    if (next != null) {
+      _advancePlayback(next);
+    } else {
+      // The prior track is still the session anchor; prepare it paused.
+      _activateTrackForPlayback(playingTrack, play: false);
+    }
+    return true;
   }
 
   void _activateTrackForPlayback(
     dynamic targetTrack, {
     CrossfadeHandoff<PlaybackDeck>? handoff,
+    bool play = true,
   }) {
     _crossfade?.cancel(allowRetry: true);
     _trackFade.beginTrack();
@@ -4726,13 +4845,14 @@ class MainAppScreenState extends State<MainAppScreen>
       _statistics?.setPlaying(true);
       _statistics?.position(position);
     }
-    _setPlaying(true);
+    _setPlaying(play);
     discordStart = handoff == null
         ? null
         : DateTime.now().millisecondsSinceEpoch - position.inMilliseconds;
     currentPositionNotifier.value = position;
     fullDurationNotifier.value = handoff?.duration ?? Duration.zero;
     activeTrackNotifier.value = targetTrack;
+    _notifyPlayNext();
     unawaited(_ensureCoverDownloaded(targetTrack));
 
     if (isAudioServiceActive) {
@@ -4758,12 +4878,14 @@ class MainAppScreenState extends State<MainAppScreen>
       updateRPC(force: true);
       return;
     }
+    final entry = _playbackOrder.current;
     unawaited(
       _enqueueAudioWork(
         () => _playTrackSource(
           targetTrack: targetTrack,
           trackRevision: trackRevision,
           transportRevision: transportRevision,
+          entry: entry,
         ),
       ),
     );
@@ -4773,6 +4895,7 @@ class MainAppScreenState extends State<MainAppScreen>
     required dynamic targetTrack,
     required int trackRevision,
     required int transportRevision,
+    required PlaybackEntry? entry,
   }) async {
     if (!_isCurrentTrackRevision(trackRevision)) return;
     final trackId = targetTrack['id'] as int;
@@ -4805,13 +4928,28 @@ class MainAppScreenState extends State<MainAppScreen>
         );
         if (!_isCurrentTrackRevision(trackRevision)) return;
       }
+      var audioUrl = targetTrack['audio_file']?.toString() ?? '';
+      if (!hasLocalTrack && entry?.inserted == true) {
+        final resolved = Uri.tryParse(_resolveAbsoluteUrl(audioUrl));
+        if (audioUrl.trim().isEmpty ||
+            resolved == null ||
+            !resolved.hasAuthority ||
+            (resolved.scheme != 'http' && resolved.scheme != 'https')) {
+          throw StateError('No playable source for queued track');
+        }
+        audioUrl = resolved.toString();
+      }
       await _audioDeck.setTrackSource(
         localAudio == null
-            ? UrlSource(targetTrack['audio_file'].toString())
+            ? UrlSource(audioUrl)
             : DeviceFileSource(localAudio.path),
         localAudio: localAudio,
       );
-    } catch (_) {
+    } catch (error) {
+      if (_skipUnavailableInsertion(entry, trackRevision, transportRevision)) {
+        _logAudioError(error);
+        return;
+      }
       if (_isCurrentTrackRevision(trackRevision) && _trackFade.enabled) {
         unawaited(_trackFade.reset());
       }
@@ -4829,6 +4967,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _settledTrackRevision = trackRevision;
     _prepareLyricTiming();
     unawaited(_drainDownloadRemovals());
+    var resuming = false;
     try {
       final duration = await audioPlayer.getDuration();
       if (!_isCurrentTrackRevision(trackRevision)) return;
@@ -4855,11 +4994,17 @@ class MainAppScreenState extends State<MainAppScreen>
         }
       }
       if (isPlaying) {
+        resuming = true;
         await audioPlayer.resume();
       } else {
         await audioPlayer.pause();
       }
-    } catch (_) {
+    } catch (error) {
+      if (resuming &&
+          _skipUnavailableInsertion(entry, trackRevision, transportRevision)) {
+        _logAudioError(error);
+        return;
+      }
       if (_isCurrentTrackRevision(trackRevision) && _trackFade.enabled) {
         unawaited(_trackFade.reset());
       }
@@ -4964,28 +5109,8 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void toggleShuffle() {
     if (playingQueue.isEmpty) return;
-    _crossfade?.cancel(allowRetry: true);
-    setState(() {
-      if (isShuffled) {
-        // Restore original order
-        final currentTrack = playingQueue[playingIndex];
-        playingQueue = List.from(_unshuffledQueue);
-        playingIndex = playingQueue.indexWhere(
-          (t) => t['id'] == currentTrack['id'],
-        );
-        if (playingIndex < 0) playingIndex = 0;
-        isShuffled = false;
-      } else {
-        // Save original, then shuffle keeping current track at front
-        _unshuffledQueue = List.from(playingQueue);
-        final currentTrack = playingQueue[playingIndex];
-        playingQueue.removeAt(playingIndex);
-        playingQueue.shuffle(Random());
-        playingQueue.insert(0, currentTrack);
-        playingIndex = 0;
-        isShuffled = true;
-      }
-    });
+    setState(_playbackOrder.toggleShuffle);
+    _crossfade?.reconcileNextSource();
     isShuffledNotifier.value = isShuffled;
     _syncMediaSessionPlayback();
     _saveState();
@@ -5324,7 +5449,7 @@ class MainAppScreenState extends State<MainAppScreen>
         return;
       }
       lastRpcTime = DateTime.now();
-      final trackData = playingQueue[playingIndex];
+      final trackData = playingTrack;
       final title = trackData['title'];
       final art = trackData['album']['artist']['name'];
 
@@ -5805,8 +5930,8 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Widget buildDownloadButton() {
     if (playingQueue.isEmpty) return const SizedBox(width: 24);
-    final trackId = playingQueue[playingIndex]['id'];
-    final isDownloaded = isTrackDownloadComplete(playingQueue[playingIndex]);
+    final trackId = playingTrack['id'];
+    final isDownloaded = isTrackDownloadComplete(playingTrack);
     final isDownloading = downloadQueue.contains(trackId);
 
     if (isDownloading) {
@@ -5823,12 +5948,12 @@ class MainAppScreenState extends State<MainAppScreen>
           size: 24,
         ),
         tooltip: tr('delete_downloaded_track'),
-        onPressed: () => deleteDownloadedTrack(playingQueue[playingIndex]),
+        onPressed: () => deleteDownloadedTrack(playingTrack),
       );
     } else {
       return IconButton(
         icon: const Icon(Icons.download, color: Colors.white54, size: 24),
-        onPressed: () => downloadMediaFile(playingQueue[playingIndex]),
+        onPressed: () => downloadMediaFile(playingTrack),
       );
     }
   }
@@ -6331,11 +6456,11 @@ class MainAppScreenState extends State<MainAppScreen>
   // ── Mobile mini-player ───────────────────────────────────────────────────
 
   Widget _mobilePlaybackControls() => MobilePlaybackControls(
-    isFavorite: favs.contains(playingQueue[playingIndex]['id']),
+    isFavorite: favs.contains(playingTrack['id']),
     isPlaying: isPlaying,
     loopMode: loopMode,
     isShuffled: isShuffled,
-    onFavorite: () => toggleFavorite(playingQueue[playingIndex]['id']),
+    onFavorite: () => toggleFavorite(playingTrack['id']),
     onPrevious: prevTrack,
     onPlayPause: pauseTrack,
     onNext: nextTrack,
@@ -6375,10 +6500,10 @@ class MainAppScreenState extends State<MainAppScreen>
                             ? Duration.zero
                             : mobileControlTransition,
                         child: Image(
-                          key: ValueKey(playingQueue[playingIndex]['id']),
+                          key: ValueKey(playingTrack['id']),
                           image: coverThumbnail(
                             context,
-                            getPictureProvider(playingQueue[playingIndex]),
+                            getPictureProvider(playingTrack),
                             52,
                           ),
                           width: 52,
@@ -6394,7 +6519,7 @@ class MainAppScreenState extends State<MainAppScreen>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            playingQueue[playingIndex]['title'],
+                            playingTrack['title'],
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.w600,
@@ -6405,7 +6530,7 @@ class MainAppScreenState extends State<MainAppScreen>
                           ),
                           const SizedBox(height: 3),
                           Text(
-                            trackArtistLabel(playingQueue[playingIndex]),
+                            trackArtistLabel(playingTrack),
                             style: const TextStyle(
                               color: Colors.white54,
                               fontSize: 13,
@@ -6416,10 +6541,11 @@ class MainAppScreenState extends State<MainAppScreen>
                         ],
                       ),
                     ),
-                    if (constraints.maxWidth >= 460) _mobilePlaybackControls(),
+                    _buildPlayNextButton(),
+                    if (constraints.maxWidth >= 500) _mobilePlaybackControls(),
                   ],
                 ),
-                if (constraints.maxWidth < 460)
+                if (constraints.maxWidth < 500)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: _mobilePlaybackControls(),
@@ -6551,9 +6677,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                 : Image(
                                     image: coverThumbnail(
                                       context,
-                                      getPictureProvider(
-                                        playingQueue[playingIndex],
-                                      ),
+                                      getPictureProvider(playingTrack),
                                       240,
                                     ),
                                     fit: BoxFit.cover,
@@ -6566,7 +6690,7 @@ class MainAppScreenState extends State<MainAppScreen>
                 ),
                 const SizedBox(height: 30),
                 Text(
-                  playingQueue[playingIndex]['title'],
+                  playingTrack['title'],
                   style: const TextStyle(
                     fontSize: 26,
                     fontWeight: FontWeight.bold,
@@ -6578,7 +6702,7 @@ class MainAppScreenState extends State<MainAppScreen>
                 ),
                 const SizedBox(height: 5),
                 Text(
-                  trackArtistLabel(playingQueue[playingIndex]),
+                  trackArtistLabel(playingTrack),
                   style: const TextStyle(fontSize: 16, color: Colors.white54),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -6630,6 +6754,7 @@ class MainAppScreenState extends State<MainAppScreen>
                         onChangeEnd: (v) => _saveState(),
                       ),
                     ),
+                    _buildPlayNextButton(),
                   ],
                 ),
                 ValueListenableBuilder<Duration>(
@@ -6834,6 +6959,9 @@ class MainAppScreenState extends State<MainAppScreen>
     final playlistId = navId >= 3 && navId - 3 < myPlaylists.length
         ? myPlaylists[navId - 3]['id'] as int
         : null;
+    final trackMenuPlaylists = playlistId == null
+        ? {for (final p in myPlaylists) p['id'] as int: p['name'].toString()}
+        : const <int, String>{};
     final visibleTrackIds = playlistId == null
         ? const <int>[]
         : [for (final track in finalList) track['id'] as int];
@@ -6853,100 +6981,44 @@ class MainAppScreenState extends State<MainAppScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            isMobile
-                ? Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              headText,
-                              style: const TextStyle(
-                                fontSize: 26,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                          _buildTrackUpdatesButton(),
-                          _buildCatalogSyncButton(),
-                        ],
-                      ),
-                      if (finalList.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            _getPlaylistStats(finalList),
-                            style: const TextStyle(
-                              color: Colors.white38,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ),
-                      const SizedBox(height: 15),
-                      if (finalList.isNotEmpty)
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            icon: const Icon(
-                              Icons.download_for_offline,
-                              size: 18,
-                            ),
-                            label: Text(
-                              tr(
-                                selectedTracks.isEmpty
-                                    ? 'download_all'
-                                    : 'download_selected_tracks',
-                              ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.white10,
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                            ),
-                            onPressed: _bulkDownloadActive
-                                ? null
-                                : () => downloadAllTracks(downloadTargets),
-                          ),
-                        ),
-                      const SizedBox(height: 10),
-                      buildSearchField(isMobile: true),
-                    ],
-                  )
-                : Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            headText,
-                            style: const TextStyle(
-                              fontSize: 32,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                          if (finalList.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
+            LayoutBuilder(
+              builder: (context, constraints) =>
+                  isMobile || constraints.maxWidth < 620
+                  ? Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
                               child: Text(
-                                _getPlaylistStats(finalList),
+                                headText,
                                 style: const TextStyle(
-                                  color: Colors.white38,
-                                  fontSize: 13,
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
                                 ),
                               ),
                             ),
-                        ],
-                      ),
-                      Row(
-                        children: [
-                          _buildTrackUpdatesButton(),
-                          _buildCatalogSyncButton(),
-                          if (finalList.isNotEmpty)
-                            ElevatedButton.icon(
+                            _buildTrackUpdatesButton(),
+                            _buildCatalogSyncButton(),
+                          ],
+                        ),
+                        if (finalList.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              _getPlaylistStats(finalList),
+                              style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 15),
+                        if (finalList.isNotEmpty)
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
                               icon: const Icon(
                                 Icons.download_for_offline,
                                 size: 18,
@@ -6967,16 +7039,83 @@ class MainAppScreenState extends State<MainAppScreen>
                                   ? null
                                   : () => downloadAllTracks(downloadTargets),
                             ),
-                          const SizedBox(width: 15),
-                          buildSearchField(),
-                        ],
-                      ),
-                    ],
-                  ),
+                          ),
+                        const SizedBox(height: 10),
+                        buildSearchField(isMobile: true),
+                      ],
+                    )
+                  : Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                headText,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 32,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              if (finalList.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(
+                                    _getPlaylistStats(finalList),
+                                    style: const TextStyle(
+                                      color: Colors.white38,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Row(
+                          children: [
+                            _buildTrackUpdatesButton(),
+                            _buildCatalogSyncButton(),
+                            if (finalList.isNotEmpty)
+                              ElevatedButton.icon(
+                                icon: const Icon(
+                                  Icons.download_for_offline,
+                                  size: 18,
+                                ),
+                                label: Text(
+                                  tr(
+                                    selectedTracks.isEmpty
+                                        ? 'download_all'
+                                        : 'download_selected_tracks',
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.white10,
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                ),
+                                onPressed: _bulkDownloadActive
+                                    ? null
+                                    : () => downloadAllTracks(downloadTargets),
+                              ),
+                            const SizedBox(width: 15),
+                            buildSearchField(),
+                          ],
+                        ),
+                      ],
+                    ),
+            ),
             const SizedBox(height: 20),
             if (selectedTracks.isNotEmpty)
               TrackSelectionBar(
                 count: selectedTracks.length,
+                onPlayNext: playingTrack == null
+                    ? null
+                    : () => playTracksNext(selectedTracks),
                 onClear: clearTrackSelection,
                 onCreatePlaylist: () => showCreatePlaylistDialog(
                   initialTrackIds: selectedTracks.map(
@@ -7080,8 +7219,7 @@ class MainAppScreenState extends State<MainAppScreen>
                         final isActiveTrack =
                             (playingQueue.isNotEmpty &&
                                 playingIndex < playingQueue.length)
-                            ? currentObject['id'] ==
-                                  playingQueue[playingIndex]['id']
+                            ? currentObject['id'] == playingTrack['id']
                             : false;
                         final isDownloaded = isTrackDownloadComplete(
                           currentObject,
@@ -7208,16 +7346,23 @@ class MainAppScreenState extends State<MainAppScreen>
                                           remove: true,
                                         ),
                                       ),
-                                    )
-                                  else if (myPlaylists.isNotEmpty)
-                                    PopupMenuButton<int>(
-                                      key: ValueKey('track_playlist_$trackId'),
-                                      icon: const Icon(
-                                        Icons.add_circle_outline,
-                                        color: Colors.white54,
+                                    ),
+                                  if (playingTrack != null ||
+                                      (playlistId == null &&
+                                          myPlaylists.isNotEmpty))
+                                    TrackPlayNextMenu(
+                                      key: ValueKey(
+                                        playlistId == null &&
+                                                myPlaylists.isNotEmpty
+                                            ? 'track_playlist_$trackId'
+                                            : 'track_play_next_$trackId',
                                       ),
-                                      color: const Color(0xFF1A0000),
-                                      onSelected: (pId) => unawaited(
+                                      onPlayNext: playingTrack == null
+                                          ? null
+                                          : () => playTracksNext(actionTracks),
+                                      playNextCount: actionTracks.length,
+                                      playlists: trackMenuPlaylists,
+                                      onPlaylistSelected: (pId) => unawaited(
                                         changePlaylistTracks(
                                           pId,
                                           actionTracks.map(
@@ -7225,19 +7370,6 @@ class MainAppScreenState extends State<MainAppScreen>
                                           ),
                                         ),
                                       ),
-                                      itemBuilder: (ctx) => myPlaylists
-                                          .map(
-                                            (p) => PopupMenuItem<int>(
-                                              value: p['id'],
-                                              child: Text(
-                                                p['name'],
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                ),
-                                              ),
-                                            ),
-                                          )
-                                          .toList(),
                                     ),
                                   IconButton(
                                     key: ValueKey('track_favorite_$trackId'),
@@ -7297,16 +7429,21 @@ class MainAppScreenState extends State<MainAppScreen>
                                       onPressed: () =>
                                           downloadMediaFile(currentObject),
                                     ),
-                                  const SizedBox(width: 15),
-                                  isActiveTrack && isPlaying
-                                      ? const Icon(
-                                          Icons.graphic_eq,
-                                          color: Colors.redAccent,
-                                        )
-                                      : const Icon(
-                                          Icons.play_arrow,
-                                          color: Colors.white54,
-                                        ),
+                                  if (isActiveTrack && isPlaying) ...[
+                                    const SizedBox(width: 15),
+                                    const Icon(
+                                      Icons.graphic_eq,
+                                      color: Colors.redAccent,
+                                    ),
+                                  ] else if (!isMobile ||
+                                      playlistId == null ||
+                                      playingTrack == null) ...[
+                                    const SizedBox(width: 15),
+                                    const Icon(
+                                      Icons.play_arrow,
+                                      color: Colors.white54,
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),

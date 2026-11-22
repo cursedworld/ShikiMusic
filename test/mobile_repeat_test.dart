@@ -38,7 +38,7 @@ void main() {
     await loader.load();
   });
 
-  for (final width in [320.0, 375.0, 460.0, 768.0]) {
+  for (final width in [320.0, 375.0, 460.0, 500.0, 768.0]) {
     testWidgets(
       'repeat fits mini-player width $width and cycles actual playback modes',
       (tester) async {
@@ -94,7 +94,15 @@ void main() {
         await tester.pumpAndSettle();
         final repeat = find.byKey(const ValueKey('mobile_repeat'));
         expect(repeat, findsOneWidget);
-        expect(find.byType(IconButton), findsNWidgets(6));
+        expect(
+          find.descendant(
+            of: find.byType(MobilePlaybackControls),
+            matching: find.byType(IconButton),
+          ),
+          findsNWidgets(6),
+        );
+        final queue = find.byKey(const ValueKey('open_play_next'));
+        expect(queue, findsOneWidget);
         for (final button in find.byType(IconButton).evaluate()) {
           final size = tester.getSize(find.byWidget(button.widget));
           expect(size.width, greaterThanOrEqualTo(44));
@@ -103,7 +111,8 @@ void main() {
         final title = tester.getRect(
           find.text('Длинное название музыкального трека'),
         );
-        if (width < 460) {
+        expect(tester.getTopLeft(queue).dy, lessThan(title.bottom));
+        if (width < 500) {
           expect(tester.getTopLeft(repeat).dy, greaterThan(title.bottom));
         }
         for (final mode in [LoopMode.list, LoopMode.one, LoopMode.off]) {
