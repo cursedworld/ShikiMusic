@@ -112,6 +112,26 @@ void main() {
     expect(changedAudio.advanceMilliseconds, 0);
   });
 
+  test(
+    'an accepted server offset is not added to the old local correction',
+    () async {
+      final original = session()..preview(300);
+      expect(original.savedCorrection, isNull);
+      final before = times();
+      await original.savePreview();
+      expect(original.savedCorrection?.advanceMilliseconds, 300);
+      final acceptedText = lrc.replaceFirst('[offset:+200]', '[offset:+500]');
+      final updated = session(contents: acceptedText);
+      await updated.restore();
+      expect(updated.savedCorrection, isNull);
+      expect(updated.advanceMilliseconds, 0);
+      expect(
+        parseLrcString(acceptedText).map((line) => line.time.inMilliseconds),
+        before,
+      );
+    },
+  );
+
   test('a late restore cannot take over after a track change', () async {
     await (session()..preview(100)).savePreview();
     published = [];

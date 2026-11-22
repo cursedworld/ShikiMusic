@@ -19,6 +19,8 @@ tested on Arch Linux.
 - Synced LRC lyrics and a dedicated full-screen lyrics view. For downloaded
   tracks, use the control in the lyrics header to adjust timing. The adjustment
   stays on your device and leaves the original lyrics untouched.
+  On a server that supports suggestions, **Suggest to server** saves the
+  adjustment locally and sends it for review. **Done** sends nothing.
 - Offline search by title, artist, and phrases from saved lyrics.
   Lyric words must be consecutive and in the same order; matching ignores
   case, punctuation, and the Russian ё/е distinction.

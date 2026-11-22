@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../globals.dart' show languageNotifier;
 import '../localization.dart';
 import '../lyric_timing.dart';
+import '../lyric_timing_proposals.dart';
 
 /// Sits above the scrolling lyrics so the adjustment can be heard and seen.
 class LyricTimingControls extends StatelessWidget {
@@ -14,6 +15,9 @@ class LyricTimingControls extends StatelessWidget {
     required this.onAdjust,
     required this.onCancel,
     required this.onSave,
+    this.onPropose,
+    this.proposing = false,
+    this.proposalResult,
   });
 
   final int advanceMilliseconds;
@@ -22,6 +26,9 @@ class LyricTimingControls extends StatelessWidget {
   final ValueChanged<int> onAdjust;
   final VoidCallback onCancel;
   final VoidCallback onSave;
+  final VoidCallback? onPropose;
+  final bool proposing;
+  final LyricTimingProposalResult? proposalResult;
 
   String get _readout {
     if (advanceMilliseconds == 0) return tr('lyric_timing_no_offset');
@@ -34,10 +41,33 @@ class LyricTimingControls extends StatelessWidget {
     ).replaceFirst('{seconds}', seconds);
   }
 
+  String? get _proposalLabel => switch (proposalResult) {
+    null => proposing ? tr('lyric_timing_sending') : null,
+    LyricTimingProposalResult.pending => tr('lyric_timing_proposal_pending'),
+    LyricTimingProposalResult.accepted => tr('lyric_timing_proposal_accepted'),
+    LyricTimingProposalResult.rejected => tr('lyric_timing_proposal_rejected'),
+    LyricTimingProposalResult.versionConflict => tr(
+      'lyric_timing_proposal_conflict',
+    ),
+    LyricTimingProposalResult.unavailable => tr(
+      'lyric_timing_proposal_offline',
+    ),
+    LyricTimingProposalResult.rateLimited => tr('lyric_timing_proposal_limit'),
+    LyricTimingProposalResult.failed => tr('lyric_timing_proposal_failed'),
+  };
+
+  bool get _proposalHandled => switch (proposalResult) {
+    LyricTimingProposalResult.pending ||
+    LyricTimingProposalResult.accepted ||
+    LyricTimingProposalResult.rejected => true,
+    _ => false,
+  };
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final actionStyle = TextButton.styleFrom(foregroundColor: Colors.white70);
+    final proposalLabel = _proposalLabel;
     return Material(
       color: const Color(0xFF242124),
       shape: RoundedRectangleBorder(
@@ -124,6 +154,35 @@ class LyricTimingControls extends StatelessWidget {
                 ),
               ],
             ),
+            if (onPropose != null &&
+                (advanceMilliseconds != 0 || proposing)) ...[
+              const Divider(height: 5, color: Colors.white12),
+              if (proposalLabel != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 10, 8, 6),
+                  child: Semantics(
+                    liveRegion: true,
+                    child: Text(
+                      proposalLabel,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: Colors.white70,
+                      ),
+                    ),
+                  ),
+                ),
+              if (!_proposalHandled && !proposing)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Tooltip(
+                    message: tr('lyric_timing_propose_hint'),
+                    child: TextButton(
+                      style: actionStyle,
+                      onPressed: saving ? null : onPropose,
+                      child: Text(tr('lyric_timing_propose')),
+                    ),
+                  ),
+                ),
+            ],
           ],
         ),
       ),

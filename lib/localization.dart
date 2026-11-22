@@ -938,6 +938,60 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Could not save. Try again.',
     'ja': '保存できませんでした。もう一度お試しください。',
   },
+  'lyric_timing_propose': {
+    'ru': 'Предложить серверу',
+    'en': 'Suggest to server',
+    'ja': 'サーバーに提案',
+  },
+  'lyric_timing_propose_hint': {
+    'ru': 'Сохранить на устройстве и отправить на проверку',
+    'en': 'Save on this device and send for review',
+    'ja': '端末に保存して確認用に送信します',
+  },
+  'lyric_timing_sending': {
+    'ru': 'Отправляем на проверку…',
+    'en': 'Sending for review…',
+    'ja': '送信中…',
+  },
+  'lyric_timing_proposal_pending': {
+    'ru': 'Поправка ждёт проверки.',
+    'en': 'Suggestion awaiting review.',
+    'ja': '提案は確認待ちです。',
+  },
+  'lyric_timing_proposal_accepted': {
+    'ru': 'Эту поправку уже приняли.',
+    'en': 'This suggestion was already accepted.',
+    'ja': 'この提案は承認済みです。',
+  },
+  'lyric_timing_proposal_rejected': {
+    'ru': 'Эту поправку отклонили. На устройстве она сохранена.',
+    'en': 'This suggestion was declined. The local adjustment is still saved.',
+    'ja': '提案は却下されました。端末の調整は保存されています。',
+  },
+  'lyric_timing_proposal_conflict': {
+    'ru':
+        'На сервере другая версия записи или текста. Поправка сохранена на устройстве.',
+    'en':
+        'The server has different audio or lyrics. The local adjustment is saved.',
+    'ja': 'サーバーの音源または歌詞のバージョンが異なります。調整は端末に保存済みです。',
+  },
+  'lyric_timing_proposal_offline': {
+    'ru': 'Сервер недоступен. Поправка сохранена на устройстве.',
+    'en': 'The server is unavailable. The local adjustment is saved.',
+    'ja': 'サーバーに接続できません。調整は端末に保存済みです。',
+  },
+  'lyric_timing_proposal_limit': {
+    'ru':
+        'Сервер пока не принимает новые предложения. Поправка сохранена на устройстве.',
+    'en':
+        'The server is not taking new suggestions right now. The local adjustment is saved.',
+    'ja': '現在サーバーは新しい提案を受け付けていません。調整は端末に保存済みです。',
+  },
+  'lyric_timing_proposal_failed': {
+    'ru': 'Не удалось отправить. Поправка сохранена на устройстве.',
+    'en': 'Could not send the suggestion. The local adjustment is saved.',
+    'ja': '提案を送信できませんでした。調整は端末に保存済みです。',
+  },
   'play_video_clip': {
     'ru': 'Воспроизводить клип',
     'en': 'Play Video Clip',

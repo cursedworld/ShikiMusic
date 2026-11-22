@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../lyric_timing.dart';
+import '../lyric_timing_proposals.dart';
 import '../music_import.dart';
 import '../player_shortcuts.dart';
 import '../widgets/lyric_timing_controls.dart';
@@ -19,10 +20,12 @@ class PresentationOverlay extends StatefulWidget {
     super.key,
     required this.onSeekRequested,
     this.timing,
+    this.proposals,
   });
 
   final ValueChanged<Duration> onSeekRequested;
   final ValueListenable<LyricTimingSession?>? timing;
+  final LyricTimingProposalClient? proposals;
 
   @override
   State<PresentationOverlay> createState() => _PresentationOverlayState();
@@ -36,6 +39,10 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
   LyricTimingSession? _editing;
   bool _saving = false;
   bool _saveFailed = false;
+  int _editorRevision = 0;
+  bool _supportsProposals = false;
+  bool _proposing = false;
+  LyricTimingProposalResult? _proposalResult;
 
   @override
   void initState() {
@@ -80,6 +87,7 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
         _editing = null;
         _saving = false;
         _saveFailed = false;
+        _resetProposalState();
       }
     });
   }
@@ -88,9 +96,35 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
     if (_editing != null) {
       _cancelTiming();
     } else if (timing.isCurrent) {
-      setState(() => _editing = timing);
+      setState(() {
+        _editing = timing;
+        _resetProposalState();
+      });
+      final proposals = widget.proposals;
+      if (timing.isServerTrack && proposals != null) {
+        final revision = _editorRevision;
+        unawaited(() async {
+          final supported = await proposals.supportsProposals();
+          if (supported && _isEditorCurrent(timing, revision)) {
+            setState(() => _supportsProposals = true);
+          }
+        }());
+      }
     }
   }
+
+  void _resetProposalState() {
+    _editorRevision++;
+    _supportsProposals = false;
+    _proposing = false;
+    _proposalResult = null;
+  }
+
+  bool _isEditorCurrent(LyricTimingSession timing, int revision) =>
+      mounted &&
+      identical(_editing, timing) &&
+      _editorRevision == revision &&
+      timing.isCurrent;
 
   void _cancelTiming() {
     final editing = _editing;
@@ -98,13 +132,17 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
     setState(() {
       _editing = null;
       _saveFailed = false;
+      _resetProposalState();
     });
     editing.cancelPreview();
   }
 
   void _adjustTiming(int advanceMilliseconds) {
     if (_saving) return;
-    setState(() => _saveFailed = false);
+    setState(() {
+      _saveFailed = false;
+      _proposalResult = null;
+    });
     _editing?.preview(advanceMilliseconds);
   }
 
@@ -129,7 +167,56 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
     setState(() {
       _saving = false;
       _saveFailed = failed;
-      if (!failed) _editing = null;
+      if (!failed) {
+        _editing = null;
+        _resetProposalState();
+      }
+    });
+  }
+
+  Future<void> _proposeTiming() async {
+    final editing = _editing;
+    final proposals = widget.proposals;
+    if (_saving ||
+        _proposing ||
+        !_supportsProposals ||
+        proposals == null ||
+        editing == null ||
+        editing.advanceMilliseconds == 0) {
+      return;
+    }
+    final revision = _editorRevision;
+    setState(() {
+      _saving = true;
+      _saveFailed = false;
+      _proposalResult = null;
+    });
+    try {
+      // Sending is explicit. First make the same durable local save as Done.
+      await editing.savePreview();
+    } catch (_) {
+      if (_isEditorCurrent(editing, revision)) {
+        setState(() {
+          _saving = false;
+          _saveFailed = true;
+        });
+      }
+      return;
+    }
+    if (!_isEditorCurrent(editing, revision)) return;
+    final correction = editing.savedCorrection;
+    setState(() {
+      _saving = false;
+      _proposing = correction != null;
+    });
+    if (correction == null) return;
+    final result = await proposals.submit(correction);
+    if (!_isEditorCurrent(editing, revision)) return;
+    setState(() {
+      _proposing = false;
+      if (editing.advanceMilliseconds == correction.advanceMilliseconds) {
+        _proposalResult = result;
+      }
     });
   }
 
@@ -287,6 +374,11 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
                                 onAdjust: _adjustTiming,
                                 onCancel: _cancelTiming,
                                 onSave: _saveTiming,
+                                onPropose: _supportsProposals
+                                    ? _proposeTiming
+                                    : null,
+                                proposing: _proposing,
+                                proposalResult: _proposalResult,
                               ),
                             ),
                           ),

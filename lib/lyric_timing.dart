@@ -14,6 +14,12 @@ const lyricTimingLimit = 10000;
 typedef _AudioStamp = ({int size, DateTime modified, DateTime changed});
 typedef _TimingVersion = ({String audio, String text});
 typedef _Offsets = Map<int, Map<_TimingVersion, int>>;
+typedef LyricTimingCorrection = ({
+  int trackId,
+  String audioSha256,
+  String lrcSha256,
+  int advanceMilliseconds,
+});
 
 /// Captures the file that was opened, not a newer download from the catalog.
 /// The contents are read only when saving or restoring a matching correction.
@@ -186,8 +192,26 @@ class LyricTimingSession {
   int? _preview;
 
   bool get isCurrent => _isCurrent();
+  bool get isServerTrack => _trackId > 0;
   bool get hasPreview => _preview != null;
   int get advanceMilliseconds => _preview ?? _saved;
+
+  LyricTimingCorrection? get savedCorrection {
+    final audio = _audioHash;
+    if (!isCurrent ||
+        !isServerTrack ||
+        hasPreview ||
+        _saved == 0 ||
+        audio == null) {
+      return null;
+    }
+    return (
+      trackId: _trackId,
+      audioSha256: audio,
+      lrcSha256: _lyricsHash,
+      advanceMilliseconds: _saved,
+    );
+  }
 
   Future<String> _audioFingerprint() async =>
       _audioHash ??= await _fingerprintAudio();

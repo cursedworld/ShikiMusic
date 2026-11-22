@@ -34,6 +34,7 @@ import '../globals.dart';
 import '../localization.dart';
 import '../lrc_parser.dart';
 import '../lyric_timing.dart';
+import '../lyric_timing_proposals.dart';
 import '../lyrics_search.dart';
 import '../listening_statistics.dart';
 import '../local_download_remover.dart';
@@ -546,6 +547,7 @@ class MainAppScreenState extends State<MainAppScreen>
   LyricTimingStore? _lyricTimingStore;
   ({String contents, int trackId, int revision})? _pendingTimedLyrics;
   final _lyricTiming = ValueNotifier<LyricTimingSession?>(null);
+  LyricTimingProposalClient? _lyricTimingProposals;
   StreamSubscription<Duration>? _audioDurationSubscription;
   StreamSubscription<Duration>? _audioPositionSubscription;
   StreamSubscription<PlayerState>? _statisticsStateSubscription;
@@ -752,6 +754,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _videoRevision += 1;
     _lyricsRevision += 1;
     _lyricTiming.dispose();
+    _lyricTimingProposals?.close();
     _discordActivityRevision += 1;
     _videoOperation?.cancel();
     _videoOperation = null;
@@ -5453,11 +5456,15 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void showLyricsScreen() {
     if (playingQueue.isEmpty) return;
+    final proposals = _lyricTimingProposals ??= LyricTimingProposalClient();
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) =>
-            PresentationOverlay(onSeekRequested: seekTo, timing: _lyricTiming),
+        builder: (context) => PresentationOverlay(
+          onSeekRequested: seekTo,
+          timing: _lyricTiming,
+          proposals: proposals,
+        ),
       ),
     );
   }
