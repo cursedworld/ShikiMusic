@@ -10,13 +10,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/globals.dart';
 import 'package:shiki/screens/settings_screen.dart';
+import 'package:shiki/track_transition_mode.dart';
 
 void main() {
   late Directory directory;
   late Color oldAccent;
   late String oldLanguage;
   late String? oldBackground;
-  late bool oldVinyl, oldVideo, oldGitHub, oldLyrics, oldFade;
+  late bool oldVinyl, oldVideo, oldGitHub, oldLyrics;
+  late TrackTransitionMode oldMode;
   const capture = bool.fromEnvironment('SHIKI_SETTINGS_SCREENSHOT');
   const fontPath = String.fromEnvironment('SHIKI_TEST_FONT');
   const iconsPath = String.fromEnvironment('SHIKI_TEST_ICONS');
@@ -46,7 +48,7 @@ void main() {
     oldVideo = playVideoClipNotifier.value;
     oldGitHub = discordShowGitHubButtonNotifier.value;
     oldLyrics = discordLyricsStatusNotifier.value;
-    oldFade = smoothTrackTransitionsNotifier.value;
+    oldMode = trackTransitionModeNotifier.value;
     accentColorNotifier.value = themeColors['color_purple']!;
     languageNotifier.value = 'ru';
     customBackgroundNotifier.value = null;
@@ -54,7 +56,7 @@ void main() {
     playVideoClipNotifier.value = true;
     discordShowGitHubButtonNotifier.value = false;
     discordLyricsStatusNotifier.value = true;
-    smoothTrackTransitionsNotifier.value = false;
+    trackTransitionModeNotifier.value = TrackTransitionMode.off;
   });
   tearDown(() async {
     accentColorNotifier.value = oldAccent;
@@ -64,7 +66,7 @@ void main() {
     playVideoClipNotifier.value = oldVideo;
     discordShowGitHubButtonNotifier.value = oldGitHub;
     discordLyricsStatusNotifier.value = oldLyrics;
-    smoothTrackTransitionsNotifier.value = oldFade;
+    trackTransitionModeNotifier.value = oldMode;
     final prefix =
         '${Directory.systemTemp.absolute.path}${Platform.pathSeparator}shiki-settings-layout-';
     if (!directory.absolute.path.startsWith(prefix)) {
@@ -145,15 +147,16 @@ void main() {
       try {
         await show(tester);
         await drive(tester, () => editable(tester));
-        final fade = find.byKey(
-          const ValueKey('smooth_track_transitions_switch'),
-        );
+        final fade = find.byKey(const ValueKey('track_transition_setting'));
         await tester.scrollUntilVisible(
           fade,
           200,
           scrollable: find.byType(Scrollable).first,
         );
-        expect(tester.widget<SwitchListTile>(fade).value, isFalse);
+        expect(
+          find.descendant(of: fade, matching: find.text('Выкл.')),
+          findsOneWidget,
+        );
         if (platform != TargetPlatform.android) {
           await tester.scrollUntilVisible(
             find.byKey(const ValueKey('vinyl_rotation_switch')),
@@ -178,64 +181,78 @@ void main() {
     });
   }
 
-  testWidgets(
-    'smooth transitions save and reload without affecting other toggles',
-    (tester) async {
-      final file = File('${directory.path}/shiki_settings.json');
-      file.writeAsStringSync(jsonEncode({'playVideoClip': true}));
-      final fade = find.byKey(
-        const ValueKey('smooth_track_transitions_switch'),
+  testWidgets('legacy fade migrates; crossfade and off save and reload', (
+    tester,
+  ) async {
+    final file = File('${directory.path}/shiki_settings.json');
+    file.writeAsStringSync(
+      jsonEncode({'playVideoClip': true, 'smoothTrackTransitions': true}),
+    );
+    final fade = find.byKey(const ValueKey('track_transition_setting'));
+
+    Future<void> open() async {
+      await show(tester, width: 320);
+      await drive(tester, () => editable(tester));
+      await tester.scrollUntilVisible(
+        fade,
+        200,
+        scrollable: find.byType(Scrollable).first,
       );
-      expect(smoothTrackTransitionsNotifier.value, isFalse);
+      await tester.ensureVisible(fade);
+      await tester.pumpAndSettle();
+    }
 
-      Future<void> open() async {
-        await show(tester, width: 320);
-        await drive(tester, () => editable(tester));
-        await tester.scrollUntilVisible(
-          fade,
-          200,
-          scrollable: find.byType(Scrollable).first,
+    bool saved(TrackTransitionMode value) {
+      try {
+        final data =
+            jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+        return data['trackTransitionMode'] == value.name &&
+            data['smoothTrackTransitions'] ==
+                (value != TrackTransitionMode.off) &&
+            data['playVideoClip'] == true;
+      } on FileSystemException catch (error) {
+        if (error.osError?.errorCode == 32) return false;
+        rethrow;
+      }
+    }
+
+    Future<void> selectMode(TrackTransitionMode value) async {
+      // Keep the static settings write queue on the real IO zone so it
+      // can also be used after this widget test's fake clock is gone.
+      final row = tester.widget<InkWell>(
+        find.descendant(of: fade, matching: find.byType(InkWell)),
+      );
+      await tester.runAsync(() async {
+        row.onTap!();
+      });
+      await tester.pumpAndSettle();
+      for (final option in TrackTransitionMode.values) {
+        expect(
+          find.byKey(ValueKey('track_transition_option_${option.name}')),
+          findsOneWidget,
         );
-        await tester.ensureVisible(fade);
-        await tester.pumpAndSettle();
       }
+      await tester.tap(
+        find.byKey(ValueKey('track_transition_option_${value.name}')),
+      );
+      await tester.pumpAndSettle();
+      await drive(tester, () => saved(value));
+    }
 
-      bool saved(bool value) {
-        try {
-          final data =
-              jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
-          return data['smoothTrackTransitions'] == value &&
-              data['playVideoClip'] == true;
-        } on FileSystemException catch (error) {
-          if (error.osError?.errorCode == 32) return false;
-          rethrow;
-        }
-      }
+    await open();
+    expect(trackTransitionModeNotifier.value, TrackTransitionMode.fade);
+    await selectMode(TrackTransitionMode.crossfade);
+    expect(trackTransitionModeNotifier.value, TrackTransitionMode.crossfade);
 
-      Future<void> toggle(bool value) async {
-        // Keep the static settings write queue on the real IO zone so it
-        // can also be used after this widget test's fake clock is gone.
-        final onChanged = tester.widget<SwitchListTile>(fade).onChanged!;
-        await tester.runAsync(() async => onChanged(value));
-      }
+    await tester.pumpWidget(const SizedBox());
+    trackTransitionModeNotifier.value = TrackTransitionMode.off;
+    await open();
+    expect(trackTransitionModeNotifier.value, TrackTransitionMode.crossfade);
+    expect(find.text('Кроссфейд · 0,6 с'), findsOneWidget);
 
-      await open();
-      expect(tester.widget<SwitchListTile>(fade).value, isFalse);
-      await toggle(true);
-      expect(smoothTrackTransitionsNotifier.value, isTrue);
-      await drive(tester, () => saved(true));
-
-      await tester.pumpWidget(const SizedBox());
-      smoothTrackTransitionsNotifier.value = false;
-      await open();
-      expect(smoothTrackTransitionsNotifier.value, isTrue);
-      expect(tester.widget<SwitchListTile>(fade).value, isTrue);
-
-      await toggle(false);
-      expect(smoothTrackTransitionsNotifier.value, isFalse);
-      await drive(tester, () => saved(false));
-    },
-  );
+    await selectMode(TrackTransitionMode.off);
+    expect(trackTransitionModeNotifier.value, TrackTransitionMode.off);
+  });
 
   testWidgets('first frame shows the current purple selection, not red', (
     tester,
@@ -287,6 +304,7 @@ void main() {
           'vinylRotation': false,
           'playVideoClip': true,
           'smoothTrackTransitions': true,
+          'trackTransitionMode': 'crossfade',
           'discordShowGitHubButton': false,
           'discordLyricsStatus': true,
           'serverBaseUrl': 'http://localhost:8000',
@@ -312,6 +330,7 @@ void main() {
       expect(saved['language'], 'en');
       expect(saved['playVideoClip'], isTrue);
       expect(saved['smoothTrackTransitions'], isTrue);
+      expect(saved['trackTransitionMode'], 'crossfade');
       expect(saved['vinylRotation'], isFalse);
       expect(saved['discordShowGitHubButton'], isFalse);
       expect(saved['discordLyricsStatus'], isTrue);

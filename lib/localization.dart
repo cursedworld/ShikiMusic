@@ -539,6 +539,29 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Fade in at the start and fade out at the end of each track',
     'ja': '曲の始めにフェードインし、終わりにフェードアウト',
   },
+  'track_transition_off': {'ru': 'Выкл.', 'en': 'Off', 'ja': 'オフ'},
+  'track_transition_off_hint': {
+    'ru': 'Обычная смена треков',
+    'en': 'Play tracks normally',
+    'ja': '通常どおり曲を切り替える',
+  },
+  'track_transition_fade': {
+    'ru': 'Затухание без наложения',
+    'en': 'Fade without overlap',
+    'ja': '重ねずにフェード',
+  },
+  'track_transition_crossfade': {
+    'ru': 'Кроссфейд · 0,6 с',
+    'en': 'Crossfade · 0.6 s',
+    'ja': 'クロスフェード · 0.6秒',
+  },
+  'track_transition_crossfade_hint': {
+    'ru':
+        'Наложение при автопереходе между скачанными треками. В остальных случаях — затухание без наложения.',
+    'en':
+        'Overlap downloaded tracks on automatic transitions. Otherwise, fade without overlap.',
+    'ja': 'ダウンロード済みの曲を自動で切り替える際に重ねて再生します。その他の場合は重ねずにフェードします。',
+  },
   'settings_data': {'ru': 'Данные', 'en': 'Data', 'ja': 'データ'},
   'settings_accent': {
     'ru': 'Цвет акцента',

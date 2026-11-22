@@ -12,6 +12,7 @@ import 'perf/frame_metrics.dart';
 import 'screens/home_screen.dart';
 import 'screens/settings_screen.dart';
 import 'server_config.dart';
+import 'track_transition_mode.dart';
 import 'library_transfer.dart';
 import 'localization.dart';
 import 'mobile_motion.dart';
@@ -114,8 +115,10 @@ Future<void> _loadSavedSettings() async {
 
       // Restore video clip setting
       playVideoClipNotifier.value = data['playVideoClip'] ?? false;
-      smoothTrackTransitionsNotifier.value =
-          data['smoothTrackTransitions'] == true;
+      trackTransitionModeNotifier.value = TrackTransitionMode.fromSettings(
+        data['trackTransitionMode'],
+        data['smoothTrackTransitions'],
+      );
 
       // Restore discord github button setting
       discordShowGitHubButtonNotifier.value =

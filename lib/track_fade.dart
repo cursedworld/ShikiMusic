@@ -27,6 +27,9 @@ class TrackFade {
   final Future<Duration?> Function() _readPosition;
   final Future<void> Function(double) _writeVolume;
   final void Function(Object) _onError;
+  void Function(Duration remaining, double volume)? onNearEnd;
+  Duration nearEndLead = Duration.zero;
+  bool _fadeHead = true;
 
   bool _enabled;
   bool get enabled => _enabled && !_disposed;
@@ -69,6 +72,12 @@ class TrackFade {
     _timer = null;
   }
 
+  void beginTrack({bool fadeIn = true}) {
+    hold();
+    _fadeHead = fadeIn;
+    _volumeFailed = false;
+  }
+
   /// Restore user volume on disable, stop or an abandoned source load.
   Future<void> reset() {
     hold();
@@ -105,7 +114,7 @@ class TrackFade {
       : edge.inMicroseconds;
 
   Future<void> _updateGain(Duration position) {
-    final head = _edgeMicros(fadeIn);
+    final head = _fadeHead ? _edgeMicros(fadeIn) : 0;
     final tail = _edgeMicros(fadeOut);
     final elapsed = position.inMicroseconds;
     final remaining = _duration.inMicroseconds - elapsed;
@@ -119,6 +128,14 @@ class TrackFade {
     }
     // Smoothstep keeps both ends of the envelope gentle.
     _gain = progress * progress * (3 - 2 * progress);
+    final callback = onNearEnd;
+    if (callback != null &&
+        _playing &&
+        _duration > Duration.zero &&
+        remaining > 0 &&
+        remaining <= nearEndLead.inMicroseconds) {
+      callback(Duration(microseconds: remaining), _volume);
+    }
     return _flushVolume();
   }
 
@@ -126,7 +143,7 @@ class TrackFade {
     final elapsed = _position?.inMicroseconds;
     if (elapsed == null) return false;
     final remaining = _duration.inMicroseconds - elapsed;
-    return elapsed < _edgeMicros(fadeIn) ||
+    return (_fadeHead && elapsed < _edgeMicros(fadeIn)) ||
         (remaining > 0 &&
             remaining <=
                 _edgeMicros(fadeOut) + playbackPositionInterval.inMicroseconds);

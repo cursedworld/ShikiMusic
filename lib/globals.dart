@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'audio_handler.dart';
+import 'track_transition_mode.dart';
 
 // ── Enums ──────────────────────────────────────────────────────────────────
 
@@ -39,7 +40,7 @@ ValueNotifier<String> languageNotifier = ValueNotifier('ru');
 ValueNotifier<bool> vinylRotationNotifier = ValueNotifier(true);
 ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
 ValueNotifier<bool> playVideoClipNotifier = ValueNotifier(false);
-final smoothTrackTransitionsNotifier = ValueNotifier(false);
+final trackTransitionModeNotifier = ValueNotifier(TrackTransitionMode.off);
 ValueNotifier<bool> discordShowGitHubButtonNotifier = ValueNotifier(true);
 ValueNotifier<bool> discordLyricsStatusNotifier = ValueNotifier(false);
 

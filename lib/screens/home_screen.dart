@@ -10,6 +10,8 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_discord_rpc/flutter_discord_rpc.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart'
+    show AudioInterruptionEvent, AudioInterruptionType;
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_media_session/flutter_media_session.dart' as fms;
@@ -18,6 +20,7 @@ import 'package:video_player_media_kit/video_player_media_kit.dart';
 import 'package:crypto/crypto.dart';
 
 import '../app_paths.dart';
+import '../android_playback_focus.dart';
 import '../async_task_limiter.dart';
 import '../atomic_file_store.dart';
 import '../cover_processing.dart';
@@ -42,12 +45,15 @@ import '../perf/frame_metrics.dart';
 import '../playlist_artwork.dart';
 import '../playlist_tracks.dart';
 import '../player_shortcuts.dart';
+import '../playback_deck.dart';
 import '../playback_position.dart';
 import '../platform_capabilities.dart';
 import '../mobile_motion.dart';
 import '../safe_file_migration.dart';
 import '../server_config.dart';
 import '../track_fade.dart';
+import '../track_crossfade.dart';
+import '../track_transition_mode.dart';
 import '../windows_taskbar_controls.dart';
 import '../track_updates.dart';
 import '../track_selection.dart';
@@ -158,8 +164,14 @@ class MainAppScreen extends StatefulWidget {
 
 class MainAppScreenState extends State<MainAppScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  late final AudioPlayer audioPlayer;
-  late final TrackFade _trackFade;
+  late PlaybackDeck _audioDeck;
+  AudioPlayer get audioPlayer => _audioDeck.player;
+  TrackFade get _trackFade => _audioDeck.fade;
+  TrackCrossfade<PlaybackDeck>? _crossfade;
+  int? _closingAudioTrackId;
+  bool _androidDeckUsesSharedFocus = false;
+  AndroidPlaybackFocus? _androidPlaybackFocus;
+  int? _resumeAfterFocusRevision;
   int _benchmarkPositionEvents = 0;
 
   // ── flutter_media_session for Media3 notification ────────────────────────
@@ -203,6 +215,7 @@ class MainAppScreenState extends State<MainAppScreen>
           };
           if (!mounted || _stateDisposing) return;
           setState(() => loopMode = selected);
+          _crossfade?.cancel(allowRetry: true);
           loopModeNotifier.value = selected;
           _syncMediaSessionPlayback();
           unawaited(_saveState());
@@ -213,7 +226,7 @@ class MainAppScreenState extends State<MainAppScreen>
             volume = value;
             _isMuted = value == 0;
           });
-          unawaited(_trackFade.setVolume(value));
+          unawaited(_setPlaybackVolume(value));
           _syncLinuxMediaSession();
           unawaited(_saveState());
         },
@@ -526,6 +539,7 @@ class MainAppScreenState extends State<MainAppScreen>
   int? _fadeSeekRevision;
   int _databaseSyncRevision = 0;
   int? _audioSourceTrackId;
+  bool _audioSourceLocal = false;
   int _settledTrackRevision = -1;
   int _lyricsRevision = 0;
   StreamSubscription<Duration>? _audioDurationSubscription;
@@ -597,21 +611,12 @@ class MainAppScreenState extends State<MainAppScreen>
     playVideoClipNotifier.addListener(_onVideoSettingChanged);
     uiSignal.addListener(_syncVideoDrift);
 
-    // Create a single AudioPlayer and share it with AudioPlayerHandler
-    audioPlayer = AudioPlayer();
-    _trackFade = TrackFade(
-      readPosition: audioPlayer.getCurrentPosition,
-      writeVolume: audioPlayer.setVolume,
-      onError: (error) => debugPrint('Audio gain update failed: $error'),
-      volume: volume,
-      enabled: smoothTrackTransitionsNotifier.value,
-    );
-    smoothTrackTransitionsNotifier.addListener(_onTrackFadeChanged);
-    // Playback itself runs in the native engine. Polling position need not
-    // request a Flutter frame; the UI currently displays whole seconds.
-    audioPlayer.positionUpdater = playbackPositionUpdater(
-      audioPlayer.getCurrentPosition,
-    );
+    _androidDeckUsesSharedFocus =
+        Platform.isAndroid && _transitionMode == TrackTransitionMode.crossfade;
+    _audioDeck = _newAudioDeck(sharedAndroidFocus: _androidDeckUsesSharedFocus);
+    trackTransitionModeNotifier.addListener(_onTrackFadeChanged);
+    _configureFadeTail();
+    _subscribeToAudioDeck();
     if (isAudioServiceActive) {
       audioHandler.attachPlayer(audioPlayer);
     }
@@ -621,26 +626,6 @@ class MainAppScreenState extends State<MainAppScreen>
       isPlayingNotifier.addListener(_syncTaskbarControls);
       languageNotifier.addListener(_syncTaskbarControls);
       _syncTaskbarControls();
-    }
-
-    // Configure audio context for Android background playback
-    if (!isDesktop) {
-      audioPlayer.setAudioContext(
-        AudioContext(
-          android: AudioContextAndroid(
-            isSpeakerphoneOn: false,
-            audioMode: AndroidAudioMode.normal,
-            stayAwake: true,
-            contentType: AndroidContentType.music,
-            usageType: AndroidUsageType.media,
-            audioFocus: AndroidAudioFocus.gain,
-          ),
-          iOS: AudioContextIOS(
-            category: AVAudioSessionCategory.playback,
-            options: {AVAudioSessionOptions.mixWithOthers},
-          ),
-        ),
-      );
     }
 
     if (supportsVinylRotation) {
@@ -688,59 +673,7 @@ class MainAppScreenState extends State<MainAppScreen>
           _statistics?.setSeeking(seeking);
     }
 
-    _statisticsStateSubscription = audioPlayer.onPlayerStateChanged.listen((
-      state,
-    ) {
-      if (!_stateDisposing) {
-        final playing = state == PlayerState.playing;
-        _statistics?.setPlaying(playing);
-        if (_trackFade.enabled) {
-          if (playing) {
-            unawaited(_syncTrackFade(currentPositionNotifier.value));
-          } else {
-            _trackFade.hold();
-          }
-        }
-      }
-    });
-    unawaited(_trackFade.setVolume(volume));
-    _audioDurationSubscription = audioPlayer.onDurationChanged.listen((d) {
-      // Cache track duration for playlist stats
-      final sourceTrackId = _audioSourceTrackId;
-      if (sourceTrackId != null) {
-        trackDurations[sourceTrackId] = d.inSeconds;
-      }
-      if (_settledTrackRevision == _trackRevision &&
-          sourceTrackId == activeTrackNotifier.value?['id']) {
-        _statistics?.setDuration(d);
-        fullDurationNotifier.value = d;
-        _syncMediaSessionMetadata();
-      }
-    });
-    _audioPositionSubscription = audioPlayer.onPositionChanged.listen((p) {
-      if (PerformanceFrameMonitor.enabled) _benchmarkPositionEvents++;
-      if (mounted &&
-          _settledTrackRevision == _trackRevision &&
-          _audioSourceTrackId == activeTrackNotifier.value?['id']) {
-        _statistics?.position(p);
-        currentPositionNotifier.value = p;
-        _linuxMediaSession?.updatePosition(p);
-        if (_trackFade.enabled) unawaited(_syncTrackFade(p));
-      }
-    });
-
-    _audioCompleteSubscription = audioPlayer.onPlayerComplete.listen((event) {
-      if (_settledTrackRevision != _trackRevision ||
-          _audioSourceTrackId != activeTrackNotifier.value?['id']) {
-        return;
-      }
-      _statistics?.endTrack();
-      if (loopMode == LoopMode.one) {
-        _playIndex(playingIndex);
-      } else {
-        nextTrack();
-      }
-    });
+    unawaited(_setPlaybackVolume(volume));
 
     backgroundPollingTimer = Timer.periodic(
       const Duration(milliseconds: 1000),
@@ -784,8 +717,9 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void dispose() {
     _stateDisposing = true;
-    smoothTrackTransitionsNotifier.removeListener(_onTrackFadeChanged);
-    _trackFade.dispose();
+    trackTransitionModeNotifier.removeListener(_onTrackFadeChanged);
+    _crossfade?.cancel();
+    unawaited(_androidPlaybackFocus?.dispose().catchError(_logAudioError));
     activeTrackNotifier.removeListener(_syncTaskbarControls);
     isPlayingNotifier.removeListener(_syncTaskbarControls);
     languageNotifier.removeListener(_syncTaskbarControls);
@@ -871,7 +805,7 @@ class MainAppScreenState extends State<MainAppScreen>
       WakelockPlus.disable();
     }
 
-    audioPlayer.dispose();
+    unawaited(_audioDeck.dispose().catchError(_logAudioError));
     super.dispose();
   }
 
@@ -1044,6 +978,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void _onVideoSettingChanged() {
     if (mounted && supportsVideoClips) {
+      _crossfade?.cancel(allowRetry: true);
       _videoTrackSwitchTimer?.cancel();
       _videoTrackSwitchTimer = null;
       _initializeVideo(activeTrackNotifier.value);
@@ -1817,6 +1752,7 @@ class MainAppScreenState extends State<MainAppScreen>
         loopMode = LoopMode.off;
       }
     });
+    _crossfade?.cancel(allowRetry: true);
     loopModeNotifier.value = loopMode;
     _syncMediaSessionPlayback();
     _saveState();
@@ -1991,7 +1927,7 @@ class MainAppScreenState extends State<MainAppScreen>
     } else {
       await _prepareBenchmarkAudio(command.runId, _benchmarkVideo30TrackId);
     }
-    await _trackFade.setVolume(0);
+    await _setPlaybackVolume(0);
     final covered =
         command.scenario == 'focused-settings' ||
         command.scenario == 'focused-artist';
@@ -2573,7 +2509,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
         if (data['volume'] != null) {
           volume = (data['volume'] as num).toDouble();
-          await _trackFade.setVolume(volume);
+          await _setPlaybackVolume(volume);
         }
         final savedLoopMode = data['loopMode'];
         if (savedLoopMode is int &&
@@ -2860,6 +2796,7 @@ class MainAppScreenState extends State<MainAppScreen>
         final activeId = playingQueue[playingIndex]['id'];
         playingQueue = playlistQueueInOrder(playingQueue, order);
         playingIndex = playingQueue.indexWhere((t) => t['id'] == activeId);
+        _crossfade?.cancel(allowRetry: true);
       }
     }
 
@@ -3572,10 +3509,11 @@ class MainAppScreenState extends State<MainAppScreen>
         : int.tryParse(rawTrackId?.toString() ?? '');
     if (trackId == null) return;
     if (downloadQueue.contains(trackId)) return;
-    if (_audioSourceTrackId == trackId ||
+    if (_audioHoldsTrack(trackId) ||
         activeTrackNotifier.value?['id'] == trackId ||
         _videoTrackId == trackId) {
       _pendingDownloadRemovals[trackId] = track;
+      if (_crossfade?.holdsTrack(trackId) == true) _crossfade?.cancel();
       _downloadRemovalNotice('download_removal_deferred');
       return;
     }
@@ -3628,7 +3566,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _drainingDownloadRemovals = true;
     try {
       for (final entry in _pendingDownloadRemovals.entries.toList()) {
-        if (_audioSourceTrackId == entry.key ||
+        if (_audioHoldsTrack(entry.key) ||
             activeTrackNotifier.value?['id'] == entry.key ||
             _videoTrackId == entry.key ||
             downloadQueue.contains(entry.key)) {
@@ -3641,6 +3579,11 @@ class MainAppScreenState extends State<MainAppScreen>
       _drainingDownloadRemovals = false;
     }
   }
+
+  bool _audioHoldsTrack(int id) =>
+      _audioSourceTrackId == id ||
+      _closingAudioTrackId == id ||
+      _crossfade?.holdsTrack(id) == true;
 
   void _openArtistScreen(int artistId, String artistName) {
     if (trackSelection.isNotEmpty) clearTrackSelection();
@@ -4388,6 +4331,216 @@ class MainAppScreenState extends State<MainAppScreen>
   //  Playback
   // ═══════════════════════════════════════════════════════════════════════════
 
+  TrackTransitionMode get _transitionMode => trackTransitionModeNotifier.value;
+
+  void _logAudioError(Object error) => debugPrint('Audio playback: $error');
+
+  AudioContext _mobileAudioContext({required bool sharedAndroidFocus}) =>
+      AudioContext(
+        android: AudioContextAndroid(
+          isSpeakerphoneOn: false,
+          audioMode: AndroidAudioMode.normal,
+          stayAwake: true,
+          contentType: AndroidContentType.music,
+          usageType: AndroidUsageType.media,
+          audioFocus: sharedAndroidFocus
+              ? AndroidAudioFocus.none
+              : AndroidAudioFocus.gain,
+        ),
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playback,
+          options: {AVAudioSessionOptions.mixWithOthers},
+        ),
+      );
+
+  PlaybackDeck _newAudioDeck({required bool sharedAndroidFocus}) =>
+      PlaybackDeck(
+        volume: volume,
+        fadeEnabled: _transitionMode != TrackTransitionMode.off,
+        onError: _logAudioError,
+        context: isDesktop
+            ? null
+            : _mobileAudioContext(sharedAndroidFocus: sharedAndroidFocus),
+      );
+
+  Future<void> _setPlaybackVolume(double value) {
+    _crossfade?.setVolume(value);
+    return _trackFade.setVolume(value);
+  }
+
+  void _subscribeToAudioDeck({bool alreadyPlaying = false}) {
+    unawaited(_statisticsStateSubscription?.cancel());
+    unawaited(_audioDurationSubscription?.cancel());
+    unawaited(_audioPositionSubscription?.cancel());
+    unawaited(_audioCompleteSubscription?.cancel());
+    final player = audioPlayer;
+    bool stillCurrent() => !_stateDisposing && identical(player, audioPlayer);
+    bool sourceSettled() =>
+        _settledTrackRevision == _trackRevision &&
+        _audioSourceTrackId != null &&
+        _audioSourceTrackId == activeTrackNotifier.value?['id'];
+
+    final updater = playbackPositionUpdater(player.getCurrentPosition);
+    player.positionUpdater = updater;
+    _statisticsStateSubscription = player.onPlayerStateChanged.listen((state) {
+      if (!stillCurrent()) return;
+      final playing = state == PlayerState.playing;
+      _statistics?.setPlaying(playing);
+      if (_trackFade.enabled) {
+        if (playing) {
+          unawaited(_syncTrackFade(currentPositionNotifier.value));
+        } else {
+          _trackFade.hold();
+        }
+      }
+      // Completion must leave the prepared deck available for handoff.
+      if (!playing && state != PlayerState.completed) _crossfade?.cancel();
+    });
+    _audioDurationSubscription = player.onDurationChanged.listen((duration) {
+      if (!stillCurrent() || !sourceSettled()) return;
+      trackDurations[_audioSourceTrackId!] = duration.inSeconds;
+      _statistics?.setDuration(duration);
+      fullDurationNotifier.value = duration;
+      _syncMediaSessionMetadata();
+    });
+    _audioPositionSubscription = player.onPositionChanged.listen((position) {
+      if (!stillCurrent()) return;
+      if (PerformanceFrameMonitor.enabled) _benchmarkPositionEvents++;
+      if (!mounted || !sourceSettled()) return;
+      _statistics?.position(position);
+      currentPositionNotifier.value = position;
+      _linuxMediaSession?.updatePosition(position);
+      if (_trackFade.enabled) unawaited(_syncTrackFade(position));
+    });
+    _audioCompleteSubscription = player.onPlayerComplete.listen((_) {
+      if (!stillCurrent() || !sourceSettled()) return;
+      final index = _automaticNextIndex();
+      final handoff = _crossfade?.takeAtEnd();
+      if (index == null) {
+        _statistics?.endTrack();
+        _stopPlaybackAtQueueEnd();
+      } else {
+        _playIndex(index, handoff: handoff);
+      }
+    });
+    if (alreadyPlaying) updater.start();
+  }
+
+  int? _automaticNextIndex() {
+    if (playingIndex < 0 || playingIndex >= playingQueue.length) return null;
+    if (loopMode == LoopMode.one) return playingIndex;
+    if (playingIndex + 1 < playingQueue.length) return playingIndex + 1;
+    return loopMode == LoopMode.list ? 0 : null;
+  }
+
+  CrossfadeSource? _nextCrossfadeSource() {
+    if (_stateDisposing ||
+        !isPlaying ||
+        !_audioSourceLocal ||
+        _settledTrackRevision != _trackRevision ||
+        _fadeSeekRevision == _seekRevision ||
+        _transitionMode != TrackTransitionMode.crossfade ||
+        _closingAudioTrackId != null ||
+        isAudioServiceActive ||
+        (Platform.isAndroid && _androidPlaybackFocus?.available != true)) {
+      return null;
+    }
+    final index = _automaticNextIndex();
+    if (index == null) return null;
+    final next = playingQueue[index];
+    final nextId = next['id'] as int;
+    if (nextId == _audioSourceTrackId ||
+        downloadQueue.contains(nextId) ||
+        _pendingDownloadRemovals.containsKey(nextId)) {
+      return null;
+    }
+    if (supportsVideoClips &&
+        playVideoClipNotifier.value &&
+        (_videoController != null ||
+            _initializingVideoController != null ||
+            _VideoRequest.from(activeTrackNotifier.value).videoUrl != null ||
+            _VideoRequest.from(next).videoUrl != null)) {
+      return null;
+    }
+    return (trackId: nextId, path: _localAudioFile(nextId).path);
+  }
+
+  void _configureFadeTail() {
+    _trackFade.nearEndLead = TrackCrossfade.prepareWithin;
+    _trackFade.onNearEnd = _transitionMode == TrackTransitionMode.crossfade
+        ? _sampleCrossfade
+        : null;
+  }
+
+  void _sampleCrossfade(Duration remaining, double userVolume) {
+    if (fullDurationNotifier.value < TrackCrossfade.minimumTrackDuration) {
+      return;
+    }
+    (_crossfade ??= TrackCrossfade<PlaybackDeck>(
+      createDeck: () => _newAudioDeck(sharedAndroidFocus: true),
+      fileReady: (path) => _hasNonEmptyFile(File(path)),
+      nextSource: _nextCrossfadeSource,
+      onError: _logAudioError,
+      onReleased: () => unawaited(_drainDownloadRemovals()),
+    )).update(remaining, userVolume);
+  }
+
+  Future<void> _retireOutgoingDeck(PlaybackDeck old, int? sourceId) async {
+    _closingAudioTrackId = sourceId;
+    try {
+      await old.dispose();
+    } catch (error) {
+      _logAudioError(error);
+    } finally {
+      _closingAudioTrackId = null;
+      unawaited(_drainDownloadRemovals());
+    }
+  }
+
+  Future<void> _configureAndroidFocusForSource(int revision) async {
+    final deck = _audioDeck;
+    await deck.contextReady;
+    if (!Platform.isAndroid || !_isCurrentTrackRevision(revision)) return;
+    final shared = _transitionMode == TrackTransitionMode.crossfade;
+    if (shared == _androidDeckUsesSharedFocus) return;
+    // setAudioContext can reload a prepared Android source. Change it only
+    // between sources and never while the current one is still audible.
+    if (deck.player.source != null) await deck.player.release();
+    if (!_isCurrentTrackRevision(revision)) return;
+    if (!shared) {
+      await _androidPlaybackFocus?.dispose();
+      _androidPlaybackFocus = null;
+      _resumeAfterFocusRevision = null;
+    }
+    await deck.player.setAudioContext(
+      _mobileAudioContext(sharedAndroidFocus: shared),
+    );
+    _androidDeckUsesSharedFocus = shared;
+  }
+
+  Future<bool> _acquireAndroidPlaybackFocus() =>
+      (_androidPlaybackFocus ??= AndroidPlaybackFocus(
+        _onAndroidInterruption,
+      )).acquire();
+
+  void _onAndroidInterruption(AudioInterruptionEvent event) {
+    if (_stateDisposing || !mounted || !_androidDeckUsesSharedFocus) return;
+    if (event.begin) {
+      if (isPlaying) {
+        pauseTrack();
+        _resumeAfterFocusRevision = event.type == AudioInterruptionType.pause
+            ? _transportRevision
+            : null;
+      } else if (event.type == AudioInterruptionType.unknown) {
+        _resumeAfterFocusRevision = null;
+      }
+    } else {
+      final revision = _resumeAfterFocusRevision;
+      _resumeAfterFocusRevision = null;
+      if (!isPlaying && revision == _transportRevision) pauseTrack();
+    }
+  }
+
   Future<void>? _syncTrackFade(Duration position, {bool? playing}) {
     if (!_trackFade.enabled ||
         _stateDisposing ||
@@ -4409,7 +4562,9 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _onTrackFadeChanged() {
-    final enabled = smoothTrackTransitionsNotifier.value;
+    _crossfade?.cancel(allowRetry: true);
+    _configureFadeTail();
+    final enabled = _transitionMode != TrackTransitionMode.off;
     unawaited(_trackFade.setEnabled(enabled));
     if (enabled) unawaited(_syncTrackFade(currentPositionNotifier.value));
   }
@@ -4435,7 +4590,10 @@ class MainAppScreenState extends State<MainAppScreen>
     if (playingQueue.isEmpty) return;
     final shouldPlay = !isPlaying;
     final revision = ++_transportRevision;
-    if (!shouldPlay && _trackFade.enabled) _trackFade.hold();
+    if (!shouldPlay) {
+      _crossfade?.cancel();
+      if (_trackFade.enabled) _trackFade.hold();
+    }
     _setPlaying(shouldPlay);
     _syncMediaSessionPlayback();
     unawaited(_saveState());
@@ -4451,6 +4609,11 @@ class MainAppScreenState extends State<MainAppScreen>
             if (gain != null) {
               await gain;
               if (_stateDisposing || revision != _transportRevision) return;
+            }
+            if (_androidDeckUsesSharedFocus) {
+              final granted = await _acquireAndroidPlaybackFocus();
+              if (_stateDisposing || revision != _transportRevision) return;
+              if (!granted) throw StateError('Android audio focus unavailable');
             }
             await audioPlayer.resume();
           } else {
@@ -4510,7 +4673,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   /// Internal: play a specific index within the *current* queue (preserves
   /// shuffle state).
-  void _playIndex(int index) {
+  void _playIndex(int index, {CrossfadeHandoff<PlaybackDeck>? handoff}) {
     if (playingQueue.isEmpty || index < 0 || index >= playingQueue.length) {
       return;
     }
@@ -4518,20 +4681,44 @@ class MainAppScreenState extends State<MainAppScreen>
     setState(() => playingIndex = index);
 
     final targetTrack = playingQueue[playingIndex];
-    _activateTrackForPlayback(targetTrack);
+    _activateTrackForPlayback(targetTrack, handoff: handoff);
   }
 
-  void _activateTrackForPlayback(dynamic targetTrack) {
-    if (_trackFade.enabled) _trackFade.hold();
+  void _activateTrackForPlayback(
+    dynamic targetTrack, {
+    CrossfadeHandoff<PlaybackDeck>? handoff,
+  }) {
+    _crossfade?.cancel(allowRetry: true);
+    _trackFade.beginTrack();
     _statistics?.endTrack();
     final trackRevision = ++_trackRevision;
     final transportRevision = ++_transportRevision;
     _seekRevision += 1;
+    final position = handoff?.position ?? Duration.zero;
+    if (handoff != null) {
+      final old = _audioDeck;
+      final oldId = _audioSourceTrackId;
+      _audioDeck = handoff.deck;
+      _audioSourceLocal = true;
+      _audioSourceTrackId = handoff.source.trackId;
+      _settledTrackRevision = trackRevision;
+      trackDurations[handoff.source.trackId] = handoff.duration.inSeconds;
+      _trackFade.beginTrack(fadeIn: false);
+      _configureFadeTail();
+      _subscribeToAudioDeck(alreadyPlaying: true);
+      unawaited(_retireOutgoingDeck(old, oldId));
+      unawaited(_trackFade.setVolume(volume));
+      _statistics?.beginTrack(targetTrack as Map, duration: handoff.duration);
+      _statistics?.setPlaying(true);
+      _statistics?.position(position);
+    }
     _setPlaying(true);
-    discordStart = null;
+    discordStart = handoff == null
+        ? null
+        : DateTime.now().millisecondsSinceEpoch - position.inMilliseconds;
+    currentPositionNotifier.value = position;
+    fullDurationNotifier.value = handoff?.duration ?? Duration.zero;
     activeTrackNotifier.value = targetTrack;
-    currentPositionNotifier.value = Duration.zero;
-    fullDurationNotifier.value = Duration.zero;
     unawaited(_ensureCoverDownloaded(targetTrack));
 
     if (isAudioServiceActive) {
@@ -4553,6 +4740,10 @@ class MainAppScreenState extends State<MainAppScreen>
     _syncMediaSessionMetadata();
     _syncMediaSessionPlayback();
     unawaited(_saveState());
+    if (handoff != null) {
+      updateRPC(force: true);
+      return;
+    }
     unawaited(
       _enqueueAudioWork(
         () => _playTrackSource(
@@ -4576,8 +4767,20 @@ class MainAppScreenState extends State<MainAppScreen>
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = null;
+    _audioSourceLocal = false;
     _settledTrackRevision = -1;
     try {
+      if (_audioDeck.contextReady != null) {
+        await _configureAndroidFocusForSource(trackRevision);
+        if (!_isCurrentTrackRevision(trackRevision)) return;
+      }
+      if (_androidDeckUsesSharedFocus &&
+          audioPlayer.state == PlayerState.playing) {
+        // Android can automatically start a newly prepared source on a
+        // playing deck. Wait for shared focus before resuming it below.
+        await audioPlayer.pause();
+        if (!_isCurrentTrackRevision(trackRevision)) return;
+      }
       if (_trackFade.enabled) {
         // Some backends prepare a new source while already playing. Set the
         // initial gain before replacing it so the new track cannot pop in.
@@ -4609,6 +4812,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = trackId;
+    _audioSourceLocal = hasLocalTrack;
     _settledTrackRevision = trackRevision;
     unawaited(_drainDownloadRemovals());
     try {
@@ -4628,6 +4832,13 @@ class MainAppScreenState extends State<MainAppScreen>
           playing: false,
         );
         if (!_isCurrentTrackRevision(trackRevision)) return;
+      }
+      if (isPlaying && _androidDeckUsesSharedFocus) {
+        final granted = await _acquireAndroidPlaybackFocus();
+        if (!_isCurrentTrackRevision(trackRevision)) return;
+        if (isPlaying && !granted) {
+          throw StateError('Android audio focus unavailable');
+        }
       }
       if (isPlaying) {
         await audioPlayer.resume();
@@ -4666,7 +4877,12 @@ class MainAppScreenState extends State<MainAppScreen>
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = null;
+    _audioSourceLocal = false;
     _settledTrackRevision = -1;
+    if (_audioDeck.contextReady != null) {
+      await _configureAndroidFocusForSource(trackRevision);
+      if (!_isCurrentTrackRevision(trackRevision)) return;
+    }
     if (hasLocalTrack) {
       await audioPlayer.setSource(DeviceFileSource(localTrackPath.path));
     } else {
@@ -4677,6 +4893,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = trackId;
+    _audioSourceLocal = hasLocalTrack;
     _settledTrackRevision = trackRevision;
     unawaited(_drainDownloadRemovals());
     final duration = await audioPlayer.getDuration();
@@ -4703,6 +4920,7 @@ class MainAppScreenState extends State<MainAppScreen>
   void _stopPlaybackAtQueueEnd() {
     _linuxPlaybackStopped = true;
     final revision = ++_transportRevision;
+    _crossfade?.cancel();
     if (_trackFade.enabled) _trackFade.hold();
     _setPlaying(false);
     _syncMediaSessionPlayback();
@@ -4715,6 +4933,8 @@ class MainAppScreenState extends State<MainAppScreen>
           await audioPlayer.stop();
           if (_stateDisposing || revision != _transportRevision) return;
           _audioSourceTrackId = null;
+          _audioSourceLocal = false;
+          await _androidPlaybackFocus?.release();
         } finally {
           if (!_stateDisposing &&
               revision == _transportRevision &&
@@ -4730,6 +4950,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void toggleShuffle() {
     if (playingQueue.isEmpty) return;
+    _crossfade?.cancel(allowRetry: true);
     setState(() {
       if (isShuffled) {
         // Restore original order
@@ -4775,6 +4996,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final trackRevision = _trackRevision;
     final seekRevision = ++_seekRevision;
     _fadeSeekRevision = seekRevision;
+    _crossfade?.cancel(allowRetry: true);
     if (_trackFade.enabled) _trackFade.hold();
     currentPositionNotifier.value = pos;
     _linuxMediaSession?.seeked(pos);
@@ -6299,7 +6521,7 @@ class MainAppScreenState extends State<MainAppScreen>
                             volume = 0;
                           }
                         });
-                        unawaited(_trackFade.setVolume(volume));
+                        unawaited(_setPlaybackVolume(volume));
                         _syncLinuxMediaSession();
                         _saveState();
                       },
@@ -6325,7 +6547,7 @@ class MainAppScreenState extends State<MainAppScreen>
                             volume = v;
                             _isMuted = v == 0;
                           });
-                          unawaited(_trackFade.setVolume(v));
+                          unawaited(_setPlaybackVolume(v));
                           _syncLinuxMediaSession();
                         },
                         onChangeEnd: (v) => _saveState(),

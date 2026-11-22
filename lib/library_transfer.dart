@@ -9,6 +9,7 @@ import 'atomic_file_store.dart';
 import 'playlist_artwork.dart';
 import 'server_config.dart';
 import 'statistics_store.dart';
+import 'track_transition_mode.dart';
 
 const _manifest = 'shiki-transfer.json';
 const _pending = 'transfer_pending.json';
@@ -266,6 +267,10 @@ void _validateJson(String name, dynamic value) {
             'discordShowGitHubButton',
             'discordLyricsStatus',
           ].every((key) => value[key] == null || value[key] is bool) &&
+          (value['trackTransitionMode'] == null ||
+              TrackTransitionMode.values.any(
+                (mode) => mode.name == value['trackTransitionMode'],
+              )) &&
           (value['accentColor'] == null || value['accentColor'] is int) &&
           (value['themeColor'] == null || value['themeColor'] is String) &&
           (value['language'] == null || value['language'] is String);

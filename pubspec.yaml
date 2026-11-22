@@ -25,6 +25,7 @@ dependencies:
     path: third_party/flutter_discord_rpc
   file_picker: ^10.3.10
   audio_service: ^0.18.12
+  audio_session: ^0.1.25
   permission_handler: ^11.4.0
   flutter_media_session: ^2.3.0
   image: ^4.3.0

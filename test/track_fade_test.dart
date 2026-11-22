@@ -228,4 +228,19 @@ void main() {
     expect(playback.reads, 1);
     expect(playback.writes, [0.0]);
   });
+
+  testWidgets('an adopted track does not fade in again but the next one does', (
+    tester,
+  ) async {
+    final playback = _Playback();
+    addTearDown(playback.fade.dispose);
+    playback.fade.beginTrack(fadeIn: false);
+    await playback.report(300);
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(playback.writes, [0.8]);
+    expect(playback.reads, 0);
+    playback.fade.beginTrack();
+    await playback.report(0, playing: false);
+    expect(playback.writes, [0.8, 0.0]);
+  });
 }

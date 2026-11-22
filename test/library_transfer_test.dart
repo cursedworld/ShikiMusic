@@ -56,6 +56,7 @@ void main() {
       'language': 'en',
       'themeColor': 'color_purple',
       'smoothTrackTransitions': true,
+      'trackTransitionMode': 'crossfade',
     });
     await File('${source.path}/playlist_artwork_5.png').writeAsBytes([1, 2, 3]);
     await File('${source.path}/track_1.mp3').writeAsBytes([4, 5, 6]);
@@ -88,6 +89,7 @@ void main() {
       );
       expect(settings['language'], 'en');
       expect(settings['smoothTrackTransitions'], isTrue);
+      expect(settings['trackTransitionMode'], 'crossfade');
       expect(await applyPendingLibraryImport(target), isFalse);
     },
   );

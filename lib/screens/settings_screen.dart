@@ -18,6 +18,7 @@ import '../platform_capabilities.dart';
 import 'statistics_screen.dart';
 import 'library_transfer_screen.dart';
 import '../server_config.dart';
+import '../track_transition_mode.dart';
 import '../widgets/server_address_setting.dart';
 
 /// Available accent color themes (key → localization key + color).
@@ -142,7 +143,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _selectedLang = languageNotifier.value;
   bool _vinylRotation = vinylRotationNotifier.value;
   bool _playVideoClip = playVideoClipNotifier.value;
-  bool _smoothTrackTransitions = smoothTrackTransitionsNotifier.value;
+  TrackTransitionMode _trackTransitionMode = trackTransitionModeNotifier.value;
   bool _discordShowGitHubButton = discordShowGitHubButtonNotifier.value;
   bool _discordLyricsStatus = discordLyricsStatusNotifier.value;
   late final Future<Directory> Function() _getDataDirectory;
@@ -208,7 +209,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _selectedLang = data['language'] ?? _selectedLang;
           _vinylRotation = data['vinylRotation'] ?? true;
           _playVideoClip = data['playVideoClip'] ?? false;
-          _smoothTrackTransitions = data['smoothTrackTransitions'] == true;
+          _trackTransitionMode = TrackTransitionMode.fromSettings(
+            data['trackTransitionMode'],
+            data['smoothTrackTransitions'],
+          );
           _discordShowGitHubButton = data['discordShowGitHubButton'] ?? true;
           _discordLyricsStatus = data['discordLyricsStatus'] == true;
           final server = data['serverBaseUrl'];
@@ -228,7 +232,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         languageNotifier.value = _selectedLang;
         vinylRotationNotifier.value = _vinylRotation;
         playVideoClipNotifier.value = _playVideoClip;
-        smoothTrackTransitionsNotifier.value = _smoothTrackTransitions;
+        trackTransitionModeNotifier.value = _trackTransitionMode;
         discordShowGitHubButtonNotifier.value = _discordShowGitHubButton;
         discordLyricsStatusNotifier.value = _discordLyricsStatus;
       }
@@ -244,7 +248,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'language': _selectedLang,
       'vinylRotation': _vinylRotation,
       'playVideoClip': _playVideoClip,
-      'smoothTrackTransitions': _smoothTrackTransitions,
+      'trackTransitionMode': _trackTransitionMode.name,
+      // Older releases can still read this as their sequential fade option.
+      'smoothTrackTransitions': _trackTransitionMode != TrackTransitionMode.off,
       'discordShowGitHubButton': _discordShowGitHubButton,
       'discordLyricsStatus': _discordLyricsStatus,
       'serverBaseUrl': _serverBaseUrl,
@@ -363,16 +369,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         onTap: _settingsReady ? _chooseLanguage : null,
                       ),
                       _section(tr('settings_playback')),
-                      _toggle(
-                        key: const ValueKey('smooth_track_transitions_switch'),
+                      _row(
+                        key: const ValueKey('track_transition_setting'),
                         title: tr('smooth_track_transitions'),
-                        hint: tr('smooth_track_transitions_hint'),
-                        value: _smoothTrackTransitions,
-                        onChanged: (value) {
-                          setState(() => _smoothTrackTransitions = value);
-                          smoothTrackTransitionsNotifier.value = value;
-                          _saveSettings();
-                        },
+                        hint: tr(_transitionHint(_trackTransitionMode)),
+                        value: tr(
+                          'track_transition_${_trackTransitionMode.name}',
+                        ),
+                        onTap: _settingsReady ? _chooseTrackTransition : null,
                       ),
                       if (supportsVinylRotation)
                         _toggle(
@@ -725,6 +729,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted || selected == null) return;
     setState(() => _selectedLang = selected);
     languageNotifier.value = selected;
+    await _saveSettings();
+  }
+
+  String _transitionHint(TrackTransitionMode mode) => switch (mode) {
+    TrackTransitionMode.off => 'track_transition_off_hint',
+    TrackTransitionMode.fade => 'smooth_track_transitions_hint',
+    TrackTransitionMode.crossfade => 'track_transition_crossfade_hint',
+  };
+
+  Future<void> _chooseTrackTransition() async {
+    final selected = await showDialog<TrackTransitionMode>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        backgroundColor: _surface,
+        title: Text(tr('smooth_track_transitions')),
+        children: [
+          for (final mode in TrackTransitionMode.values)
+            SimpleDialogOption(
+              key: ValueKey('track_transition_option_${mode.name}'),
+              onPressed: () => Navigator.pop(context, mode),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Semantics(
+                  selected: _trackTransitionMode == mode,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(tr('track_transition_${mode.name}')),
+                            const SizedBox(height: 4),
+                            Text(
+                              tr(_transitionHint(mode)),
+                              style: const TextStyle(
+                                color: _muted,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (_trackTransitionMode == mode)
+                        Icon(
+                          Icons.check,
+                          color: accentColorNotifier.value,
+                          size: 20,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (!mounted || selected == null || selected == _trackTransitionMode) {
+      return;
+    }
+    setState(() => _trackTransitionMode = selected);
+    trackTransitionModeNotifier.value = selected;
     await _saveSettings();
   }
 
