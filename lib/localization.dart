@@ -373,11 +373,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '選択した期間の上位100組のアーティストまたは100曲を表示します',
   },
   'stats_empty': {
-    'ru':
-        'За этот период музыки пока нет. Включи трек — здесь появятся твои итоги.',
-    'en':
-        'No listening history for this period yet. Play a track to start your statistics.',
-    'ja': 'この期間の再生履歴はまだありません。曲を再生すると統計が表示されます。',
+    'ru': 'За выбранный период нет прослушиваний.',
+    'en': 'No listening history for the selected period.',
+    'ja': '選んだ期間の再生履歴はありません。',
   },
   'stats_counting_hint': {
     'ru':
@@ -488,16 +486,16 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'プレイリストを作成',
   },
   'playlist_crop_title': {
-    'ru': 'Аватарка плейлиста',
-    'en': 'Playlist avatar',
+    'ru': 'Обложка плейлиста',
+    'en': 'Playlist artwork',
     'ja': 'プレイリストの画像',
   },
   'playlist_crop_hint': {
     'ru':
-        'Перемещай фото и меняй масштаб. В аватарку попадёт область внутри круга.',
+        'Перемещай фото и меняй масштаб. На обложке останется то, что внутри круга.',
     'en':
-        'Drag and zoom the photo. The area inside the circle becomes your avatar.',
-    'ja': '写真を移動・拡大して、円の中に表示する範囲を選んでください。',
+        'Drag and zoom the photo. The area inside the circle becomes the playlist artwork.',
+    'ja': '写真を移動したり拡大・縮小したりして、プレイリストの画像に使う範囲を円の中に収めてください。',
   },
   'playlist_crop_reset': {
     'ru': 'Сбросить кадрирование',
@@ -557,10 +555,11 @@ const Map<String, Map<String, String>> _translations = {
   },
   'track_transition_crossfade_hint': {
     'ru':
-        'Наложение при автопереходе между скачанными треками. В остальных случаях — затухание без наложения.',
+        'При автоматической смене скачанных треков следующий начинает звучать, пока затихает текущий. В остальных случаях треки плавно сменяются без наложения.',
     'en':
-        'Overlap downloaded tracks on automatic transitions. Otherwise, fade without overlap.',
-    'ja': 'ダウンロード済みの曲を自動で切り替える際に重ねて再生します。その他の場合は重ねずにフェードします。',
+        'When the player automatically switches between downloaded tracks, the next one starts while the current one fades out. Otherwise, tracks fade without overlapping.',
+    'ja':
+        'ダウンロード済みの曲が自動で切り替わるときは、今の曲がフェードアウトする間に次の曲が始まります。それ以外では、曲を重ねずにフェードします。',
   },
   'settings_data': {'ru': 'Данные', 'en': 'Data', 'ja': 'データ'},
   'settings_accent': {

@@ -379,12 +379,12 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('empty history explains how to start collecting statistics', (
+  testWidgets('empty history reports no listening for the selected period', (
     tester,
   ) async {
     store.empty = true;
     await show(tester);
-    expect(find.textContaining('Включи трек'), findsOneWidget);
+    expect(find.text('За выбранный период нет прослушиваний.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

@@ -11,7 +11,11 @@ tested on Arch Linux.
 ## Features
 
 - Downloaded MP3 playback, a playback queue, shuffle, repeat, and favorites.
-- MP4 music video downloads and local playback, with an option to disable video.
+- Download MP4 music videos on Windows and Linux and watch them offline.
+  You can turn video off in Settings.
+- Turn on crossfade in Settings. When the player switches between downloaded
+  tracks automatically, the next one starts about 0.6 seconds before the current one ends.
+  Tracks do not overlap when music videos are playing.
 - Synced LRC lyrics and a dedicated full-screen lyrics view.
 - Offline search by title, artist, and phrases from saved lyrics.
   Lyric words must be consecutive and in the same order; matching ignores
@@ -74,10 +78,10 @@ flutter run -d windows --dart-define=SHIKI_SERVER_URL=http://127.0.0.1:8000
 On Android, `127.0.0.1` refers to the phone itself. To reach a server running
 on your computer, enter an address accessible from the phone.
 
-While the player is open and the server is reachable, changes are checked
-approximately every 12 seconds. Library metadata is refreshed, and changed
-downloaded files are offered as updates. If an updated MP3 is currently playing,
-the new file is applied the next time that track starts.
+While the app is open and the server is reachable, ShikiMusic checks for changes
+about every 12 seconds. It updates track details and offers to download new versions
+of files you've already saved. If you update the MP3 that's playing, the player
+uses the new file the next time that track starts.
 
 ## Playlists and statistics
 
