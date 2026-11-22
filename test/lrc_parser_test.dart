@@ -37,6 +37,17 @@ void main() {
     expect(delayed.single.time.inMilliseconds, 2250);
   });
 
+  test('manual timing combines with the LRC offset before clamping', () {
+    const lrc = '[00:00.100]First\n[00:02]Second\n[offset:+200]';
+    List<int> times(int advance) => parseLrcString(
+      lrc,
+      advanceMilliseconds: advance,
+    ).map((line) => line.time.inMilliseconds).toList();
+    expect(times(0), [0, 1800]);
+    expect(times(-300), [200, 2100]);
+    expect(times(100), [0, 1700]);
+  });
+
   test('keeps blank timed cues but ignores metadata and invalid seconds', () {
     final lyrics = parseLrcString(
       '[ar:Artist]\r\n[00:01]Verse\r\n[00:03]\r\n[00:70]Invalid\r\nplain text',

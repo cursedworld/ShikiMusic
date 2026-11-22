@@ -909,6 +909,35 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Lyrics not found',
     'ja': '歌詞が見つかりません',
   },
+  'lyric_timing': {
+    'ru': 'Синхронизация текста',
+    'en': 'Lyric timing',
+    'ja': '歌詞のタイミング調整',
+  },
+  'lyric_timing_earlier': {'ru': 'Раньше', 'en': 'Earlier', 'ja': '早める'},
+  'lyric_timing_later': {'ru': 'Позже', 'en': 'Later', 'ja': '遅らせる'},
+  'lyric_timing_reset': {'ru': 'Сбросить', 'en': 'Reset', 'ja': 'リセット'},
+  'lyric_timing_done': {'ru': 'Готово', 'en': 'Done', 'ja': '完了'},
+  'lyric_timing_no_offset': {
+    'ru': 'Без сдвига',
+    'en': 'No adjustment',
+    'ja': '調整なし',
+  },
+  'lyric_timing_advanced': {
+    'ru': 'На {seconds} с раньше',
+    'en': '{seconds} s earlier',
+    'ja': '{seconds} 秒早く',
+  },
+  'lyric_timing_delayed': {
+    'ru': 'На {seconds} с позже',
+    'en': '{seconds} s later',
+    'ja': '{seconds} 秒遅く',
+  },
+  'lyric_timing_save_error': {
+    'ru': 'Не удалось сохранить. Попробуй ещё раз.',
+    'en': 'Could not save. Try again.',
+    'ja': '保存できませんでした。もう一度お試しください。',
+  },
   'play_video_clip': {
     'ru': 'Воспроизводить клип',
     'en': 'Play Video Clip',

@@ -8,11 +8,12 @@ final RegExp _lrcOffset = RegExp(
 
 /// Parses ordinary LRC without discarding repeated timestamps or silent gaps.
 /// Positive LRC offsets advance the lyrics; negative offsets delay them.
-List<LyricLine> parseLrcString(String contents) {
+List<LyricLine> parseLrcString(String contents, {int advanceMilliseconds = 0}) {
   var offsetMilliseconds = 0;
   for (final match in _lrcOffset.allMatches(contents)) {
     offsetMilliseconds = int.tryParse(match.group(1)!) ?? offsetMilliseconds;
   }
+  offsetMilliseconds += advanceMilliseconds;
 
   final entries = <({LyricLine line, int order})>[];
   var order = 0;

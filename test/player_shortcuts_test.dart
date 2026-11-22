@@ -94,4 +94,27 @@ void main() {
     expect(toggles, 0);
     expect(find.text('Close'), findsNothing);
   });
+
+  testWidgets('space can activate an inline timing control without pausing', (
+    tester,
+  ) async {
+    var adjustments = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: PlaybackShortcutScope(
+            child: TextButton(
+              autofocus: true,
+              onPressed: () => adjustments++,
+              child: const Text('Earlier'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    expect(adjustments, 1);
+    expect(toggles, 0);
+  });
 }

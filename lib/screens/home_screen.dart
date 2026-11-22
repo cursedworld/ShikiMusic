@@ -33,6 +33,7 @@ import '../download_batch.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../lrc_parser.dart';
+import '../lyric_timing.dart';
 import '../lyrics_search.dart';
 import '../listening_statistics.dart';
 import '../local_download_remover.dart';
@@ -542,6 +543,9 @@ class MainAppScreenState extends State<MainAppScreen>
   bool _audioSourceLocal = false;
   int _settledTrackRevision = -1;
   int _lyricsRevision = 0;
+  LyricTimingStore? _lyricTimingStore;
+  ({String contents, int trackId, int revision})? _pendingTimedLyrics;
+  final _lyricTiming = ValueNotifier<LyricTimingSession?>(null);
   StreamSubscription<Duration>? _audioDurationSubscription;
   StreamSubscription<Duration>? _audioPositionSubscription;
   StreamSubscription<PlayerState>? _statisticsStateSubscription;
@@ -685,8 +689,11 @@ class MainAppScreenState extends State<MainAppScreen>
             _audioSourceTrackId != activeTrackNotifier.value?['id']) {
           return;
         }
-        final pos = await audioPlayer.getCurrentPosition();
-        if (pos != null) {
+        final revision = _trackRevision;
+        final pos = _useLiveLyricPosition
+            ? currentPositionNotifier.value
+            : await audioPlayer.getCurrentPosition();
+        if (pos != null && _isCurrentTrackRevision(revision)) {
           checkLyrics(pos);
           _syncTicks++;
           if (_syncTicks >= 10) {
@@ -744,6 +751,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _databaseSyncRevision += 1;
     _videoRevision += 1;
     _lyricsRevision += 1;
+    _lyricTiming.dispose();
     _discordActivityRevision += 1;
     _videoOperation?.cancel();
     _videoOperation = null;
@@ -2351,6 +2359,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (_stateDisposing) return;
     localPath = appDir.path;
     globalLocalPath = localPath;
+    _lyricTimingStore = LyricTimingStore(appDir);
     try {
       await LocalDownloadRemover(appDir).recover();
     } catch (error) {
@@ -4409,6 +4418,7 @@ class MainAppScreenState extends State<MainAppScreen>
       if (!mounted || !sourceSettled()) return;
       _statistics?.position(position);
       currentPositionNotifier.value = position;
+      if (_useLiveLyricPosition) checkLyrics(position);
       _linuxMediaSession?.updatePosition(position);
       if (_trackFade.enabled) unawaited(_syncTrackFade(position));
     });
@@ -4478,7 +4488,8 @@ class MainAppScreenState extends State<MainAppScreen>
     }
     (_crossfade ??= TrackCrossfade<PlaybackDeck>(
       createDeck: () => _newAudioDeck(sharedAndroidFocus: true),
-      fileReady: (path) => _hasNonEmptyFile(File(path)),
+      fileReady: (path) async =>
+          await LyricAudioFile.inspect(File(path)) != null,
       nextSource: _nextCrossfadeSource,
       onError: _logAudioError,
       onReleased: () => unawaited(_drainDownloadRemovals()),
@@ -4762,8 +4773,8 @@ class MainAppScreenState extends State<MainAppScreen>
   }) async {
     if (!_isCurrentTrackRevision(trackRevision)) return;
     final trackId = targetTrack['id'] as int;
-    final localTrackPath = _localAudioFile(trackId);
-    final hasLocalTrack = await _hasNonEmptyFile(localTrackPath);
+    final localAudio = await LyricAudioFile.inspect(_localAudioFile(trackId));
+    final hasLocalTrack = localAudio != null;
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = null;
@@ -4791,13 +4802,12 @@ class MainAppScreenState extends State<MainAppScreen>
         );
         if (!_isCurrentTrackRevision(trackRevision)) return;
       }
-      if (hasLocalTrack) {
-        await audioPlayer.setSource(DeviceFileSource(localTrackPath.path));
-      } else {
-        await audioPlayer.setSource(
-          UrlSource(targetTrack['audio_file'].toString()),
-        );
-      }
+      await _audioDeck.setTrackSource(
+        localAudio == null
+            ? UrlSource(targetTrack['audio_file'].toString())
+            : DeviceFileSource(localAudio.path),
+        localAudio: localAudio,
+      );
     } catch (_) {
       if (_isCurrentTrackRevision(trackRevision) && _trackFade.enabled) {
         unawaited(_trackFade.reset());
@@ -4814,6 +4824,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _audioSourceTrackId = trackId;
     _audioSourceLocal = hasLocalTrack;
     _settledTrackRevision = trackRevision;
+    _prepareLyricTiming();
     unawaited(_drainDownloadRemovals());
     try {
       final duration = await audioPlayer.getDuration();
@@ -4872,8 +4883,8 @@ class MainAppScreenState extends State<MainAppScreen>
   }) async {
     if (!_isCurrentTrackRevision(trackRevision)) return;
     final trackId = targetTrack['id'] as int;
-    final localTrackPath = _localAudioFile(trackId);
-    final hasLocalTrack = await _hasNonEmptyFile(localTrackPath);
+    final localAudio = await LyricAudioFile.inspect(_localAudioFile(trackId));
+    final hasLocalTrack = localAudio != null;
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = null;
@@ -4883,18 +4894,18 @@ class MainAppScreenState extends State<MainAppScreen>
       await _configureAndroidFocusForSource(trackRevision);
       if (!_isCurrentTrackRevision(trackRevision)) return;
     }
-    if (hasLocalTrack) {
-      await audioPlayer.setSource(DeviceFileSource(localTrackPath.path));
-    } else {
-      await audioPlayer.setSource(
-        UrlSource(targetTrack['audio_file'].toString()),
-      );
-    }
+    await _audioDeck.setTrackSource(
+      localAudio == null
+          ? UrlSource(targetTrack['audio_file'].toString())
+          : DeviceFileSource(localAudio.path),
+      localAudio: localAudio,
+    );
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = trackId;
     _audioSourceLocal = hasLocalTrack;
     _settledTrackRevision = trackRevision;
+    _prepareLyricTiming();
     unawaited(_drainDownloadRemovals());
     final duration = await audioPlayer.getDuration();
     if (!_isCurrentTrackRevision(trackRevision)) return;
@@ -5045,6 +5056,8 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> fetchLyrics(dynamic trackObj) async {
     final revision = ++_lyricsRevision;
+    _pendingTimedLyrics = null;
+    _lyricTiming.value = null;
     globalLyrics.clear();
     noLrcData = "";
     currentLine = -1;
@@ -5163,13 +5176,69 @@ class MainAppScreenState extends State<MainAppScreen>
     required String plainText,
   }) {
     if (!_isCurrentLyricsRequest(revision, trackId)) return;
+    noLrcData = lyrics.isEmpty ? plainText : '';
+    lrcLoading = false;
+    if (lyrics.isNotEmpty) {
+      _pendingTimedLyrics = (
+        contents: plainText,
+        trackId: trackId,
+        revision: revision,
+      );
+    }
+    _setLyricTimeline(lyrics);
+    updateRPC(force: true);
+    _prepareLyricTiming();
+  }
+
+  bool get _useLiveLyricPosition {
+    final timing = _lyricTiming.value;
+    return timing != null &&
+        (timing.hasPreview || timing.advanceMilliseconds != 0);
+  }
+
+  void _setLyricTimeline(List<LyricLine> lyrics) {
     globalLyrics
       ..clear()
       ..addAll(lyrics);
-    noLrcData = lyrics.isEmpty ? plainText : '';
-    lrcLoading = false;
+    currentLine = lyricLineIndexAt(globalLyrics, currentPositionNotifier.value);
     uiSignal.value++;
-    updateRPC(force: true);
+  }
+
+  void _prepareLyricTiming() {
+    final input = _pendingTimedLyrics;
+    if (input == null ||
+        _audioSourceTrackId != input.trackId ||
+        _settledTrackRevision != _trackRevision ||
+        !_isCurrentLyricsRequest(input.revision, input.trackId)) {
+      return;
+    }
+    _pendingTimedLyrics = null;
+    final localAudio = _audioDeck.localAudio;
+    final store = _lyricTimingStore;
+    if (localAudio == null || store == null) return;
+
+    final trackRevision = _trackRevision;
+    final session = LyricTimingSession(
+      store: store,
+      trackId: input.trackId,
+      contents: input.contents,
+      fingerprintAudio: localAudio.fingerprint,
+      isCurrent: () =>
+          _isCurrentTrackRevision(trackRevision) &&
+          _isCurrentLyricsRequest(input.revision, input.trackId),
+      onTimeline: (lyrics) {
+        _setLyricTimeline(lyrics);
+        if (isPlaying) updateRPC();
+      },
+    );
+    unawaited(() async {
+      try {
+        await session.restore();
+      } catch (error) {
+        debugPrint('Could not restore lyric timing: ${error.runtimeType}');
+      }
+      if (session.isCurrent) _lyricTiming.value = session;
+    }());
   }
 
   Future<void> _writeLyricsFile(File file, String contents, int trackId) async {
@@ -5387,7 +5456,8 @@ class MainAppScreenState extends State<MainAppScreen>
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PresentationOverlay(onSeekRequested: seekTo),
+        builder: (context) =>
+            PresentationOverlay(onSeekRequested: seekTo, timing: _lyricTiming),
       ),
     );
   }

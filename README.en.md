@@ -16,7 +16,9 @@ tested on Arch Linux.
 - Turn on crossfade in Settings. When the player switches between downloaded
   tracks automatically, the next one starts about 0.6 seconds before the current one ends.
   Tracks do not overlap when music videos are playing.
-- Synced LRC lyrics and a dedicated full-screen lyrics view.
+- Synced LRC lyrics and a dedicated full-screen lyrics view. For downloaded
+  tracks, use the control in the lyrics header to adjust timing. The adjustment
+  stays on your device and leaves the original lyrics untouched.
 - Offline search by title, artist, and phrases from saved lyrics.
   Lyric words must be consecutive and in the same order; matching ignores
   case, punctuation, and the Russian ё/е distinction.

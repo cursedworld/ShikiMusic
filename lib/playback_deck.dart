@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:audioplayers/audioplayers.dart';
 
+import 'lyric_timing.dart';
 import 'track_crossfade.dart';
 import 'track_fade.dart';
 
@@ -35,6 +38,16 @@ class PlaybackDeck implements CrossfadeDeck {
   late final TrackFade fade;
   Future<void>? contextReady;
   Object? _lastVolumeError;
+  LyricAudioFile? localAudio;
+
+  Future<void> setTrackSource(
+    Source source, {
+    LyricAudioFile? localAudio,
+  }) async {
+    this.localAudio = null;
+    await player.setSource(source);
+    this.localAudio = localAudio;
+  }
 
   @override
   bool get playing => player.state == PlayerState.playing;
@@ -42,7 +55,10 @@ class PlaybackDeck implements CrossfadeDeck {
   @override
   Future<Duration?> prepare(String path) async {
     await contextReady;
-    await player.setSource(DeviceFileSource(path));
+    await setTrackSource(
+      DeviceFileSource(path),
+      localAudio: await LyricAudioFile.inspect(File(path)),
+    );
     return player.getDuration();
   }
 
