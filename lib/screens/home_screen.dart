@@ -3478,8 +3478,8 @@ class MainAppScreenState extends State<MainAppScreen>
   bool isTrackLocal(int id) {
     if (localPath.isEmpty) return false;
     final track = _ownTracks[id];
-    final file = track == null ? _localAudioFile(id) : _trackAudioFile(track);
     try {
+      final file = track == null ? _localAudioFile(id) : _trackAudioFile(track);
       return file.existsSync() && file.lengthSync() > 0;
     } on FileSystemException {
       return false;
@@ -3493,7 +3493,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final digest = localTrackDigest(track);
     return digest == null
         ? _localAudioFile(track['id'] as int)
-        : localMusicAsset(Directory(localPath), localAudioName(digest));
+        : resolveLocalMusicAsset(Directory(localPath), localAudioName(digest));
   }
 
   File _localVideoFile(int id) =>
@@ -3593,11 +3593,14 @@ class MainAppScreenState extends State<MainAppScreen>
         ? rawTrackId
         : int.tryParse(rawTrackId?.toString() ?? '');
     if (trackId == null) return false;
-    final digest = localTrackDigest(track);
-    final audioFile = digest == null
-        ? _localAudioFile(trackId)
-        : localMusicAsset(Directory(localPath), localAudioName(digest));
     try {
+      final digest = localTrackDigest(track);
+      final audioFile = digest == null
+          ? _localAudioFile(trackId)
+          : resolveLocalMusicAsset(
+              Directory(localPath),
+              localAudioName(digest),
+            );
       return audioFile.existsSync() && audioFile.lengthSync() > 0;
     } on FileSystemException {
       return false;

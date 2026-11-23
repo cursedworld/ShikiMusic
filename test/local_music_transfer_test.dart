@@ -48,7 +48,6 @@ void main() {
   ).save(id, audio: digest, text: lrcDigest, advanceMilliseconds: advance);
   Future<void> fixture() async {
     await createCatalog(source, song);
-    await ensureLocalMusicDirectory(source);
     await localMusicAsset(source, localAudioName(digest)).writeAsBytes(mp3);
     await json(source, 'liked_tracks.json', [incomingId, 12]);
     await json(source, 'my_playlists.json', [
@@ -137,6 +136,21 @@ void main() {
       expect(repaired.restored, 1);
       expect(repaired.entries.single.id, -99);
       expect(await copy.readAsBytes(), mp3);
+    },
+  );
+
+  test(
+    'exports the old subfolder layout and restores next to downloads',
+    () async {
+      await fixture();
+      final name = localAudioName(digest);
+      final oldFolder = await Directory('${source.path}/local_music').create();
+      await localMusicAsset(source, name).rename('${oldFolder.path}/$name');
+      await export();
+      await restore();
+      expect(await File('${target.path}/$name').readAsBytes(), mp3);
+      expect((await readLocalMusicCatalog(target)).single.digest, digest);
+      expect(await Directory('${target.path}/local_music').exists(), isFalse);
     },
   );
 

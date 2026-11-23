@@ -29,7 +29,7 @@ class _LocalMusicImportDialogState extends State<LocalMusicImportDialog> {
   LocalMusicImportResult? _result;
   ({int index, int total, String name, double? fraction})? _progress;
   bool _choosing = false;
-  bool _failed = false;
+  String? _failureKey;
 
   Future<List<LocalMusicFile>?> _chooseFiles() async {
     final result = await FilePicker.platform.pickFiles(
@@ -45,13 +45,15 @@ class _LocalMusicImportDialogState extends State<LocalMusicImportDialog> {
   }
 
   Future<void> _chooseAndImport() async {
+    var failureKey = 'local_import_pick_failed';
     setState(() {
       _choosing = true;
-      _failed = false;
+      _failureKey = null;
     });
     try {
       final files = await (widget.chooseFiles ?? _chooseFiles)();
       if (!mounted || files == null || files.isEmpty) return;
+      failureKey = 'local_import_save_failed';
       final token = LocalImportCancel();
       setState(() {
         _choosing = false;
@@ -76,8 +78,9 @@ class _LocalMusicImportDialogState extends State<LocalMusicImportDialog> {
         }
       });
       if (mounted) setState(() => _result = result);
-    } catch (_) {
-      if (mounted) setState(() => _failed = true);
+    } catch (error) {
+      debugPrint('Local music: $failureKey (${error.runtimeType})');
+      if (mounted) setState(() => _failureKey = failureKey);
     } finally {
       if (mounted) {
         setState(() {
@@ -100,6 +103,7 @@ class _LocalMusicImportDialogState extends State<LocalMusicImportDialog> {
     final progress = _progress;
     final cancel = _cancel;
     final busy = _choosing || cancel != null;
+    final failureKey = _failureKey;
     final muted = Theme.of(
       context,
     ).textTheme.bodyMedium?.copyWith(color: Colors.white70);
@@ -177,11 +181,11 @@ class _LocalMusicImportDialogState extends State<LocalMusicImportDialog> {
                     ),
                 ],
               ],
-              if (_failed)
+              if (failureKey != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 14),
                   child: Text(
-                    tr('local_import_save_failed'),
+                    tr(failureKey),
                     style: const TextStyle(color: Colors.redAccent),
                   ),
                 ),

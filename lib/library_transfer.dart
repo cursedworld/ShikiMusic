@@ -60,7 +60,7 @@ File _file(String root, String name) =>
     File('$root${Platform.pathSeparator}$name');
 File _libraryAsset(String root, String name) => localAssetDigest(name) == null
     ? _file(root, name)
-    : localMusicAsset(Directory(root), name);
+    : resolveLocalMusicAsset(Directory(root), name);
 
 Future<void> _regularTarget(File file) async {
   final type = await FileSystemEntity.type(file.path, followLinks: false);
@@ -192,15 +192,6 @@ Future<String> _export(Map<String, Object?> job) async {
         localMusicCatalogName,
         utf8.encode(encodeLocalMusicCatalogText(localMusic)),
       );
-      final mediaDirectory = localMusicDirectory(Directory(root));
-      final mediaType = await FileSystemEntity.type(
-        mediaDirectory.path,
-        followLinks: false,
-      );
-      if (mediaType != FileSystemEntityType.notFound &&
-          mediaType != FileSystemEntityType.directory) {
-        throw const FormatException('Local MP3 storage must not be a link');
-      }
       for (final song in localMusic) {
         final names = [
           if (job['media'] == true) localAudioName(song.digest),
@@ -811,11 +802,6 @@ Future<bool> _apply(String root) async {
   final stats = _file(stage, 'listening_statistics.json');
   final hasStats = inventory.containsKey('listening_statistics.json');
   if (hasStats) await StatisticsStore('').validateFile(stats.path);
-  if (inventory.keys.cast<String>().any(
-    (name) => localAssetDigest(name) != null,
-  )) {
-    await ensureLocalMusicDirectory(Directory(root));
-  }
   for (final name in inventory.keys.cast<String>()) {
     if (!_jsonFiles.contains(name)) {
       final destination = _libraryAsset(root, name);

@@ -80,8 +80,7 @@ Future<LocalMusicImportResult> importLocalMusic({
   var alreadyPresent = 0;
   var entries = <LocalMusicEntry>[];
   if (tracks.isNotEmpty && !cancel.requested) {
-    await ensureLocalMusicDirectory(directory);
-    final staging = await localMusicDirectory(directory).createTemp('import_');
+    final staging = await directory.createTemp('.local_import_');
     try {
       // Serializes read/merge/write on this catalog, including concurrent
       // imports. No changes become visible before the atomic JSON write.
@@ -111,14 +110,10 @@ Future<LocalMusicImportResult> importLocalMusic({
               );
               if (digest == null || cancel.requested) break;
               final old = byDigest[digest];
-              final audioFile = localMusicAsset(
-                directory,
-                localAudioName(digest),
-              );
-              final coverFile = localMusicAsset(
-                directory,
-                localCoverName(digest),
-              );
+              final audioName = localAudioName(digest);
+              final coverName = localCoverName(digest);
+              final audioFile = resolveLocalMusicAsset(directory, audioName);
+              final coverFile = resolveLocalMusicAsset(directory, coverName);
               final audioReady = await _regularAsset(audioFile);
               final coverReady = await _regularAsset(coverFile);
               // Never associate arbitrary bytes with an existing digest, even
@@ -127,8 +122,7 @@ Future<LocalMusicImportResult> importLocalMusic({
                   audioReady && await fileSha256(audioFile) == digest;
               final Mp3Metadata? info;
               if (old == null || !audioMatches || !coverReady) {
-                final path = output.path;
-                info = await Isolate.run(() => readMp3Metadata(path));
+                info = await _readCopiedMetadata(output.path);
               } else {
                 info = null;
               }
@@ -157,12 +151,17 @@ Future<LocalMusicImportResult> importLocalMusic({
                               : null),
                     );
               if (cancel.requested) break;
-              if (!audioMatches) await output.rename(audioFile.path);
+              if (!audioMatches) {
+                await output.rename(localMusicAsset(directory, audioName).path);
+              }
               final cover = info?.coverJpeg;
               if (!coverReady && cover != null) {
                 // Optional cover failure doesn't hide a playable song.
                 try {
-                  await atomicFileStore.writeBytes(coverFile, cover);
+                  await atomicFileStore.writeBytes(
+                    localMusicAsset(directory, coverName),
+                    cover,
+                  );
                 } on FileSystemException {
                   // Keep the usual no-cover placeholder.
                 }
@@ -219,7 +218,7 @@ Future<LocalMusicImportResult> importLocalMusic({
         },
       );
     } finally {
-      // Fresh temp child of local_music created by this call only.
+      // Fresh temp child of the library created by this call only.
       try {
         await staging.delete(recursive: true);
       } on FileSystemException {
@@ -238,6 +237,11 @@ Future<LocalMusicImportResult> importLocalMusic({
     cancelled: cancel.requested,
   );
 }
+
+// Keep the parser closure out of the import scope. On Dart VM it could
+// otherwise capture the progress callback, including unsendable UI state.
+Future<Mp3Metadata> _readCopiedMetadata(String path) =>
+    Isolate.run(() => readMp3Metadata(path));
 
 Future<bool> _regularAsset(File file) async {
   final type = await FileSystemEntity.type(file.path, followLinks: false);

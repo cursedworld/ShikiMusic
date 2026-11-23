@@ -89,10 +89,10 @@ const Map<String, Map<String, String>> _translations = {
   },
   'local_import_copy': {
     'ru':
-        'Плеер скопирует выбранные MP3 в библиотеку. Копии займут место на устройстве; исходники останутся на месте.',
+        'Плеер скопирует MP3 в папку со скачанными треками. Копии займут место; исходники останутся на месте.',
     'en':
-        'ShikiMusic copies the selected MP3s into your library. The copies take up space; the originals stay where they are.',
-    'ja': '選んだMP3をライブラリにコピーします。コピーの分だけ容量を使います。元のファイルはそのままです。',
+        'MP3s are copied to the downloads folder. The copies take up space; the originals stay where they are.',
+    'ja': 'MP3をダウンロード済みの曲と同じフォルダにコピーします。コピーの分だけ容量を使います。元のファイルはそのままです。',
   },
   'local_import_lrc_desktop': {
     'ru': 'Текст из .lrc с тем же именем подхватится из папки с MP3.',
@@ -154,11 +154,17 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'select the MP3 with the same name',
     'ja': '同名のMP3も選択してください',
   },
+  'local_import_pick_failed': {
+    'ru': 'Не удалось получить выбранные файлы. Попробуй выбрать их снова.',
+    'en': 'Could not open the file selection. Try selecting the files again.',
+    'ja': '選択したファイルにアクセスできませんでした。もう一度選択してください。',
+  },
   'local_import_save_failed': {
     'ru':
-        'Не удалось добавить файлы. Проверь свободное место и доступ к файлам.',
-    'en': 'Could not add files. Check free space and file access.',
-    'ja': '追加できませんでした。空き容量とファイルへのアクセスを確認してください。',
+        'Не удалось сохранить копии. Проверь свободное место и доступ к папке ShikiMusic.',
+    'en':
+        'Could not save copies. Check free space and access to the ShikiMusic folder.',
+    'ja': 'コピーを保存できませんでした。空き容量とShikiMusicフォルダへのアクセスを確認してください。',
   },
   'local_import_owned': {'ru': 'Свой MP3', 'en': 'Your MP3', 'ja': 'ローカルMP3'},
   'local_import_missing': {

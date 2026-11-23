@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -37,6 +38,54 @@ void main() {
     cancel: token ?? LocalImportCancel(),
     lookForAdjacentLyrics: desktop,
     onProgress: progress,
+  );
+
+  test('imports with a progress callback that owns UI-isolate state', () async {
+    final selection = await given('Вне библиотеки (1).MP3', fixtureMp3());
+    final port = ReceivePort();
+    addTearDown(port.close);
+    var reports = 0;
+    final result = await add(
+      [selection],
+      progress: (_, _, _, _) {
+        port.sendPort.send('progress');
+        reports++;
+      },
+    );
+    expect(result.added, 1);
+    expect(reports, greaterThanOrEqualTo(2));
+    final copy = File(
+      '${library.path}/local_audio_${result.entries.single.digest}.mp3',
+    );
+    expect(await copy.readAsBytes(), await File(selection.path!).readAsBytes());
+  });
+
+  test(
+    'reimport recognises a copy from the old subfolder without duplicating it',
+    () async {
+      final bytes = fixtureMp3();
+      final selection = await given('Original.mp3', bytes);
+      final digest = sha256.convert(bytes).toString();
+      final oldDirectory = await Directory(
+        '${library.path}/local_music',
+      ).create();
+      final name = localAudioName(digest);
+      final oldCopy = await File(
+        '${oldDirectory.path}/$name',
+      ).writeAsBytes(bytes);
+      final entry = LocalMusicEntry(id: -1, digest: digest, title: 'Existing');
+      await File(
+        '${library.path}/$localMusicCatalogName',
+      ).writeAsString(encodeLocalMusicCatalogText([entry]));
+
+      final result = await add([selection]);
+      expect(result.alreadyPresent, 1);
+      expect(result.added, 0);
+      expect(result.entries.single.id, -1);
+      expect(resolveLocalMusicAsset(library, name).path, oldCopy.path);
+      expect(await oldCopy.readAsBytes(), bytes);
+      expect(await localMusicAsset(library, name).exists(), isFalse);
+    },
   );
 
   test(
@@ -214,12 +263,7 @@ void main() {
       );
       expect(result.cancelled, isTrue);
       expect(result.entries.single.title, 'first');
-      expect(
-        await localMusicDirectory(
-          library,
-        ).list().where((f) => f is Directory).isEmpty,
-        isTrue,
-      );
+      expect(await library.list().where((f) => f is Directory).isEmpty, isTrue);
       final digest = sha256
           .convert(await File(second.path!).readAsBytes())
           .toString();

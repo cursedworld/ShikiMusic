@@ -72,8 +72,8 @@ and updates. Building the player does not include a server or a preloaded music 
 
 Downloaded music, videos, and saved lyrics remain available without the server.
 Choose **Add files** on Home to play your own MP3s without Django. The player
-copies the files and reads their tags. On desktop, put a matching `.lrc` next to
-the MP3; on Android, select both files.
+copies the files next to downloaded tracks and reads their tags. On desktop,
+put a matching `.lrc` next to the MP3; on Android, select both files.
 Playlists, favorites, settings, and statistics are stored on the device.
 
 Change the server address in Settings. The default is `http://127.0.0.1:8000`.

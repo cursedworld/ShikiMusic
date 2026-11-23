@@ -153,11 +153,11 @@ ImageProvider _rememberCover(String key, ImageProvider provider) {
 
 File? _ownCover(String digest) {
   if (globalLocalPath.isEmpty) return null;
-  final cover = localMusicAsset(
-    Directory(globalLocalPath),
-    localCoverName(digest),
-  );
   try {
+    final cover = resolveLocalMusicAsset(
+      Directory(globalLocalPath),
+      localCoverName(digest),
+    );
     return cover.existsSync() && cover.lengthSync() > 0 ? cover : null;
   } on FileSystemException {
     return null;

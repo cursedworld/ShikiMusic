@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 
 const localMusicCatalogName = 'local_music.json';
-const localMusicDirectoryName = 'local_music';
+const _legacyLocalMusicDirectoryName = 'local_music';
 const localMusicMaxBytes = 8 * 1024 * 1024 * 1024;
 const localLyricMaxBytes = 256 * 1024;
 const localArtworkMaxBytes = 4 * 1024 * 1024;
@@ -37,22 +37,29 @@ String? localAssetDigest(String name) {
   return match[2];
 }
 
-Directory localMusicDirectory(Directory root) =>
-    Directory('${root.path}/$localMusicDirectoryName');
-
 File localMusicAsset(Directory root, String name) {
   if (localAssetDigest(name) == null) throw ArgumentError.value(name);
-  return File('${localMusicDirectory(root).path}/$name');
+  return File('${root.path}/$name');
 }
 
-Future<void> ensureLocalMusicDirectory(Directory root) async {
-  final directory = localMusicDirectory(root);
-  final type = await FileSystemEntity.type(directory.path, followLinks: false);
-  if (type == FileSystemEntityType.notFound) {
-    await directory.create();
-  } else if (type != FileSystemEntityType.directory) {
-    throw const FileSystemException('Local music storage is not a directory');
+/// The first release kept assets in a subdirectory. Keep reading those
+/// copies without moving them or creating a second copy on reimport.
+File resolveLocalMusicAsset(Directory root, String name) {
+  final target = localMusicAsset(root, name);
+  if (FileSystemEntity.typeSync(target.path, followLinks: false) !=
+      FileSystemEntityType.notFound) {
+    return target;
   }
+  final legacyDirectory = '${root.path}/$_legacyLocalMusicDirectoryName';
+  if (FileSystemEntity.typeSync(legacyDirectory, followLinks: false) !=
+      FileSystemEntityType.directory) {
+    return target;
+  }
+  final legacy = File('$legacyDirectory/$name');
+  return FileSystemEntity.typeSync(legacy.path, followLinks: false) ==
+          FileSystemEntityType.file
+      ? legacy
+      : target;
 }
 
 /// The integer ID is a device-side alias; the digest is the durable identity.
