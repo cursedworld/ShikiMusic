@@ -182,37 +182,65 @@ class TrackPlayNextMenu extends StatelessWidget {
   static const _next = 'play_next';
 
   @override
-  Widget build(BuildContext context) => PopupMenuButton<Object>(
-    style: IconButton.styleFrom(
-      minimumSize: const Size(40, 44),
-      padding: EdgeInsets.zero,
-    ),
-    tooltip: tr(
-      onPlayNext != null ? 'track_actions' : 'add_selected_to_playlist',
-    ),
-    icon: Icon(
-      onPlayNext != null ? Icons.more_horiz_rounded : Icons.add_circle_outline,
-      color: Colors.white54,
-      size: 21,
-    ),
-    onSelected: (item) {
-      if (item == _next) {
-        onPlayNext?.call();
-      } else if (item is int) {
-        onPlaylistSelected?.call(item);
-      }
-    },
-    itemBuilder: (_) => [
-      if (onPlayNext != null)
+  Widget build(BuildContext context) {
+    final compact = switch (Theme.of(context).platform) {
+      TargetPlatform.windows ||
+      TargetPlatform.linux ||
+      TargetPlatform.macOS => true,
+      _ => false,
+    };
+
+    PopupMenuItem<Object> entry(Object value, String title) =>
         PopupMenuItem<Object>(
-          value: _next,
+          value: value,
+          height: compact ? 32 : kMinInteractiveDimension,
+          padding: compact ? const EdgeInsets.symmetric(horizontal: 10) : null,
           child: Text(
+            title,
+            maxLines: compact ? 2 : null,
+            overflow: compact ? TextOverflow.ellipsis : null,
+          ),
+        );
+
+    return PopupMenuButton<Object>(
+      style: IconButton.styleFrom(
+        minimumSize: const Size(40, 44),
+        padding: EdgeInsets.zero,
+      ),
+      menuPadding: compact ? const EdgeInsets.symmetric(vertical: 4) : null,
+      constraints: compact
+          ? const BoxConstraints(minWidth: 112, maxWidth: 224)
+          : null,
+      tooltip: tr(
+        onPlayNext != null ? 'track_actions' : 'add_selected_to_playlist',
+      ),
+      icon: Icon(
+        onPlayNext != null
+            ? Icons.more_horiz_rounded
+            : Icons.add_circle_outline,
+        color: Colors.white54,
+        size: 21,
+      ),
+      onSelected: (item) {
+        if (item == _next) {
+          onPlayNext?.call();
+        } else if (item is int) {
+          onPlaylistSelected?.call(item);
+        }
+      },
+      itemBuilder: (_) => [
+        if (onPlayNext != null)
+          entry(
+            _next,
             tr(playNextCount > 1 ? 'play_next_selection' : 'play_next_track'),
           ),
-        ),
-      if (onPlayNext != null && playlists.isNotEmpty) const PopupMenuDivider(),
-      for (final playlist in playlists.entries)
-        PopupMenuItem<Object>(value: playlist.key, child: Text(playlist.value)),
-    ],
-  );
+        if (onPlayNext != null && playlists.isNotEmpty)
+          compact
+              ? const PopupMenuDivider(height: 8, indent: 10, endIndent: 10)
+              : const PopupMenuDivider(),
+        for (final playlist in playlists.entries)
+          entry(playlist.key, playlist.value),
+      ],
+    );
+  }
 }
