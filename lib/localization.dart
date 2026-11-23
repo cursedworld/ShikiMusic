@@ -81,6 +81,101 @@ const Map<String, Map<String, String>> _translations = {
   },
   'repeat_off': {'ru': 'Повтор выключен', 'en': 'Repeat off', 'ja': 'リピートなし'},
   'play_next_queue': {'ru': 'Следом', 'en': 'Up next', 'ja': '次に再生'},
+  'local_import': {'ru': 'Добавить файлы', 'en': 'Add files', 'ja': 'ファイルを追加'},
+  'local_import_choose': {
+    'ru': 'Выбрать файлы',
+    'en': 'Choose files',
+    'ja': 'ファイルを選択',
+  },
+  'local_import_copy': {
+    'ru':
+        'Плеер скопирует выбранные MP3 в библиотеку. Копии займут место на устройстве; исходники останутся на месте.',
+    'en':
+        'ShikiMusic copies the selected MP3s into your library. The copies take up space; the originals stay where they are.',
+    'ja': '選んだMP3をライブラリにコピーします。コピーの分だけ容量を使います。元のファイルはそのままです。',
+  },
+  'local_import_lrc_desktop': {
+    'ru': 'Текст из .lrc с тем же именем подхватится из папки с MP3.',
+    'en': 'A matching .lrc file next to the MP3 comes with it.',
+    'ja': 'MP3と同じフォルダにある同名の.lrcも取り込みます。',
+  },
+  'local_import_lrc_mobile': {
+    'ru': 'Чтобы добавить текст, выбери .lrc с тем же именем вместе с MP3.',
+    'en': 'To add lyrics, select the matching .lrc together with the MP3.',
+    'ja': '歌詞を追加するには、MP3と同名の.lrcも一緒に選択します。',
+  },
+  'local_import_preparing': {
+    'ru': 'Подготовка…',
+    'en': 'Preparing…',
+    'ja': '準備中…',
+  },
+  'local_import_summary': {
+    'ru': 'Добавлено: {added}. Уже в библиотеке: {existing}.',
+    'en': 'Added: {added}. Already in your library: {existing}.',
+    'ja': '追加: {added} 件。登録済み: {existing} 件。',
+  },
+  'local_import_restored': {
+    'ru': 'Копий восстановлено: {count}.',
+    'en': 'Copies restored: {count}.',
+    'ja': '復元したコピー: {count} 件。',
+  },
+  'local_import_cancelled': {
+    'ru': 'Импорт остановлен. Готовые треки остались в библиотеке.',
+    'en': 'Import stopped. Completed tracks stayed in your library.',
+    'ja': '取り込みを停止しました。完了した曲はライブラリに残ります。',
+  },
+  'local_import_problem_count': {
+    'ru': 'Не добавлено: {count}',
+    'en': 'Not added: {count}',
+    'ja': '追加できなかったファイル: {count} 件',
+  },
+  'local_import_more_problems': {
+    'ru': 'И ещё: {count}',
+    'en': 'And {count} more',
+    'ja': 'ほか {count} 件',
+  },
+  'local_import_invalidAudio': {
+    'ru': 'не удалось прочитать MP3',
+    'en': 'not a readable MP3',
+    'ja': 'MP3を読み取れません',
+  },
+  'local_import_cannotRead': {
+    'ru': 'ошибка чтения или записи',
+    'en': 'could not read or save the file',
+    'ja': 'ファイルを読み込むか保存できません',
+  },
+  'local_import_unsupported': {
+    'ru': 'выбери MP3 или LRC',
+    'en': 'choose MP3 or LRC files',
+    'ja': 'MP3またはLRCを選んでください',
+  },
+  'local_import_unpairedLyrics': {
+    'ru': 'выбери MP3 с тем же именем',
+    'en': 'select the MP3 with the same name',
+    'ja': '同名のMP3も選択してください',
+  },
+  'local_import_save_failed': {
+    'ru':
+        'Не удалось добавить файлы. Проверь свободное место и доступ к файлам.',
+    'en': 'Could not add files. Check free space and file access.',
+    'ja': '追加できませんでした。空き容量とファイルへのアクセスを確認してください。',
+  },
+  'local_import_owned': {'ru': 'Свой MP3', 'en': 'Your MP3', 'ja': 'ローカルMP3'},
+  'local_import_missing': {
+    'ru': 'Копии MP3 нет. Добавь исходный файл снова.',
+    'en': 'The MP3 copy is missing. Add the original file again.',
+    'ja': 'MP3のコピーがありません。元のファイルをもう一度追加してください。',
+  },
+  'local_import_unknown_artist': {
+    'ru': 'Неизвестный исполнитель',
+    'en': 'Unknown artist',
+    'ja': '不明なアーティスト',
+  },
+  'local_import_unknown_album': {
+    'ru': 'Без альбома',
+    'en': 'Unknown album',
+    'ja': 'アルバム不明',
+  },
   'play_next_track': {
     'ru': 'Сыграть следующим',
     'en': 'Play next',

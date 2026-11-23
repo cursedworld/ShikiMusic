@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'local_music_catalog.dart';
+
 final _lyricsTags = RegExp(r'\[[^\]\r\n]*\]|<\d+:\d{2}(?:[.:]\d{1,3})?>');
 // Explicit separator ranges avoid costly Unicode property-class scans over lyrics.
 final _nonLyricsWord = RegExp(
@@ -71,9 +73,10 @@ class LyricsSearchIndex {
     for (final track in tracks) {
       if (track is! Map || track['id'] is! int) continue;
       final id = track['id'] as int;
-      if (id <= 0 || !ids.add(id)) continue;
+      final own = isLocalMusic(track);
+      if ((id <= 0 && !own) || !ids.add(id)) continue;
       final text = track['lyrics'] is String ? track['lyrics'] as String : '';
-      final path = text.trim().isEmpty ? lyricsFile(id).path : null;
+      final path = !own && text.trim().isEmpty ? lyricsFile(id).path : null;
       final previous = _sources[id];
       if (previous != null && previous.text == text && previous.path == path) {
         continue;

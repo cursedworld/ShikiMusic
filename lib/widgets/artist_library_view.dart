@@ -16,7 +16,7 @@ List<Map<String, dynamic>> artistLibraryEntries(
     final name = artist['name']?.toString().trim() ?? '';
     if (name.isEmpty) return;
     // Homonymous performers with distinct server IDs are distinct artists.
-    final key = artist['id'] is int && artist['id'] > 0
+    final key = artist['id'] is int && artist['id'] != 0
         ? 'id:${artist['id']}'
         : 'name:${name.toLowerCase()}';
     final entry = entries.putIfAbsent(

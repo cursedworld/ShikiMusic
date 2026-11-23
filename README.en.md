@@ -71,6 +71,9 @@ It provides the catalog, search, imports, and downloads of new tracks, videos,
 and updates. Building the player does not include a server or a preloaded music library.
 
 Downloaded music, videos, and saved lyrics remain available without the server.
+Choose **Add files** on Home to play your own MP3s without Django. The player
+copies the files and reads their tags. On desktop, put a matching `.lrc` next to
+the MP3; on Android, select both files.
 Playlists, favorites, settings, and statistics are stored on the device.
 
 Change the server address in Settings. The default is `http://127.0.0.1:8000`.
@@ -118,7 +121,10 @@ and app executables.
 
 Import merges lists, preserves track order, and leaves existing music files
 in place. Applying settings is optional. Reimporting does not double statistics;
-conflicting IDs from different libraries stop the import. A pending import
+conflicting server IDs from different libraries stop the import. Your own MP3s
+are matched by file contents. A backup without media preserves entries,
+favorites, and playlists; add the same MP3 files again to play them.
+A pending import
 can be canceled. Before applying it, original JSON files are saved in
 a `transfer_restore_*` directory inside the app's data directory.
 

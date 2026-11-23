@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/listening_statistics.dart';
+import 'package:shiki/local_music_catalog.dart';
 import 'package:shiki/statistics_store.dart';
 
 class MemoryStatisticsStore extends StatisticsStore {
@@ -121,6 +122,29 @@ void main() {
       await statistics.flush();
       expect(store.total('listening_ms'), 9000);
       expect(store.total('plays'), 0);
+    },
+  );
+
+  test(
+    'local plays use the same statistics key after changing device alias',
+    () async {
+      final song = LocalMusicEntry(
+        id: -4,
+        digest: 'a' * 64,
+        title: 'Own file',
+        duration: 8,
+      );
+      start(song.toTrack());
+      play(4);
+      start(song.withIdAndLyrics(-12, '').toTrack());
+      play(4);
+      await statistics.flush();
+      final local = store.rows.values.where((row) => row['listening_ms'] != 0);
+      expect(local.map((row) => row['track_key']).toSet(), {
+        'local:${song.digest}',
+      });
+      expect(store.total('listening_ms'), 8000);
+      expect(store.total('plays'), 2);
     },
   );
 

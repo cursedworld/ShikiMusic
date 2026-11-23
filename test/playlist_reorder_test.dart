@@ -7,12 +7,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:shiki/globals.dart';
 import 'package:shiki/atomic_file_store.dart';
+import 'package:shiki/local_music_catalog.dart';
+import 'package:shiki/local_music_import.dart';
 import 'package:shiki/screens/home_screen.dart';
 import 'package:shiki/widgets/play_next_panel.dart';
 import 'package:shiki/widgets/playlist_track_list.dart';
 import 'package:shiki/lyrics_search.dart';
+
+import 'fixtures/local_mp3.dart';
 
 class _PlaylistState extends MainAppScreenState {
   BuildContext? testContext;
@@ -150,6 +156,56 @@ void main() {
   List<int> queueIds(_PlaylistState state) => [
     for (final track in state.playingQueue) track['id'] as int,
   ];
+
+  test(
+    'server refresh, favorites and cache cleaning preserve own MP3s',
+    () async {
+      final state = await fixture();
+      final root = Directory(state.localPath);
+      final original = await File(
+        '${root.path}/original.mp3',
+      ).writeAsBytes(fixtureMp3());
+      final result = await importLocalMusic(
+        directory: root,
+        files: [(name: 'Own MP3.mp3', path: original.path)],
+        cancel: LocalImportCancel(),
+      );
+      final song = result.entries.single;
+      state.publishLocalMusic(result.entries);
+      final listSaved = await state.createPlaylist(
+        'Own mix',
+        trackIds: [song.id, 1],
+      );
+      expect(listSaved, isTrue);
+      await state.toggleFavorite(song.id);
+
+      final calls = <String>[];
+      final client = MockClient((request) async {
+        calls.add(request.url.path);
+        return http.Response(jsonEncode([tracks.first]), 200);
+      });
+      addTearDown(client.close);
+      await http.runWithClient(
+        () => state.syncDatabase(reportFailure: true, refreshArtists: false),
+        () => client,
+      );
+      expect(calls, ['/api/tracks/']);
+      expect(state.cachedTracks.map((track) => track['id']), [song.id, 1]);
+      expect(
+        (jsonDecode(
+                  await File('${root.path}/offline_tracks.json').readAsString(),
+                )
+                as List)
+            .map((track) => track['id']),
+        [1],
+      );
+      expect(state.favs, contains(song.id));
+      expect(state.myPlaylists.last['tracks'], [song.id, 1]);
+      expect(await state.clearAllCache(), isTrue);
+      expect(state.isTrackLocal(song.id), isTrue);
+      expect((await readLocalMusicCatalog(root)).single.digest, song.digest);
+    },
+  );
 
   Future<_PlaylistState> selectionScreen(
     WidgetTester tester,

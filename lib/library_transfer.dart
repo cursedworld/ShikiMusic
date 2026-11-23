@@ -6,6 +6,9 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'atomic_file_store.dart';
+import 'local_music_catalog.dart';
+import 'local_music_transfer.dart';
+import 'mp3_metadata.dart';
 import 'playlist_artwork.dart';
 import 'server_config.dart';
 import 'statistics_store.dart';
@@ -23,6 +26,8 @@ const _jsonFiles = {
   'track_versions.json',
   'shiki_settings.json',
   'listening_statistics.json',
+  localMusicCatalogName,
+  portableLocalOffsets,
 };
 final _mediaName = RegExp(
   r'^(?:track_[0-9]+(?:_[a-f0-9]{64})?\.(?:mp3|lrc)|video_[0-9]+(?:_[a-f0-9]{64})?\.mp4)$',
@@ -32,17 +37,30 @@ final _imageName = RegExp(
   caseSensitive: false,
 );
 
-bool _allowed(String name) =>
+bool _ownEntry(String name) =>
+    name == localMusicCatalogName ||
+    name == portableLocalOffsets ||
+    localAssetDigest(name) != null;
+
+bool _allowed(String name, {int version = 2}) =>
     name.length <= 240 &&
     !name.contains('..') &&
+    (version >= 2 || !_ownEntry(name)) &&
     (_jsonFiles.contains(name) ||
         _mediaName.hasMatch(name) ||
-        _imageName.hasMatch(name));
+        _imageName.hasMatch(name) ||
+        localAssetDigest(name) != null);
 bool _audioVideo(String name) => name.endsWith('.mp3') || name.endsWith('.mp4');
+int _entryLimit(String name) => localAssetDigest(name) != null
+    ? (name.endsWith('.mp3') ? localMusicMaxBytes : localArtworkMaxBytes)
+    : (_audioVideo(name) ? 8 * 1024 * 1024 * 1024 : _jsonLimit);
 Future<String> _hash(File file) async =>
     (await sha256.bind(file.openRead()).first).toString();
 File _file(String root, String name) =>
     File('$root${Platform.pathSeparator}$name');
+File _libraryAsset(String root, String name) => localAssetDigest(name) == null
+    ? _file(root, name)
+    : localMusicAsset(Directory(root), name);
 
 Future<void> _regularTarget(File file) async {
   final type = await FileSystemEntity.type(file.path, followLinks: false);
@@ -70,6 +88,9 @@ Future<String> exportLibraryArchive({
 
 Future<String> _export(Map<String, Object?> job) async {
   final root = job['root'] as String;
+  final localMusic = await readLocalMusicCatalog(Directory(root));
+  final version = localMusic.isEmpty ? 1 : 2;
+  final ownIds = localMusic.map((entry) => entry.id).toSet();
   final output = File(job['destination'] as String);
   await _regularTarget(output);
   if (await output.exists()) {
@@ -79,7 +100,8 @@ Future<String> _export(Map<String, Object?> job) async {
   final inventory = <String, Map<String, Object>>{};
   var total = 0;
   Future<void> addBytes(String name, List<int> bytes) async {
-    if (bytes.length > _jsonLimit) {
+    total += bytes.length;
+    if (bytes.length > _jsonLimit || total > _totalLimit) {
       throw const FormatException('Backup entry too large');
     }
     final entry = ArchiveFile(name, bytes.length, bytes)
@@ -99,12 +121,16 @@ Future<String> _export(Map<String, Object?> job) async {
     }
     final before = await file.stat();
     total += before.size;
-    if (total > _totalLimit ||
-        before.size >
-            (_audioVideo(name) ? 8 * 1024 * 1024 * 1024 : _jsonLimit)) {
+    if (total > _totalLimit || before.size > _entryLimit(name)) {
       throw const FormatException('Backup exceeds size limit');
     }
     final digest = await _hash(file);
+    final ownDigest = localAssetDigest(name);
+    if (ownDigest != null && name.endsWith('.mp3') && digest != ownDigest) {
+      throw const FormatException(
+        'Local MP3 copy no longer matches its identity',
+      );
+    }
     final stream = InputFileStream(file.path);
     try {
       encoder.addArchiveFile(
@@ -143,22 +169,61 @@ Future<String> _export(Map<String, Object?> job) async {
           }
         }
       }
-      _validateJson('my_playlists.json', playlists);
+      _validateJson('my_playlists.json', playlists, ownIds: ownIds);
       await addBytes('my_playlists.json', utf8.encode(jsonEncode(playlists)));
     }
     await for (final entity in Directory(root).list(followLinks: false)) {
       if (entity is! File) continue;
       final name = entity.uri.pathSegments.last;
-      if (!_allowed(name) ||
+      if (!_allowed(name, version: version) ||
+          _ownEntry(name) ||
           name == 'my_playlists.json' ||
           name == 'listening_statistics.json' ||
           (job['media'] != true && _audioVideo(name))) {
         continue;
       }
       if (_jsonFiles.contains(name)) {
-        _validateJson(name, await _readJson(entity));
+        _validateJson(name, await _readJson(entity), ownIds: ownIds);
       }
       await addFile(name, entity);
+    }
+    if (localMusic.isNotEmpty) {
+      await addBytes(
+        localMusicCatalogName,
+        utf8.encode(encodeLocalMusicCatalogText(localMusic)),
+      );
+      final mediaDirectory = localMusicDirectory(Directory(root));
+      final mediaType = await FileSystemEntity.type(
+        mediaDirectory.path,
+        followLinks: false,
+      );
+      if (mediaType != FileSystemEntityType.notFound &&
+          mediaType != FileSystemEntityType.directory) {
+        throw const FormatException('Local MP3 storage must not be a link');
+      }
+      for (final song in localMusic) {
+        final names = [
+          if (job['media'] == true) localAudioName(song.digest),
+          localCoverName(song.digest),
+        ];
+        for (final name in names) {
+          await addFile(name, _libraryAsset(root, name));
+        }
+      }
+      final offsets = _file(root, savedLyricOffsets);
+      if (await FileSystemEntity.type(offsets.path, followLinks: false) ==
+          FileSystemEntityType.file) {
+        final rows = compatibleLocalOffsets(
+          readOffsetRows(await _readJson(offsets)),
+          localMusic,
+        );
+        if (rows.isNotEmpty) {
+          await addBytes(
+            portableLocalOffsets,
+            utf8.encode(jsonEncode(offsetDocument(rows))),
+          );
+        }
+      }
     }
     final statistics = job['statistics'] as Uint8List?;
     if (statistics != null) {
@@ -167,7 +232,7 @@ Future<String> _export(Map<String, Object?> job) async {
     final manifest = utf8.encode(
       jsonEncode({
         'format': 'shiki-library',
-        'version': 1,
+        'version': version,
         'media': job['media'],
         'files': inventory,
       }),
@@ -195,15 +260,29 @@ Future<dynamic> _readJson(File file) async {
   return jsonDecode(await file.readAsString());
 }
 
-void _validateJson(String name, dynamic value) {
+void _validateJson(
+  String name,
+  dynamic value, {
+  Set<int>? ownIds,
+  bool allowUnboundOwnIds = false,
+}) {
   bool id(dynamic v) => v is int && v > 0;
-  bool ids(dynamic v) => v is List && v.length <= 100000 && v.every(id);
+  bool reference(dynamic v) =>
+      id(v) ||
+      (isLocalId(v) && (allowUnboundOwnIds || ownIds?.contains(v) == true));
+  bool ids(dynamic v) => v is List && v.length <= 100000 && v.every(reference);
   bool rows(dynamic v) =>
       v is List &&
       v.length <= 100000 &&
       v.every((dynamic row) => row is Map && id(row['id']));
   var valid = true;
   switch (name) {
+    case localMusicCatalogName:
+      decodeLocalMusicCatalog(value);
+    case portableLocalOffsets:
+      valid = readOffsetRows(value).every(isPortableOffset);
+    case savedLyricOffsets:
+      readOffsetRows(value);
     case 'liked_tracks.json':
       valid = ids(value);
     case 'my_playlists.json':
@@ -322,8 +401,7 @@ Future<void> _prepare(Map<String, Object?> job) async {
           header.file?.length != header.uncompressedSize ||
           header.generalPurposeBitFlag & 1 != 0 ||
           ((header.externalFileAttributes >> 16) & 0xf000) == 0xa000 ||
-          header.uncompressedSize >
-              (_audioVideo(name) ? 8 * 1024 * 1024 * 1024 : _jsonLimit) ||
+          header.uncompressedSize > _entryLimit(name) ||
           total > _totalLimit) {
         throw const FormatException('Unsupported or unsafe archive entry');
       }
@@ -338,13 +416,16 @@ Future<void> _prepare(Map<String, Object?> job) async {
     final manifest = jsonDecode(utf8.decode(manifestBytes));
     if (manifest is! Map ||
         manifest['format'] != 'shiki-library' ||
-        manifest['version'] != 1 ||
+        (manifest['version'] != 1 && manifest['version'] != 2) ||
         manifest['files'] is! Map) {
       throw const FormatException('Unsupported Shiki archive version');
     }
+    final version = manifest['version'] as int;
     final inventory = manifest['files'] as Map;
     if (inventory.length != archive.length - 1 ||
-        inventory.keys.any((name) => name is! String || !_allowed(name))) {
+        inventory.keys.any(
+          (name) => name is! String || !_allowed(name, version: version),
+        )) {
       throw const FormatException('Archive inventory mismatch');
     }
     await stage.create();
@@ -370,8 +451,20 @@ Future<void> _prepare(Map<String, Object?> job) async {
         throw const FormatException('Archive checksum mismatch');
       }
       if (_jsonFiles.contains(entry.name)) {
-        _validateJson(entry.name, await _readJson(destination));
+        _validateJson(
+          entry.name,
+          await _readJson(destination),
+          allowUnboundOwnIds: version == 2,
+        );
       }
+    }
+    if (version == 2) {
+      await _verifyOwnArchive(
+        stage,
+        inventory,
+        verifyContents: true,
+        allowAudio: manifest['media'] == true,
+      );
     }
     final stats = _file(stage.path, 'listening_statistics.json');
     if (await stats.exists()) {
@@ -383,6 +476,8 @@ Future<void> _prepare(Map<String, Object?> job) async {
         'stage': stageName,
         'id': sha256.convert(manifestBytes).toString(),
         'settings': job['settings'],
+        'version': version,
+        'media': manifest['media'],
         'files': inventory,
       }),
     );
@@ -394,6 +489,62 @@ Future<void> _prepare(Map<String, Object?> job) async {
       await stage.delete(recursive: true);
     }
   }
+}
+
+Future<List<LocalMusicEntry>> _verifyOwnArchive(
+  Directory stage,
+  Map inventory, {
+  required bool verifyContents,
+  required bool allowAudio,
+}) async {
+  final entries = inventory.containsKey(localMusicCatalogName)
+      ? await readLocalMusicCatalog(stage)
+      : <LocalMusicEntry>[];
+  final keys = {for (final song in entries) song.digest};
+  final ids = {for (final song in entries) song.id};
+  for (final name in ['liked_tracks.json', 'my_playlists.json']) {
+    if (inventory.containsKey(name)) {
+      _validateJson(
+        name,
+        await _readJson(_file(stage.path, name)),
+        ownIds: ids,
+      );
+    }
+  }
+  for (final name in inventory.keys.cast<String>()) {
+    final digest = localAssetDigest(name);
+    if (digest == null) continue;
+    if (!keys.contains(digest)) {
+      throw const FormatException('Local music asset has no catalog entry');
+    }
+    final file = _file(stage.path, name);
+    if (name.endsWith('.mp3')) {
+      if (!allowAudio || inventory[name]['sha256'] != digest) {
+        throw const FormatException(
+          'Local MP3 does not match catalog identity',
+        );
+      }
+      if (verifyContents) await readMp3Metadata(file.path, readArtwork: false);
+    } else if (verifyContents) {
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty ||
+          bytes.first != 255 ||
+          normalizeEmbeddedCover(bytes) == null) {
+        throw const FormatException('Invalid local artwork');
+      }
+    }
+  }
+  if (inventory.containsKey(portableLocalOffsets)) {
+    final rows = readOffsetRows(
+      await _readJson(_file(stage.path, portableLocalOffsets)),
+    );
+    if (compatibleLocalOffsets(rows, entries).length != rows.length) {
+      throw const FormatException(
+        'Local timing does not match archived tracks',
+      );
+    }
+  }
+  return entries;
 }
 
 Future<bool> applyPendingLibraryImport(Directory directory) async {
@@ -417,8 +568,14 @@ Future<bool> _apply(String root) async {
     throw const FormatException('Missing import staging directory');
   }
   final inventory = pending['files'] as Map;
+  final version = pending['version'] ?? 1;
+  if (version != 1 && version != 2) {
+    throw const FormatException('Invalid staged archive version');
+  }
   for (final item in inventory.entries) {
-    if (item.key is! String || !_allowed(item.key) || item.value is! Map) {
+    if (item.key is! String ||
+        !_allowed(item.key, version: version as int) ||
+        item.value is! Map) {
       throw const FormatException('Invalid staged entry');
     }
     final file = _file(stage, item.key);
@@ -428,13 +585,32 @@ Future<bool> _apply(String root) async {
         await _hash(file) != item.value['sha256']) {
       throw const FormatException('Staged archive changed');
     }
-    await _regularTarget(_file(root, item.key));
+    await _regularTarget(_libraryAsset(root, item.key));
   }
+  final ownDestination = await readLocalMusicCatalog(Directory(root));
+  final ownIncoming = version == 2
+      ? await _verifyOwnArchive(
+          Directory(stage),
+          inventory,
+          verifyContents: false,
+          allowAudio: pending['media'] == true,
+        )
+      : <LocalMusicEntry>[];
+  final own = mergeLocalMusic(ownDestination, ownIncoming);
+  final existingIds = {for (final song in ownDestination) song.id};
+  final incomingIds = {for (final song in ownIncoming) song.id};
+  final mergedIds = {for (final song in own.entries) song.id};
+  int remap(int id) => id > 0 ? id : own.aliases[id]!;
   Future<dynamic> read(String path, String name, dynamic fallback) async {
+    if (path == stage && !inventory.containsKey(name)) return fallback;
     final file = _file(path, name);
     if (!await file.exists()) return fallback;
     final value = await _readJson(file);
-    _validateJson(name, value);
+    _validateJson(
+      name,
+      value,
+      ownIds: path == root ? existingIds : incomingIds,
+    );
     return value;
   }
 
@@ -515,11 +691,14 @@ Future<bool> _apply(String root) async {
   }
   final changes = <String, dynamic>{
     'offline_tracks.json': byId.values.toList(),
+    if (ownIncoming.isNotEmpty)
+      localMusicCatalogName: encodeLocalMusicCatalog(own.entries),
   };
   final favorites = await read(root, 'liked_tracks.json', []) as List;
+  final receivedFavorites = await read(stage, 'liked_tracks.json', []) as List;
   changes['liked_tracks.json'] = {
     ...favorites,
-    ...await read(stage, 'liked_tracks.json', []) as List,
+    ...receivedFavorites.cast<int>().map(remap),
   }.toList();
   final playlists = await read(root, 'my_playlists.json', []) as List;
   final incoming = await read(stage, 'my_playlists.json', []) as List;
@@ -527,6 +706,10 @@ Future<bool> _apply(String root) async {
   final usedIds = {for (final playlist in playlists) playlist['id']};
   for (final raw in incoming) {
     final playlist = Map<String, dynamic>.from(raw as Map);
+    playlist['tracks'] = (playlist['tracks'] as List)
+        .cast<int>()
+        .map(remap)
+        .toList();
     final origin = '${pending['id']}:${playlist['id']}';
     if (playlists.any((dynamic p) => p['_backupOrigin'] == origin)) continue;
     final same = playlists
@@ -565,6 +748,21 @@ Future<bool> _apply(String root) async {
     playlists.add(playlist);
   }
   changes['my_playlists.json'] = playlists;
+  if (inventory.containsKey(portableLocalOffsets)) {
+    final old = await read(root, savedLyricOffsets, offsetDocument([]));
+    final imported = await read(
+      stage,
+      portableLocalOffsets,
+      offsetDocument([]),
+    );
+    changes[savedLyricOffsets] = offsetDocument(
+      mergeLocalOffsets(
+        destination: readOffsetRows(old),
+        incoming: readOffsetRows(imported),
+        merged: own,
+      ),
+    );
+  }
   final artists = {for (final artist in localArtists) artist['id']: artist};
   for (final artist in importedArtists) {
     artists.putIfAbsent(artist['id'], () => artist);
@@ -608,13 +806,29 @@ Future<bool> _apply(String root) async {
   }
   // Validate everything before replacing metadata. Media copies only fill holes.
   for (final item in changes.entries) {
-    _validateJson(item.key, item.value);
+    _validateJson(item.key, item.value, ownIds: mergedIds);
   }
   final stats = _file(stage, 'listening_statistics.json');
-  if (await stats.exists()) await StatisticsStore('').validateFile(stats.path);
+  final hasStats = inventory.containsKey('listening_statistics.json');
+  if (hasStats) await StatisticsStore('').validateFile(stats.path);
+  if (inventory.keys.cast<String>().any(
+    (name) => localAssetDigest(name) != null,
+  )) {
+    await ensureLocalMusicDirectory(Directory(root));
+  }
   for (final name in inventory.keys.cast<String>()) {
     if (!_jsonFiles.contains(name)) {
-      await _copyMissing(_file(stage, name), _file(root, name));
+      final destination = _libraryAsset(root, name);
+      final digest = localAssetDigest(name);
+      if (digest != null &&
+          name.endsWith('.mp3') &&
+          await destination.exists() &&
+          await _hash(destination) != digest) {
+        throw const FormatException(
+          'Existing local MP3 copy does not match its identity',
+        );
+      }
+      await _copyMissing(_file(stage, name), destination);
     }
   }
   final backup = Directory('$root/transfer_restore_${pending['id']}');
@@ -646,7 +860,7 @@ Future<bool> _apply(String root) async {
         jsonEncode(entry.value),
       );
     }
-    if (await stats.exists()) {
+    if (hasStats) {
       await StatisticsStore(
         '$root/listening_statistics.sqlite',
       ).importFile(stats.path);

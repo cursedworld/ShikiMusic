@@ -9,11 +9,14 @@ import 'package:http/http.dart' as http;
 import '../globals.dart';
 import '../atomic_file_store.dart';
 import '../cover_processing.dart';
+import '../local_music_catalog.dart';
 import '../localization.dart';
+import '../music_import.dart';
 import '../server_config.dart';
 import '../track_selection.dart';
 import '../widgets/track_selection_bar.dart';
 import '../widgets/play_next_panel.dart';
+import '../widgets/local_music_import_dialog.dart';
 
 class ArtistScreen extends StatefulWidget {
   final int artistId;
@@ -31,6 +34,7 @@ class ArtistScreen extends StatefulWidget {
   final Function(dynamic track) onDownloadTrack;
   final Future<void> Function(List<dynamic> tracks)? onDownloadAlbum;
   final Function(dynamic track) onDeleteDownloadedTrack;
+  final VoidCallback? onMissingLocalMusic;
   final bool Function(dynamic track) isTrackDownloaded;
   final bool Function(int trackId) isTrackFavorited;
   final bool Function(int trackId) isDownloading;
@@ -56,6 +60,7 @@ class ArtistScreen extends StatefulWidget {
     required this.onDownloadTrack,
     this.onDownloadAlbum,
     required this.onDeleteDownloadedTrack,
+    this.onMissingLocalMusic,
     required this.isTrackDownloaded,
     required this.isTrackFavorited,
     required this.isDownloading,
@@ -99,14 +104,14 @@ class _ArtistScreenState extends State<ArtistScreen> {
   void initState() {
     super.initState();
     _artistData = widget.initialArtistData;
-    if (_artistData != null) _isLoading = false;
+    if (_artistData != null || widget.artistId < 0) _isLoading = false;
     _ownsHttpClient = widget.httpClient == null;
     _httpClient = widget.httpClient ?? http.Client();
     activeTrackNotifier.addListener(_onLibraryChanged);
     isPlayingNotifier.addListener(_onLibraryChanged);
     accentColorNotifier.addListener(_onLibraryChanged);
     widget.libraryChanges?.addListener(_onCatalogChanged);
-    _startMetadataWork(_loadArtistDetails());
+    if (widget.artistId >= 0) _startMetadataWork(_loadArtistDetails());
   }
 
   @override
@@ -139,7 +144,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
       _hasFreshCatalog = true;
       _selection.retain(_getArtistTracks().map((track) => track['id'] as int));
     });
-    _startMetadataWork(_reloadCachedMetadata());
+    if (widget.artistId >= 0) _startMetadataWork(_reloadCachedMetadata());
   }
 
   Future<void> _reloadCachedMetadata() async {
@@ -387,11 +392,14 @@ class _ArtistScreenState extends State<ArtistScreen> {
           (track) => widget.isTrackFavorited(track['id'] as int),
         );
     final touchMode = MediaQuery.sizeOf(context).width < 800;
-    final downloadSelection = selectedTracks.isNotEmpty
-        ? selectedTracks
-        : _selectedAlbumId == null
-        ? tracks
-        : _albumDownloadTracks(_selectedAlbumId!);
+    final downloadSelection =
+        (selectedTracks.isNotEmpty
+                ? selectedTracks
+                : _selectedAlbumId == null
+                ? tracks
+                : _albumDownloadTracks(_selectedAlbumId!))
+            .where((track) => downloadTrackId(track) != null)
+            .toList();
 
     final photoUrl = _artistData?['photo'];
     final bio = _artistData?['bio']?.toString().trim() ?? '';
@@ -718,7 +726,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                   fontSize: 13,
                                 ),
                               ),
-                              if (widget.onDownloadAlbum != null)
+                              if (widget.onDownloadAlbum != null &&
+                                  downloadSelection.isNotEmpty)
                                 IconButton(
                                   key: const ValueKey(
                                     'download_artist_selection',
@@ -878,7 +887,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                     unawaited(favoriteTracks(targets));
                                   },
                                 ),
-                                if (isSelected)
+                                if (isSelected && downloadSelection.isNotEmpty)
                                   IconButton(
                                     key: ValueKey('artist_download_$trackId'),
                                     tooltip: tr('download_selected_tracks'),
@@ -888,6 +897,11 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                       color: Colors.white54,
                                       size: 22,
                                     ),
+                                  )
+                                else if (isLocalMusic(track))
+                                  LocalMusicIndicator(
+                                    available: isDownloaded,
+                                    onMissing: widget.onMissingLocalMusic,
                                   )
                                 else if (isDownloading)
                                   const SizedBox(

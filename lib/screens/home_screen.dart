@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show compute, listEquals;
+import 'package:flutter/foundation.dart'
+    show compute, listEquals, visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -38,6 +39,8 @@ import '../lyric_timing_proposals.dart';
 import '../lyrics_search.dart';
 import '../listening_statistics.dart';
 import '../local_download_remover.dart';
+import '../local_music_catalog.dart';
+import '../local_music_import.dart';
 import '../linux_media_session.dart';
 import '../statistics_store.dart';
 import '../media_file_downloader.dart';
@@ -62,6 +65,7 @@ import '../track_updates.dart';
 import '../track_selection.dart';
 import '../widgets/track_updates_dialog.dart';
 import '../widgets/catalog_sync_button.dart';
+import '../widgets/local_music_import_dialog.dart';
 import '../widgets/track_selection_bar.dart';
 import '../widgets/mobile_playback_controls.dart';
 import '../widgets/play_next_panel.dart';
@@ -100,7 +104,7 @@ class _VideoRequest {
   const _VideoRequest({required this.trackId, required this.videoUrl});
 
   factory _VideoRequest.from(dynamic trackData) {
-    if (trackData is! Map) {
+    if (trackData is! Map || isLocalMusic(trackData)) {
       return const _VideoRequest(trackId: null, videoUrl: null);
     }
     final rawTrackId = trackData['id'];
@@ -320,6 +324,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (track != null && artists.isEmpty) artists.add(trackArtistLabel(track));
     session.update(
       id: track?['id'] as int?,
+      localDigest: localTrackDigest(track),
       title: track?['title']?.toString() ?? '',
       artists: artists,
       album: track?['album']?['title']?.toString(),
@@ -446,7 +451,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   /// Asynchronously download cover art to local storage for the lock screen widget
   Future<void> _ensureCoverDownloaded(dynamic track) async {
-    if (isDesktop || localPath.isEmpty) return;
+    if (isDesktop || localPath.isEmpty || isLocalMusic(track)) return;
     final id = track['id'];
     final coverFile = File('$localPath/cover_$id.jpg');
 
@@ -467,6 +472,11 @@ class MainAppScreenState extends State<MainAppScreen>
   bool isPremium = true;
   int playCount = 0;
   List<dynamic> cachedTracks = [];
+  List<dynamic>? _serverTrackCache;
+  List<dynamic> get _serverTracks => _serverTrackCache ?? cachedTracks;
+  Map<int, Map<String, Object?>> _ownTracks = const {};
+  int _ownCatalogRevision = 0;
+  bool _localImportOpen = false;
   List<dynamic> cachedArtists = [];
   WindowsTaskbarControls? _taskbarControls;
   bool _isSyncingArtists = false;
@@ -2455,7 +2465,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (!PerformanceFrameMonitor.enabled) {
       final monitor = TrackUpdateMonitor(
         directory: appDir,
-        tracks: () => cachedTracks,
+        tracks: () => _serverTracks,
         onCatalogChanged: _refreshLiveCatalog,
         onCheckSucceeded: catalogSyncStatus.succeeded,
         onCheckFailed: catalogSyncStatus.failed,
@@ -2470,6 +2480,14 @@ class MainAppScreenState extends State<MainAppScreen>
     await readFavorites();
     if (_stateDisposing) return;
     await readPlaylists();
+    if (_stateDisposing) return;
+    final ownRevision = _ownCatalogRevision;
+    try {
+      final entries = await readLocalMusicCatalog(appDir);
+      if (_ownCatalogRevision == ownRevision) _setOwnTracks(entries);
+    } catch (error) {
+      debugPrint('Local music catalog read failed: ${error.runtimeType}');
+    }
     if (_stateDisposing) return;
     await _loadOfflineTrackCache();
     if (_stateDisposing) return;
@@ -2692,7 +2710,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final title = name.trim();
     if (title.isEmpty) return Future.value(false);
     // Snapshot before waiting: selection and catalog may change while saving.
-    final ids = trackIds.where((id) => id > 0).toSet().toList();
+    final ids = trackIds.where(_isLibraryTrackId).toSet().toList();
     final work = _playlistReorderTail.then((_) async {
       if (_stateDisposing) return false;
       var id = playlistId ?? DateTime.now().microsecondsSinceEpoch;
@@ -2809,15 +2827,101 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> _persistOfflineTracks() {
     if (localPath.isEmpty) return Future<void>.value();
-    final snapshot = json.encode(cachedTracks);
+    final snapshot = json.encode(_serverTracks);
     return atomicFileStore.writeString(
       File('$localPath/offline_tracks.json'),
       snapshot,
     );
   }
 
-  void _applyTracks(List<dynamic> tracks) {
+  bool _isLibraryTrackId(int id) => id > 0 || _ownTracks.containsKey(id);
+
+  void _setOwnTracks(List<LocalMusicEntry> entries) {
+    _ownTracks = {
+      for (final entry in entries.reversed)
+        entry.id: entry.toTrack(
+          unknownArtist: tr('local_import_unknown_artist'),
+          unknownAlbum: tr('local_import_unknown_album'),
+        ),
+    };
+  }
+
+  @visibleForTesting
+  void publishLocalMusic(List<LocalMusicEntry> entries) {
     if (_stateDisposing) return;
+    _ownCatalogRevision++;
+    _setOwnTracks(entries);
+    for (final entry in entries) {
+      invalidateTrackCover(entry.id);
+    }
+    _applyTracks(_serverTracks);
+    final current = playingTrack;
+    if (current != null && isLocalMusic(current)) {
+      unawaited(fetchLyrics(current));
+    }
+  }
+
+  Future<void> showLocalMusicImport() async {
+    if (!mounted || localPath.isEmpty || _localImportOpen || _stateDisposing) {
+      return;
+    }
+    _localImportOpen = true;
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => LocalMusicImportDialog(
+          desktop: isDesktop,
+          onImport: (files, cancel, onProgress) async {
+            final result = await importLocalMusic(
+              directory: Directory(localPath),
+              files: files,
+              cancel: cancel,
+              lookForAdjacentLyrics: isDesktop,
+              onProgress: onProgress,
+            );
+            if (mounted) publishLocalMusic(result.entries);
+            return result;
+          },
+        ),
+      );
+    } finally {
+      _localImportOpen = false;
+    }
+  }
+
+  void _localMusicMissing() {
+    if (!mounted || _stateDisposing) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(tr('local_import_missing')),
+        action: SnackBarAction(
+          label: tr('local_import'),
+          onPressed: () => unawaited(showLocalMusicImport()),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLocalMusicButton() => IconButton(
+    key: const ValueKey('open_local_music_import'),
+    tooltip: tr('local_import'),
+    onPressed: localPath.isEmpty
+        ? null
+        : () => unawaited(showLocalMusicImport()),
+    icon: const Icon(
+      Icons.library_add_outlined,
+      color: Colors.white70,
+      size: 22,
+    ),
+  );
+
+  void _applyTracks(List<dynamic> serverTracks) {
+    if (_stateDisposing) return;
+    _serverTrackCache = serverTracks;
+    final tracks = _ownTracks.isEmpty
+        ? serverTracks
+        : [..._ownTracks.values, ...serverTracks];
     final freshById = {
       for (final track in tracks)
         if (track is Map) track['id']: track,
@@ -2874,7 +2978,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> _loadOfflineTrackCache() async {
     final tracks = await _readOfflineTrackCache();
-    if (tracks != null) _applyTracks(tracks);
+    if (tracks != null || _ownTracks.isNotEmpty) _applyTracks(tracks ?? []);
   }
 
   Future<void> _loadOfflineArtistsCache() async {
@@ -3036,7 +3140,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (_isRefreshingArtwork || localPath.isEmpty) return;
     _isRefreshingArtwork = true;
     try {
-      final snapshot = List<dynamic>.from(cachedTracks);
+      final snapshot = List<dynamic>.from(_serverTracks);
       for (final track in snapshot) {
         if (_stateDisposing || track is! Map || track['id'] is! int) continue;
         final id = track['id'] as int;
@@ -3092,7 +3196,7 @@ class MainAppScreenState extends State<MainAppScreen>
       }
       final decoded = decodeTrackCatalog(
         res.bodyBytes,
-        hasCachedTracks: cachedTracks.isNotEmpty,
+        hasCachedTracks: _serverTracks.isNotEmpty,
       );
       if (!_isCurrentDatabaseSync(revision)) return;
       _applyTracks(List<dynamic>.from(decoded));
@@ -3107,7 +3211,7 @@ class MainAppScreenState extends State<MainAppScreen>
       if (!_isCurrentDatabaseSync(revision)) return;
       catalogSyncStatus.failed(e);
       if (reportFailure) rethrow;
-      if (cachedTracks.isEmpty) {
+      if (_serverTracks.isEmpty) {
         final offlineTracks = await _readOfflineTrackCache();
         if (!_isCurrentDatabaseSync(revision)) return;
         _applyTracks(offlineTracks ?? <dynamic>[]);
@@ -3373,7 +3477,8 @@ class MainAppScreenState extends State<MainAppScreen>
 
   bool isTrackLocal(int id) {
     if (localPath.isEmpty) return false;
-    final file = _localAudioFile(id);
+    final track = _ownTracks[id];
+    final file = track == null ? _localAudioFile(id) : _trackAudioFile(track);
     try {
       return file.existsSync() && file.lengthSync() > 0;
     } on FileSystemException {
@@ -3383,6 +3488,13 @@ class MainAppScreenState extends State<MainAppScreen>
 
   File _localAudioFile(int id) =>
       _trackUpdates?.audioFile(id) ?? File('$localPath/track_$id.mp3');
+
+  File _trackAudioFile(dynamic track) {
+    final digest = localTrackDigest(track);
+    return digest == null
+        ? _localAudioFile(track['id'] as int)
+        : localMusicAsset(Directory(localPath), localAudioName(digest));
+  }
 
   File _localVideoFile(int id) =>
       _trackUpdates?.videoFile(id) ?? File('$localPath/video_$id.mp4');
@@ -3431,7 +3543,7 @@ class MainAppScreenState extends State<MainAppScreen>
             try {
               final track = await monitor.updateTrack(offer);
               if (_stateDisposing) return;
-              final updated = cachedTracks
+              final updated = _serverTracks
                   .map((old) => old['id'] == offer.id ? track : old)
                   .toList();
               if (!updated.any((item) => item['id'] == offer.id)) {
@@ -3481,7 +3593,10 @@ class MainAppScreenState extends State<MainAppScreen>
         ? rawTrackId
         : int.tryParse(rawTrackId?.toString() ?? '');
     if (trackId == null) return false;
-    final audioFile = _localAudioFile(trackId);
+    final digest = localTrackDigest(track);
+    final audioFile = digest == null
+        ? _localAudioFile(trackId)
+        : localMusicAsset(Directory(localPath), localAudioName(digest));
     try {
       return audioFile.existsSync() && audioFile.lengthSync() > 0;
     } on FileSystemException {
@@ -3490,6 +3605,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> deleteDownloadedTrack(dynamic track) async {
+    if (isLocalMusic(track)) return;
     if (_downloadRecoveryFailed) {
       _downloadRemovalNotice('download_recovery_failed');
       return;
@@ -3608,6 +3724,7 @@ class MainAppScreenState extends State<MainAppScreen>
           onDownloadTrack: (t) => downloadMediaFile(t),
           onDownloadAlbum: (tracks) => downloadAllTracks(tracks),
           onDeleteDownloadedTrack: (t) => deleteDownloadedTrack(t),
+          onMissingLocalMusic: () => unawaited(showLocalMusicImport()),
           isTrackDownloaded: (t) => isTrackDownloadComplete(t),
           isTrackFavorited: (id) => favs.contains(id),
           isDownloading: (id) => downloadQueue.contains(id),
@@ -3622,6 +3739,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> downloadMediaFile(dynamic mediaObj) async {
+    if (isLocalMusic(mediaObj)) return;
     final result = await _downloadMedia(mediaObj, retryUnavailableVideo: true);
     if (mounted && !_stateDisposing) {
       _showDownloadSummary(DownloadBatchResult(results: [result]), [mediaObj]);
@@ -4081,7 +4199,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final retained = _playbackOrder.retainedTracks.toList();
     final retainedIds = {for (final track in retained) track['id']};
     for (final track in [...cachedTracks, ...retained]) {
-      if (track is! Map || track['id'] is! int) continue;
+      if (track is! Map || track['id'] is! int || isLocalMusic(track)) continue;
       final id = track['id'] as int;
       final localLyrics =
           _trackUpdates?.lyricsFile(id) ?? File('$localPath/track_$id.lrc');
@@ -4561,7 +4679,7 @@ class MainAppScreenState extends State<MainAppScreen>
     return (
       slot: next.slot,
       trackId: nextId,
-      path: _localAudioFile(nextId).path,
+      path: _trackAudioFile(next.track).path,
     );
   }
 
@@ -4689,7 +4807,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final entry = _playbackOrder.current;
     if (shouldPlay &&
         entry != null &&
-        entry.inserted &&
+        (entry.inserted || isLocalMusic(entry.track)) &&
         (_settledTrackRevision != _trackRevision ||
             _audioSourceTrackId != entry.trackId)) {
       _activateTrackForPlayback(entry.track);
@@ -4899,13 +5017,27 @@ class MainAppScreenState extends State<MainAppScreen>
   }) async {
     if (!_isCurrentTrackRevision(trackRevision)) return;
     final trackId = targetTrack['id'] as int;
-    final localAudio = await LyricAudioFile.inspect(_localAudioFile(trackId));
+    final localAudio = await LyricAudioFile.inspect(
+      _trackAudioFile(targetTrack),
+    );
     final hasLocalTrack = localAudio != null;
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = null;
     _audioSourceLocal = false;
     _settledTrackRevision = -1;
+    if (localAudio == null && isLocalMusic(targetTrack)) {
+      if (_skipUnavailableInsertion(entry, trackRevision, transportRevision)) {
+        return;
+      }
+      if (transportRevision == _transportRevision) {
+        _setPlaying(false);
+        _syncMediaSessionPlayback();
+        _localMusicMissing();
+      }
+      await audioPlayer.stop();
+      return;
+    }
     try {
       if (_audioDeck.contextReady != null) {
         await _configureAndroidFocusForSource(trackRevision);
@@ -5031,13 +5163,16 @@ class MainAppScreenState extends State<MainAppScreen>
   }) async {
     if (!_isCurrentTrackRevision(trackRevision)) return;
     final trackId = targetTrack['id'] as int;
-    final localAudio = await LyricAudioFile.inspect(_localAudioFile(trackId));
+    final localAudio = await LyricAudioFile.inspect(
+      _trackAudioFile(targetTrack),
+    );
     final hasLocalTrack = localAudio != null;
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = null;
     _audioSourceLocal = false;
     _settledTrackRevision = -1;
+    if (localAudio == null && isLocalMusic(targetTrack)) return;
     if (_audioDeck.contextReady != null) {
       await _configureAndroidFocusForSource(trackRevision);
       if (!_isCurrentTrackRevision(trackRevision)) return;
@@ -5200,6 +5335,15 @@ class MainAppScreenState extends State<MainAppScreen>
         int.tryParse(trackObj['duration']?.toString() ?? '') ?? 0;
     // Capture before LRCLib/network awaits; the catalog map may change meanwhile.
     final originalLyrics = trackObj['lyrics']?.toString() ?? '';
+    if (isLocalMusic(trackObj)) {
+      _commitLyrics(
+        revision: revision,
+        trackId: trackId,
+        lyrics: parseLrcString(originalLyrics),
+        plainText: originalLyrics,
+      );
+      return;
+    }
     final expectedLyricsVersion = sha256
         .convert(utf8.encode(originalLyrics))
         .toString();
@@ -5386,6 +5530,7 @@ class MainAppScreenState extends State<MainAppScreen>
     String lyricsText,
     String expectedLyricsVersion,
   ) async {
+    if (trackId <= 0) return;
     try {
       final url = configuredServerUri('/api/tracks/$trackId/update_lyrics/');
       final res = await http
@@ -5453,10 +5598,12 @@ class MainAppScreenState extends State<MainAppScreen>
       final title = trackData['title'];
       final art = trackData['album']['artist']['name'];
 
-      final publicCover = _discordCovers?.imageFor(trackData);
+      final ownTrack = isLocalMusic(trackData);
+      final publicCover = ownTrack ? null : _discordCovers?.imageFor(trackData);
       String? animatedCover;
       // Animation is a fallback, never an override of iTunes/Deezer/Last.fm.
-      if (_discordCovers?.isResolved(trackData) == true &&
+      if (!ownTrack &&
+          _discordCovers?.isResolved(trackData) == true &&
           publicCover?.isTrackCover != true) {
         animatedCover = _discordArtwork?.imageFor(trackData);
       }
@@ -5741,7 +5888,7 @@ class MainAppScreenState extends State<MainAppScreen>
     Iterable<int> initialTrackIds = const [],
   }) async {
     Tooltip.dismissAllToolTips();
-    final trackIds = initialTrackIds.where((id) => id > 0).toSet().toList();
+    final trackIds = initialTrackIds.where(_isLibraryTrackId).toSet().toList();
     String pName = "";
     CroppedPlaylistArtwork? selectedArtwork;
     bool selectingImage = false;
@@ -5932,6 +6079,12 @@ class MainAppScreenState extends State<MainAppScreen>
     if (playingQueue.isEmpty) return const SizedBox(width: 24);
     final trackId = playingTrack['id'];
     final isDownloaded = isTrackDownloadComplete(playingTrack);
+    if (isLocalMusic(playingTrack)) {
+      return LocalMusicIndicator(
+        available: isDownloaded,
+        onMissing: () => unawaited(showLocalMusicImport()),
+      );
+    }
     final isDownloading = downloadQueue.contains(trackId);
 
     if (isDownloading) {
@@ -6955,7 +7108,14 @@ class MainAppScreenState extends State<MainAppScreen>
     final allSelectedFavorited =
         selectedTracks.isNotEmpty &&
         selectedTracks.every((track) => favs.contains(track['id']));
-    final downloadTargets = selectedTracks.isEmpty ? finalList : selectedTracks;
+    final requestedDownloads = selectedTracks.isEmpty
+        ? finalList
+        : selectedTracks;
+    final downloadTargets = _ownTracks.isEmpty
+        ? requestedDownloads
+        : requestedDownloads
+              .where((track) => downloadTrackId(track) != null)
+              .toList();
     final playlistId = navId >= 3 && navId - 3 < myPlaylists.length
         ? myPlaylists[navId - 3]['id'] as int
         : null;
@@ -6983,7 +7143,7 @@ class MainAppScreenState extends State<MainAppScreen>
           children: [
             LayoutBuilder(
               builder: (context, constraints) =>
-                  isMobile || constraints.maxWidth < 620
+                  isMobile || constraints.maxWidth < (navId == 0 ? 680 : 620)
                   ? Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -7001,6 +7161,7 @@ class MainAppScreenState extends State<MainAppScreen>
                             ),
                             _buildTrackUpdatesButton(),
                             _buildCatalogSyncButton(),
+                            if (navId == 0) _buildLocalMusicButton(),
                           ],
                         ),
                         if (finalList.isNotEmpty)
@@ -7015,7 +7176,7 @@ class MainAppScreenState extends State<MainAppScreen>
                             ),
                           ),
                         const SizedBox(height: 15),
-                        if (finalList.isNotEmpty)
+                        if (downloadTargets.isNotEmpty)
                           SizedBox(
                             width: double.infinity,
                             child: ElevatedButton.icon(
@@ -7080,7 +7241,8 @@ class MainAppScreenState extends State<MainAppScreen>
                           children: [
                             _buildTrackUpdatesButton(),
                             _buildCatalogSyncButton(),
-                            if (finalList.isNotEmpty)
+                            if (navId == 0) _buildLocalMusicButton(),
+                            if (downloadTargets.isNotEmpty)
                               ElevatedButton.icon(
                                 icon: const Icon(
                                   Icons.download_for_offline,
@@ -7204,6 +7366,18 @@ class MainAppScreenState extends State<MainAppScreen>
                                       foregroundColor: Colors.white,
                                     ),
                                   ),
+                                ] else if (navId == 0 &&
+                                    localPath.isNotEmpty) ...[
+                                  const SizedBox(height: 12),
+                                  TextButton.icon(
+                                    onPressed: () =>
+                                        unawaited(showLocalMusicImport()),
+                                    icon: const Icon(
+                                      Icons.audio_file_outlined,
+                                      size: 20,
+                                    ),
+                                    label: Text(tr('local_import')),
+                                  ),
                                 ],
                               ],
                             ),
@@ -7215,6 +7389,7 @@ class MainAppScreenState extends State<MainAppScreen>
                       itemCount: finalList.length,
                       itemBuilder: (ctx, idx) {
                         final currentObject = finalList[idx];
+                        final ownTrack = isLocalMusic(currentObject);
                         final trackId = currentObject['id'];
                         final isActiveTrack =
                             (playingQueue.isNotEmpty &&
@@ -7387,7 +7562,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                       ),
                                     ),
                                   ),
-                                  if (isSelected)
+                                  if (isSelected && downloadTargets.isNotEmpty)
                                     IconButton(
                                       key: ValueKey('track_download_$trackId'),
                                       tooltip: tr('download_selected_tracks'),
@@ -7399,6 +7574,12 @@ class MainAppScreenState extends State<MainAppScreen>
                                         Icons.download,
                                         color: Colors.white54,
                                       ),
+                                    )
+                                  else if (ownTrack)
+                                    LocalMusicIndicator(
+                                      available: isDownloaded,
+                                      onMissing: () =>
+                                          unawaited(showLocalMusicImport()),
                                     )
                                   else if (isDownloading)
                                     const SizedBox(

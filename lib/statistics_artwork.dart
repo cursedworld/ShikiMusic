@@ -2,6 +2,7 @@ import 'package:flutter/painting.dart';
 
 import 'globals.dart';
 import 'listening_statistics.dart';
+import 'local_music_catalog.dart';
 
 /// Joins historical identities to existing library artwork, without downloads.
 class StatisticsArtwork {
@@ -12,6 +13,7 @@ class StatisticsArtwork {
     for (final track in tracks) {
       if (track is! Map || track['id'] is! int) continue;
       _tracks['track:${track['id']}'] = track;
+      if (isLocalMusic(track)) _tracks[track['local_key'] as String] = track;
       final source = track['source_id']?.toString().trim() ?? '';
       if (source.isNotEmpty) _tracks['source:$source'] = track;
       final credits = track['artists'];

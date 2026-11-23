@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'audio_handler.dart';
+import 'local_music_catalog.dart';
 import 'track_transition_mode.dart';
 
 // ── Enums ──────────────────────────────────────────────────────────────────
@@ -93,6 +94,15 @@ String? getVersionedCoverName(dynamic track) {
 /// Results are cached to avoid rebuilding the provider on every frame.
 ImageProvider getPictureProvider(dynamic currentObject) {
   final id = currentObject['id'] as int;
+  final ownDigest = localTrackDigest(currentObject);
+  if (ownDigest != null) {
+    final key = '$id-local:$ownDigest|$globalLocalPath';
+    final cached = _coverCache[key];
+    if (cached != null) return cached;
+    final cover = _ownCover(ownDigest);
+    final provider = cover == null ? _emptyCover : FileImage(cover);
+    return _rememberCover(key, provider);
+  }
   final coverFileName = getCoverFileName(currentObject);
   final coverUrl = currentObject['album']?['cover']?.toString().trim() ?? '';
   final versionedName = getVersionedCoverName(currentObject);
@@ -129,18 +139,40 @@ ImageProvider getPictureProvider(dynamic currentObject) {
         : NetworkImage(coverUrl);
   }
 
+  return _rememberCover(cacheKey, provider);
+}
+
+ImageProvider _rememberCover(String key, ImageProvider provider) {
   // Simple LRU-like eviction when cache grows too large
   if (_coverCache.length > 150) {
     _coverCache.remove(_coverCache.keys.first);
   }
-  _coverCache[cacheKey] = provider;
+  _coverCache[key] = provider;
   return provider;
+}
+
+File? _ownCover(String digest) {
+  if (globalLocalPath.isEmpty) return null;
+  final cover = localMusicAsset(
+    Directory(globalLocalPath),
+    localCoverName(digest),
+  );
+  try {
+    return cover.existsSync() && cover.lengthSync() > 0 ? cover : null;
+  } on FileSystemException {
+    return null;
+  }
 }
 
 /// Returns a [Uri] pointing to the local cover file if it exists,
 /// otherwise falls back to the network URL.
 /// Used for Android notification artwork.
 Uri? getArtUri(dynamic track) {
+  final ownDigest = localTrackDigest(track);
+  if (ownDigest != null) {
+    final cover = _ownCover(ownDigest);
+    return cover == null ? null : Uri.file(cover.path);
+  }
   final id = track['id'] as int;
   final coverFileName = getCoverFileName(track);
   if (globalLocalPath.isNotEmpty) {

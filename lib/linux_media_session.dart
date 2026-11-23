@@ -92,6 +92,7 @@ class LinuxMediaSession extends DBusObject {
 
   void update({
     required int? id,
+    String? localDigest,
     required String title,
     required List<String> artists,
     required String? album,
@@ -117,6 +118,8 @@ class LinuxMediaSession extends DBusObject {
     _track = DBusObjectPath(
       id == null
           ? '/org/mpris/MediaPlayer2/TrackList/NoTrack'
+          : id < 0
+          ? '/org/mpris/MediaPlayer2/local_track_${RegExp(r'^[a-f0-9]{64}$').hasMatch(localDigest ?? '') ? localDigest : (-id).toRadixString(16)}'
           : '/org/mpris/MediaPlayer2/track_$id',
     );
     final next = <String, DBusValue>{

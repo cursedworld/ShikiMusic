@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import 'local_music_catalog.dart';
 import 'statistics_store.dart';
 
 String statisticsDay(DateTime value) =>
@@ -102,7 +103,9 @@ class _Counter {
 class _ListeningSession {
   _ListeningSession(Map track, this.durationMs)
     : id = _sessionId(),
-      trackKey = (track['source_id']?.toString().trim().isNotEmpty ?? false)
+      trackKey = isLocalMusic(track)
+          ? track['local_key'] as String
+          : (track['source_id']?.toString().trim().isNotEmpty ?? false)
           ? 'source:${track['source_id']}'
           : 'track:${track['id']}',
       title = track['title']?.toString() ?? '',

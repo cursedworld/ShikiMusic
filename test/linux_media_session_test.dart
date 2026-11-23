@@ -116,6 +116,43 @@ void main() {
   );
 
   test(
+    'local recording uses a portable MPRIS path independent of aliases',
+    () async {
+      final digest = 'a' * 64;
+      session.update(
+        id: -15,
+        localDigest: digest,
+        title: 'Local',
+        artists: [],
+        album: null,
+        artwork: null,
+        duration: const Duration(seconds: 8),
+        position: Duration.zero,
+        playing: true,
+        canNext: false,
+        canPrevious: true,
+        shuffled: false,
+        loop: 'None',
+        volume: .5,
+      );
+      final path = DBusObjectPath(
+        '/org/mpris/MediaPlayer2/local_track_$digest',
+      );
+      final metadata =
+          await session.getProperty(mprisPlayerInterface, 'Metadata')
+              as DBusGetPropertyResponse;
+      expect(
+        metadata.returnValues.single
+            .asVariant()
+            .asStringVariantDict()['mpris:trackid'],
+        path,
+      );
+      await call('SetPosition', [path, const DBusInt64(3000000)]);
+      expect(actions.single, ('seek', const Duration(seconds: 3)));
+    },
+  );
+
+  test(
     'shuffle/repeat/volume validate inputs and unsupported writes fail',
     () async {
       track();
