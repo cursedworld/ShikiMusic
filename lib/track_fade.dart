@@ -45,9 +45,11 @@ class TrackFade {
 
   double _volume;
   double _gain = 1;
+  double _trackGain = 1;
+  double get trackGain => _trackGain;
   double? _appliedVolume;
   Future<void>? _volumeWrite;
-  double get _effectiveVolume => _volume * _gain;
+  double get _effectiveVolume => _volume * _gain * _trackGain;
 
   Future<void> setEnabled(bool value) {
     if (_disposed || _enabled == value) return _done;
@@ -59,6 +61,13 @@ class TrackFade {
     if (_disposed) return _done;
     _volume = value;
     _schedule();
+    return _flushVolume();
+  }
+
+  Future<void> setTrackGain(double value) {
+    final attenuation = value.isFinite && value > 0 && value <= 1 ? value : 1.0;
+    if (_disposed || _trackGain == attenuation) return _done;
+    _trackGain = attenuation;
     return _flushVolume();
   }
 
@@ -78,7 +87,7 @@ class TrackFade {
     _volumeFailed = false;
   }
 
-  /// Restore user volume on disable, stop or an abandoned source load.
+  /// Clear the envelope without changing the recording's loudness correction.
   Future<void> reset() {
     hold();
     _gain = 1;
@@ -207,10 +216,12 @@ class TrackFade {
           if (_disposed) break;
           _onError(error);
           _appliedVolume = null;
-          if (_gain == 1) break;
+          if (_gain == 1 && _trackGain == 1) break;
           hold();
           _volumeFailed = true;
-          _gain = 1; // Try restoring normal volume once.
+          // Optional volume processing must not leave audio stuck quiet.
+          _gain = 1;
+          _trackGain = 1;
         }
       }
     } finally {

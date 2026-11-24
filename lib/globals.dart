@@ -42,6 +42,7 @@ ValueNotifier<bool> vinylRotationNotifier = ValueNotifier(true);
 ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
 ValueNotifier<bool> playVideoClipNotifier = ValueNotifier(false);
 final trackTransitionModeNotifier = ValueNotifier(TrackTransitionMode.off);
+final replayGainEnabledNotifier = ValueNotifier(false);
 ValueNotifier<bool> discordShowGitHubButtonNotifier = ValueNotifier(true);
 ValueNotifier<bool> discordLyricsStatusNotifier = ValueNotifier(false);
 

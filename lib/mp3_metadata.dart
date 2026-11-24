@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -9,6 +10,67 @@ import 'local_music_catalog.dart';
 
 const _maxId3 = 8 * 1024 * 1024;
 const _maxSyncSearch = 64 * 1024;
+const _maxReplayGainFrames = 256;
+
+typedef _Id3Tag = ({int version, int flags, int size});
+typedef _Id3Frame = ({String id, int size, int format});
+
+_Id3Tag? _id3Header(Uint8List bytes, int fileLength) {
+  if (bytes.length != 10 ||
+      _ascii(bytes, 0, 3) != 'ID3' ||
+      bytes[3] < 2 ||
+      bytes[3] > 4) {
+    return null;
+  }
+  final size = _synchsafe(bytes, 6);
+  return size == null || size > fileLength - 10
+      ? null
+      : (version: bytes[3], flags: bytes[5], size: size);
+}
+
+bool _canReadTag(_Id3Tag tag) =>
+    tag.size <= _maxId3 && (tag.version != 2 || tag.flags & 64 == 0);
+
+bool _legacyUnsynced(_Id3Tag tag) => tag.version < 4 && tag.flags & 128 != 0;
+
+int? _id3FramesStart(_Id3Tag tag, Uint8List prefix) {
+  if (tag.version == 2 || tag.flags & 64 == 0) return 0;
+  if (prefix.length < 4) return null;
+  if (tag.version == 3) return 4 + _int(prefix, 0, 4);
+  final size = _synchsafe(prefix, 0);
+  return size != null && size >= 6 ? size : null;
+}
+
+int _id3FrameHeaderSize(_Id3Tag tag) => tag.version == 2 ? 6 : 10;
+
+_Id3Frame? _id3FrameHeader(_Id3Tag tag, Uint8List bytes, int start) {
+  final length = _id3FrameHeaderSize(tag);
+  if (start + length > bytes.length || bytes[start] == 0) return null;
+  final idLength = tag.version == 2 ? 3 : 4;
+  final size = tag.version == 4
+      ? _synchsafe(bytes, start + idLength)
+      : _int(bytes, start + idLength, idLength);
+  if (size == null || size <= 0) return null;
+  return (
+    id: _ascii(bytes, start, idLength),
+    size: size,
+    format: tag.version == 2 ? 0 : bytes[start + 9],
+  );
+}
+
+bool _canReadFrame(_Id3Tag tag, _Id3Frame frame) =>
+    (tag.version != 3 || frame.format & 0xc0 == 0) &&
+    (tag.version != 4 || frame.format & 0x0c == 0);
+
+Uint8List? _id3Payload(_Id3Tag tag, _Id3Frame frame, Uint8List bytes) {
+  if (tag.version == 4 && (tag.flags & 128 != 0 || frame.format & 2 != 0)) {
+    bytes = _deunsync(bytes);
+  }
+  final prefix = tag.version == 4
+      ? (frame.format & 0x40 != 0 ? 1 : 0) + (frame.format & 1 != 0 ? 4 : 0)
+      : (frame.format & 0x20 != 0 ? 1 : 0);
+  return prefix >= bytes.length ? null : Uint8List.sublistView(bytes, prefix);
+}
 
 class Mp3Metadata {
   const Mp3Metadata({
@@ -39,79 +101,49 @@ Future<Mp3Metadata> readMp3Metadata(
     final fields = <String, String>{};
     Uint8List? picture;
     var offset = 0;
-    if (header.length == 10 &&
-        _ascii(header, 0, 3) == 'ID3' &&
-        header[3] >= 2 &&
-        header[3] <= 4) {
-      final version = header[3];
-      final flags = header[5];
-      final size = _synchsafe(header, 6);
-      if (size != null && size <= length - 10) {
-        offset = 10 + size + (version == 4 && flags & 16 != 0 ? 10 : 0);
-        if (size <= _maxId3 && (version != 2 || flags & 64 == 0)) {
-          var tag = await reader.read(size);
-          final unsynced = flags & 128 != 0;
-          if (version < 4 && unsynced) tag = _deunsync(tag);
-          var start = 0;
-          if (version == 3 && flags & 64 != 0 && tag.length >= 4) {
-            start = 4 + _int(tag, 0, 4);
-          } else if (version == 4 && flags & 64 != 0 && tag.length >= 4) {
-            start = _synchsafe(tag, 0) ?? tag.length;
-            if (start < 6) start = tag.length;
-          }
-          var pictureType = -1;
-          final frameHeader = version == 2 ? 6 : 10;
-          while (start + frameHeader <= tag.length) {
-            if (tag[start] == 0) break;
-            final id = _ascii(tag, start, version == 2 ? 3 : 4);
-            final size = version == 4
-                ? _synchsafe(tag, start + 4)
-                : _int(
-                    tag,
-                    start + (version == 2 ? 3 : 4),
-                    version == 2 ? 3 : 4,
-                  );
-            final format = version == 2 ? 0 : tag[start + 9];
-            final body = start + frameHeader;
-            if (size == null || size <= 0 || size > tag.length - body) break;
-            start = body + size;
-            // Compressed and encrypted frames are optional.
-            if ((version == 3 && format & 0xc0 != 0) ||
-                (version == 4 && format & 0x0c != 0)) {
-              continue;
-            }
-            final field = switch (id) {
-              'TT2' || 'TIT2' => 'title',
-              'TP1' || 'TPE1' => 'artist',
-              'TAL' || 'TALB' => 'album',
-              'TRK' || 'TRCK' => 'track',
-              'TPA' || 'TPOS' => 'disc',
-              _ => null,
-            };
-            final attached = id == 'PIC' || id == 'APIC';
-            if (field == null && !attached) continue;
-            if (size > (attached ? localArtworkMaxBytes : 8192)) continue;
-            var content = Uint8List.sublistView(tag, body, start);
-            if (version == 4 && (unsynced || format & 2 != 0)) {
-              content = _deunsync(content);
-            }
-            final prefix = version == 4
-                ? (format & 0x40 != 0 ? 1 : 0) + (format & 1 != 0 ? 4 : 0)
-                : (format & 0x20 != 0 ? 1 : 0);
-            if (prefix >= content.length) continue;
-            content = Uint8List.sublistView(content, prefix);
-            if (field != null) {
-              final value = _tagText(content);
-              if (value.isNotEmpty) fields.putIfAbsent(field, () => value);
-            } else if (readArtwork && pictureType != 3) {
-              final candidate = _picture(content, legacy: id == 'PIC');
-              if (candidate != null &&
-                  (candidate.type == 3 || picture == null)) {
-                final decoded = normalizeEmbeddedCover(candidate.bytes);
-                if (decoded != null) {
-                  pictureType = candidate.type;
-                  picture = decoded;
-                }
+    final id3 = _id3Header(header, length);
+    if (id3 != null) {
+      offset =
+          10 + id3.size + (id3.version == 4 && id3.flags & 16 != 0 ? 10 : 0);
+      if (_canReadTag(id3)) {
+        var tag = await reader.read(id3.size);
+        if (_legacyUnsynced(id3)) tag = _deunsync(tag);
+        var start = _id3FramesStart(id3, tag) ?? tag.length;
+        var pictureType = -1;
+        final frameHeader = _id3FrameHeaderSize(id3);
+        while (start + frameHeader <= tag.length) {
+          final frame = _id3FrameHeader(id3, tag, start);
+          final body = start + frameHeader;
+          if (frame == null || frame.size > tag.length - body) break;
+          start = body + frame.size;
+          if (!_canReadFrame(id3, frame)) continue;
+          final field = switch (frame.id) {
+            'TT2' || 'TIT2' => 'title',
+            'TP1' || 'TPE1' => 'artist',
+            'TAL' || 'TALB' => 'album',
+            'TRK' || 'TRCK' => 'track',
+            'TPA' || 'TPOS' => 'disc',
+            _ => null,
+          };
+          final attached = frame.id == 'PIC' || frame.id == 'APIC';
+          if (field == null && (!attached || !readArtwork)) continue;
+          if (frame.size > (attached ? localArtworkMaxBytes : 8192)) continue;
+          final content = _id3Payload(
+            id3,
+            frame,
+            Uint8List.sublistView(tag, body, start),
+          );
+          if (content == null) continue;
+          if (field != null) {
+            final value = _tagText(content);
+            if (value.isNotEmpty) fields.putIfAbsent(field, () => value);
+          } else if (readArtwork && pictureType != 3) {
+            final candidate = _picture(content, legacy: frame.id == 'PIC');
+            if (candidate != null && (candidate.type == 3 || picture == null)) {
+              final decoded = normalizeEmbeddedCover(candidate.bytes);
+              if (decoded != null) {
+                pictureType = candidate.type;
+                picture = decoded;
               }
             }
           }
@@ -159,6 +191,85 @@ Future<Mp3Metadata> readMp3Metadata(
   }
 }
 
+final _decibelTag = RegExp(
+  r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\s*dB)?$',
+  caseSensitive: false,
+);
+
+/// Reads a local MP3's existing track gain, returning a factor in (0, 1].
+/// No audio decoding or artwork read for ordinary tags; the legacy ID3
+/// tag-wide unsync flag needs the existing bounded deunsynchronisation pass.
+Future<double> readMp3TrackGain(String path) async {
+  try {
+    final reader = await File(path).open();
+    try {
+      final id3 = _id3Header(await reader.read(10), await reader.length());
+      if (id3 == null || !_canReadTag(id3)) return 1;
+      final legacy = _legacyUnsynced(id3)
+          ? _deunsync(await reader.read(id3.size))
+          : null;
+      final length = legacy?.length ?? id3.size;
+
+      FutureOr<Uint8List> readAt(int offset, int bytes) => legacy == null
+          ? _readId3Bytes(reader, offset, bytes)
+          : Uint8List.sublistView(legacy, offset, offset + bytes);
+
+      final prefix = id3.version != 2 && id3.flags & 64 != 0
+          ? await readAt(0, math.min(4, length))
+          : Uint8List(0);
+      final first = _id3FramesStart(id3, prefix);
+      if (first == null) return 1;
+      var start = first;
+      final headerSize = _id3FrameHeaderSize(id3);
+      for (
+        var n = 0;
+        n < _maxReplayGainFrames && start + headerSize <= length;
+        n++
+      ) {
+        final frame = _id3FrameHeader(id3, await readAt(start, headerSize), 0);
+        final body = start + headerSize;
+        if (frame == null || frame.size > length - body) break;
+        start = body + frame.size;
+        if ((frame.id != 'TXXX' && frame.id != 'TXX') ||
+            !_canReadFrame(id3, frame) ||
+            frame.size > 1024) {
+          continue;
+        }
+        final bytes = await readAt(body, frame.size);
+        if (bytes.length != frame.size) break;
+        final payload = _id3Payload(id3, frame, bytes);
+        if (payload == null) continue;
+        final fields = _decodeTagText(payload).split('\u0000');
+        if (fields.length < 2 ||
+            fields.first.trim().toUpperCase() != 'REPLAYGAIN_TRACK_GAIN') {
+          continue;
+        }
+        final value = fields[1].trim();
+        if (!_decibelTag.hasMatch(value)) continue;
+        final db = double.tryParse(
+          value.replaceFirst(RegExp(r'[dD][bB]$'), '').trim(),
+        );
+        if (db == null || !db.isFinite || db < -60 || db > 60) continue;
+        return db >= 0 ? 1 : math.pow(10, db / 20).toDouble();
+      }
+    } finally {
+      await reader.close();
+    }
+  } on FileSystemException {
+    // Tag lookup is optional. Includes files removed during a source switch.
+  }
+  return 1;
+}
+
+Future<Uint8List> _readId3Bytes(
+  RandomAccessFile reader,
+  int offset,
+  int count,
+) async {
+  await reader.setPosition(10 + offset);
+  return reader.read(count);
+}
+
 String _clean(String text) => String.fromCharCodes(
   text.split('\u0000').first.trim().runes.take(512),
 ).replaceAll(RegExp(r'[\x00-\x1f\x7f]'), ' ').trim();
@@ -193,15 +304,17 @@ Uint8List _deunsync(Uint8List bytes) {
   return Uint8List.sublistView(result, 0, pos);
 }
 
-String _tagText(Uint8List value) {
+String _tagText(Uint8List value) => _clean(_decodeTagText(value));
+
+String _decodeTagText(Uint8List value) {
   if (value.length < 2) return '';
-  return _clean(switch (value.first) {
+  return switch (value.first) {
     0 => latin1.decode(Uint8List.sublistView(value, 1)),
     1 => decodeLocalUtf16(value, start: 1, little: false),
     2 => decodeLocalUtf16(value, start: 1, little: false),
     3 => utf8.decode(Uint8List.sublistView(value, 1), allowMalformed: true),
     _ => '',
-  });
+  };
 }
 
 String decodeLocalUtf16(

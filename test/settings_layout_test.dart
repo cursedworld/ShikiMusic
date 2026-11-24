@@ -17,7 +17,7 @@ void main() {
   late Color oldAccent;
   late String oldLanguage;
   late String? oldBackground;
-  late bool oldVinyl, oldVideo, oldGitHub, oldLyrics;
+  late bool oldVinyl, oldVideo, oldGitHub, oldLyrics, oldReplayGain;
   late TrackTransitionMode oldMode;
   const capture = bool.fromEnvironment('SHIKI_SETTINGS_SCREENSHOT');
   const fontPath = String.fromEnvironment('SHIKI_TEST_FONT');
@@ -49,6 +49,7 @@ void main() {
     oldGitHub = discordShowGitHubButtonNotifier.value;
     oldLyrics = discordLyricsStatusNotifier.value;
     oldMode = trackTransitionModeNotifier.value;
+    oldReplayGain = replayGainEnabledNotifier.value;
     accentColorNotifier.value = themeColors['color_purple']!;
     languageNotifier.value = 'ru';
     customBackgroundNotifier.value = null;
@@ -57,6 +58,7 @@ void main() {
     discordShowGitHubButtonNotifier.value = false;
     discordLyricsStatusNotifier.value = true;
     trackTransitionModeNotifier.value = TrackTransitionMode.off;
+    replayGainEnabledNotifier.value = false;
   });
   tearDown(() async {
     accentColorNotifier.value = oldAccent;
@@ -67,6 +69,7 @@ void main() {
     discordShowGitHubButtonNotifier.value = oldGitHub;
     discordLyricsStatusNotifier.value = oldLyrics;
     trackTransitionModeNotifier.value = oldMode;
+    replayGainEnabledNotifier.value = oldReplayGain;
     final prefix =
         '${Directory.systemTemp.absolute.path}${Platform.pathSeparator}shiki-settings-layout-';
     if (!directory.absolute.path.startsWith(prefix)) {
@@ -180,6 +183,53 @@ void main() {
       }
     });
   }
+
+  testWidgets('ReplayGain is off in old settings and saves a live change', (
+    tester,
+  ) async {
+    final file = File('${directory.path}/shiki_settings.json');
+    file.writeAsStringSync(jsonEncode({'trackTransitionMode': 'crossfade'}));
+    final row = find.byKey(const ValueKey('replay_gain_switch'));
+    final toggle = find.descendant(of: row, matching: find.byType(Switch));
+
+    Future<void> reveal() async {
+      await show(tester, width: 320);
+      await drive(tester, () => editable(tester));
+      await tester.scrollUntilVisible(
+        row,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(row);
+      await tester.pumpAndSettle();
+    }
+
+    await reveal();
+    expect(tester.widget<Switch>(toggle).value, isFalse);
+    await tester.runAsync(() async {
+      tester.widget<Switch>(toggle).onChanged!(true);
+    });
+    expect(replayGainEnabledNotifier.value, isTrue);
+    await drive(tester, () {
+      try {
+        return jsonDecode(file.readAsStringSync())['replayGainEnabled'] == true;
+      } on FileSystemException catch (error) {
+        if (error.osError?.errorCode == 32) return false;
+        rethrow;
+      }
+    });
+    expect(
+      jsonDecode(file.readAsStringSync())['trackTransitionMode'],
+      'crossfade',
+    );
+    await tester.pumpWidget(const SizedBox());
+    replayGainEnabledNotifier.value = false;
+    await reveal();
+    expect(tester.widget<Switch>(toggle).value, isTrue);
+    expect(replayGainEnabledNotifier.value, isTrue);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('legacy fade migrates; crossfade and off save and reload', (
     tester,

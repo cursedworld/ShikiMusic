@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
 
 import 'lyric_timing.dart';
+import 'mp3_metadata.dart';
 import 'track_crossfade.dart';
 import 'track_fade.dart';
 
@@ -14,11 +15,16 @@ class PlaybackDeck implements CrossfadeDeck {
     required bool fadeEnabled,
     required void Function(Object) onError,
     AudioContext? context,
-  }) {
-    player.positionUpdater = null;
+    bool replayGainEnabled = false,
+    AudioPlayer? player,
+    Future<double> Function(String) trackGainReader = readMp3TrackGain,
+  }) : player = player ?? AudioPlayer(),
+       _replayGainEnabled = replayGainEnabled,
+       _trackGainReader = trackGainReader {
+    this.player.positionUpdater = null;
     fade = TrackFade(
-      readPosition: player.getCurrentPosition,
-      writeVolume: player.setVolume,
+      readPosition: this.player.getCurrentPosition,
+      writeVolume: this.player.setVolume,
       onError: (error) {
         _lastVolumeError = error;
         onError(error);
@@ -27,15 +33,19 @@ class PlaybackDeck implements CrossfadeDeck {
       enabled: fadeEnabled,
     );
     if (context != null) {
-      contextReady = player.setAudioContext(context);
+      contextReady = this.player.setAudioContext(context);
       // The owner still observes setup failure when preparing the source.
       // This handler covers players canceled before ever being prepared.
       contextReady!.ignore();
     }
   }
 
-  final player = AudioPlayer();
+  final AudioPlayer player;
   late final TrackFade fade;
+  final Future<double> Function(String) _trackGainReader;
+  bool _replayGainEnabled, _disposed = false;
+  int _sourceRevision = 0;
+  Future<double>? _loadedFileGain;
   Future<void>? contextReady;
   Object? _lastVolumeError;
   LyricAudioFile? localAudio;
@@ -44,9 +54,39 @@ class PlaybackDeck implements CrossfadeDeck {
     Source source, {
     LyricAudioFile? localAudio,
   }) async {
+    final revision = ++_sourceRevision;
     this.localAudio = null;
+    _loadedFileGain = null;
+    // A backend may automatically start a new source if the deck is still
+    // playing. Keep it paused until the new recording's gain is known.
+    if (playing &&
+        (_replayGainEnabled && localAudio != null || fade.trackGain != 1)) {
+      await player.pause();
+    }
     await player.setSource(source);
+    if (_disposed || revision != _sourceRevision) return;
     this.localAudio = localAudio;
+    if (_replayGainEnabled || fade.trackGain != 1) await _applyReplayGain();
+  }
+
+  Future<void> setReplayGainEnabled(bool enabled) async {
+    if (_disposed || enabled == _replayGainEnabled) return;
+    _replayGainEnabled = enabled;
+    await _applyReplayGain();
+  }
+
+  Future<void> _applyReplayGain() async {
+    final file = localAudio;
+    final revision = _sourceRevision;
+    final gain = _replayGainEnabled && file != null
+        ? await (_loadedFileGain ??= _trackGainReader(file.path))
+        : 1.0;
+    if (_disposed ||
+        revision != _sourceRevision ||
+        !identical(file, localAudio)) {
+      return;
+    }
+    await fade.setTrackGain(_replayGainEnabled ? gain : 1);
   }
 
   @override
@@ -73,6 +113,7 @@ class PlaybackDeck implements CrossfadeDeck {
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
     fade.dispose();
     try {
       await contextReady;

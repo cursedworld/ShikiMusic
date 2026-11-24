@@ -119,6 +119,7 @@ Future<void> _loadSavedSettings() async {
         data['trackTransitionMode'],
         data['smoothTrackTransitions'],
       );
+      replayGainEnabledNotifier.value = data['replayGainEnabled'] == true;
 
       // Restore discord github button setting
       discordShowGitHubButtonNotifier.value =

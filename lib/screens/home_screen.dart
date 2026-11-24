@@ -652,6 +652,7 @@ class MainAppScreenState extends State<MainAppScreen>
         Platform.isAndroid && _transitionMode == TrackTransitionMode.crossfade;
     _audioDeck = _newAudioDeck(sharedAndroidFocus: _androidDeckUsesSharedFocus);
     trackTransitionModeNotifier.addListener(_onTrackFadeChanged);
+    replayGainEnabledNotifier.addListener(_onReplayGainChanged);
     _configureFadeTail();
     _subscribeToAudioDeck();
     if (isAudioServiceActive) {
@@ -758,6 +759,7 @@ class MainAppScreenState extends State<MainAppScreen>
   void dispose() {
     _stateDisposing = true;
     trackTransitionModeNotifier.removeListener(_onTrackFadeChanged);
+    replayGainEnabledNotifier.removeListener(_onReplayGainChanged);
     _crossfade?.cancel();
     unawaited(_androidPlaybackFocus?.dispose().catchError(_logAudioError));
     activeTrackNotifier.removeListener(_syncTaskbarControls);
@@ -4846,6 +4848,7 @@ class MainAppScreenState extends State<MainAppScreen>
       PlaybackDeck(
         volume: volume,
         fadeEnabled: _transitionMode != TrackTransitionMode.off,
+        replayGainEnabled: replayGainEnabledNotifier.value,
         onError: _logAudioError,
         context: isDesktop
             ? null
@@ -5160,6 +5163,12 @@ class MainAppScreenState extends State<MainAppScreen>
     final enabled = _transitionMode != TrackTransitionMode.off;
     unawaited(_trackFade.setEnabled(enabled));
     if (enabled) unawaited(_syncTrackFade(currentPositionNotifier.value));
+  }
+
+  void _onReplayGainChanged() {
+    final enabled = replayGainEnabledNotifier.value;
+    unawaited(_audioDeck.setReplayGainEnabled(enabled));
+    unawaited(_crossfade?.incomingDeck?.setReplayGainEnabled(enabled));
   }
 
   void startPlayback(List<dynamic> targetQueue, int index, {int? playlistId}) {

@@ -144,6 +144,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _vinylRotation = vinylRotationNotifier.value;
   bool _playVideoClip = playVideoClipNotifier.value;
   TrackTransitionMode _trackTransitionMode = trackTransitionModeNotifier.value;
+  bool _replayGainEnabled = replayGainEnabledNotifier.value;
   bool _discordShowGitHubButton = discordShowGitHubButtonNotifier.value;
   bool _discordLyricsStatus = discordLyricsStatusNotifier.value;
   late final Future<Directory> Function() _getDataDirectory;
@@ -213,6 +214,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             data['trackTransitionMode'],
             data['smoothTrackTransitions'],
           );
+          _replayGainEnabled = data['replayGainEnabled'] == true;
           _discordShowGitHubButton = data['discordShowGitHubButton'] ?? true;
           _discordLyricsStatus = data['discordLyricsStatus'] == true;
           final server = data['serverBaseUrl'];
@@ -233,6 +235,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         vinylRotationNotifier.value = _vinylRotation;
         playVideoClipNotifier.value = _playVideoClip;
         trackTransitionModeNotifier.value = _trackTransitionMode;
+        replayGainEnabledNotifier.value = _replayGainEnabled;
         discordShowGitHubButtonNotifier.value = _discordShowGitHubButton;
         discordLyricsStatusNotifier.value = _discordLyricsStatus;
       }
@@ -249,6 +252,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'vinylRotation': _vinylRotation,
       'playVideoClip': _playVideoClip,
       'trackTransitionMode': _trackTransitionMode.name,
+      'replayGainEnabled': _replayGainEnabled,
       // Older releases can still read this as their sequential fade option.
       'smoothTrackTransitions': _trackTransitionMode != TrackTransitionMode.off,
       'discordShowGitHubButton': _discordShowGitHubButton,
@@ -377,6 +381,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           'track_transition_${_trackTransitionMode.name}',
                         ),
                         onTap: _settingsReady ? _chooseTrackTransition : null,
+                      ),
+                      _toggle(
+                        key: const ValueKey('replay_gain_switch'),
+                        title: tr('replay_gain'),
+                        hint: tr('replay_gain_hint'),
+                        value: _replayGainEnabled,
+                        onChanged: (value) {
+                          setState(() => _replayGainEnabled = value);
+                          replayGainEnabledNotifier.value = value;
+                          _saveSettings();
+                        },
                       ),
                       if (supportsVinylRotation)
                         _toggle(

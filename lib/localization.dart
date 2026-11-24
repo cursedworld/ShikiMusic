@@ -746,6 +746,18 @@ const Map<String, Map<String, String>> _translations = {
   'settings_title': {'ru': 'Настройки', 'en': 'Settings', 'ja': '設定'},
   'settings_appearance': {'ru': 'Внешний вид', 'en': 'Appearance', 'ja': '外観'},
   'settings_playback': {'ru': 'Воспроизведение', 'en': 'Playback', 'ja': '再生'},
+  'replay_gain': {
+    'ru': 'Выравнивать громкость',
+    'en': 'Match track loudness',
+    'ja': '曲の音量をそろえる',
+  },
+  'replay_gain_hint': {
+    'ru':
+        'Приглушает громкие MP3 с тегом ReplayGain. Треки без тега звучат как раньше.',
+    'en':
+        'Turns down loud MP3s with ReplayGain tags. Untagged tracks play as before.',
+    'ja': 'ReplayGain タグ付きの大きな音の MP3 を抑えます。タグなしの曲はそのままです。',
+  },
   'smooth_track_transitions': {
     'ru': 'Плавные переходы',
     'en': 'Smooth transitions',

@@ -9,15 +9,14 @@ Uint8List fixtureMp3({
   int variation = 0,
   int frames = 5,
 }) {
-  List<int> number(int n, int shift) => [
-    for (var i = 3; i >= 0; i--) (n >> (i * shift)) & ((1 << shift) - 1),
+  List<int> number(int n, int shift, [int size = 4]) => [
+    for (var i = size - 1; i >= 0; i--) (n >> (i * shift)) & ((1 << shift) - 1),
   ];
   final payload = [
     for (final tag in tags) ...[
       ...ascii.encode(tag.id),
-      ...number(tag.bytes.length, version == 4 ? 7 : 8),
-      0,
-      0,
+      ...number(tag.bytes.length, version == 4 ? 7 : 8, version == 2 ? 3 : 4),
+      if (version != 2) ...[0, 0],
       ...tag.bytes,
     ],
   ];

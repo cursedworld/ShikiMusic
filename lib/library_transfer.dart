@@ -334,6 +334,7 @@ void _validateJson(
             'vinylRotation',
             'playVideoClip',
             'smoothTrackTransitions',
+            'replayGainEnabled',
             'discordShowGitHubButton',
             'discordLyricsStatus',
           ].every((key) => value[key] == null || value[key] is bool) &&

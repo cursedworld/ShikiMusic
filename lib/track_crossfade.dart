@@ -54,6 +54,8 @@ class TrackCrossfade<T extends CrossfadeDeck> {
   bool holdsTrack(int id) =>
       _attempt?.source.trackId == id || _retiring?.source.trackId == id;
 
+  T? get incomingDeck => _attempt?.deck;
+
   Future<void>? releaseTrack(int id) {
     if (_attempt?.source.trackId == id) cancel(allowRetry: true);
     final retiring = _retiring;
