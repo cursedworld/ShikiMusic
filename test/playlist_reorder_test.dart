@@ -13,7 +13,9 @@ import 'package:shiki/globals.dart';
 import 'package:shiki/atomic_file_store.dart';
 import 'package:shiki/local_music_catalog.dart';
 import 'package:shiki/local_music_import.dart';
+import 'package:shiki/local_music_metadata.dart';
 import 'package:shiki/screens/home_screen.dart';
+import 'package:shiki/server_config.dart';
 import 'package:shiki/widgets/play_next_panel.dart';
 import 'package:shiki/widgets/playlist_track_list.dart';
 import 'package:shiki/lyrics_search.dart';
@@ -203,7 +205,7 @@ void main() {
         () => client,
       );
       expect(calls, ['/api/tracks/']);
-      expect(state.cachedTracks.map((track) => track['id']), [song.id, 1]);
+      expect(state.cachedTracks.map((track) => track['id']), [1, song.id]);
       expect(
         (jsonDecode(
                   await File('${root.path}/offline_tracks.json').readAsString(),
@@ -264,6 +266,74 @@ void main() {
     await tester.pumpAndSettle();
     return state;
   }
+
+  testWidgets('a confirmed duplicate plays the owned MP3 at the bottom', (
+    tester,
+  ) async {
+    final state = await selectionScreen(tester, 1200);
+    final root = await widgetDirectory(tester);
+    addTearDown(() => root.delete(recursive: true));
+    final entry = (await tester.runAsync(() async {
+      final source = await File(
+        '${root.path}/source.mp3',
+      ).writeAsBytes(fixtureMp3());
+      return (await importLocalMusic(
+        directory: root,
+        files: [(name: 'Original.mp3', path: source.path)],
+        cancel: LocalImportCancel(),
+      )).entries.single;
+    }))!;
+    const source = 'youtube:abcdefghijk';
+    final counterpart = {
+      'id': 51,
+      'source_id': source,
+      'duration': entry.duration,
+      'title': 'Matched track',
+      'audio_file': 'https://example.test/remote.mp3',
+      'artists': [
+        {'id': 8, 'name': 'Matched artist'},
+      ],
+      'album': {
+        'id': 7,
+        'title': 'Matched album',
+        'artist': {'id': 8, 'name': 'Matched artist'},
+      },
+    };
+    state.localPath = root.path;
+    state.cachedTracks = [...tracks, counterpart];
+    state.publishLocalMusic([
+      entry.withMetadata(
+        LocalMusicMetadata.decode({
+          'title': 'Matched track',
+          'artists': ['Matched artist'],
+          'source_id': source,
+        }, serverKey: localMusicServerKey(configuredServerBaseUri))!,
+      ),
+    ]);
+    await tester.pumpAndSettle();
+    final local = find.byKey(ValueKey(entry.id));
+    expect(local, findsOneWidget);
+    expect(find.byKey(const ValueKey(51)), findsNothing);
+    expect(
+      tester.getTopLeft(local).dy,
+      greaterThan(tester.getTopLeft(find.byKey(const ValueKey(4))).dy),
+    );
+    await tester.tap(find.text('Matched track'));
+    expect(state.lastPlaybackQueue.last['id'], entry.id);
+    expect(state.lastPlaybackQueue.last['audio_file'], isEmpty);
+    expect(state.isTrackLocal(entry.id), isTrue);
+    expect(state.cachedTracks.map((track) => track['id']), [
+      1,
+      2,
+      3,
+      4,
+      51,
+      entry.id,
+    ]);
+    state.rebuild = null;
+    state.testContext = null;
+    await tester.pumpWidget(const SizedBox());
+  });
 
   test(
     'confirmed MP3 removal clears only local audio and its app references',

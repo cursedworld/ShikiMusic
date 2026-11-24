@@ -96,11 +96,19 @@ ImageProvider getPictureProvider(dynamic currentObject) {
   final id = currentObject['id'] as int;
   final ownDigest = localTrackDigest(currentObject);
   if (ownDigest != null) {
-    final key = '$id-local:$ownDigest|$globalLocalPath';
+    final album = currentObject['album'];
+    final coverUrl = album?['cover']?.toString() ?? '';
+    final artist = album?['artist'];
+    final key =
+        '$id-local:$ownDigest|$globalLocalPath|$coverUrl|${artist?['photo']}';
     final cached = _coverCache[key];
     if (cached != null) return cached;
     final cover = _ownCover(ownDigest);
-    final provider = cover == null ? _emptyCover : FileImage(cover);
+    final provider = cover != null
+        ? FileImage(cover)
+        : coverUrl.isNotEmpty
+        ? NetworkImage(coverUrl)
+        : getArtistPhotoProvider(artist) ?? _emptyCover;
     return _rememberCover(key, provider);
   }
   final coverFileName = getCoverFileName(currentObject);
@@ -171,7 +179,7 @@ Uri? getArtUri(dynamic track) {
   final ownDigest = localTrackDigest(track);
   if (ownDigest != null) {
     final cover = _ownCover(ownDigest);
-    return cover == null ? null : Uri.file(cover.path);
+    if (cover != null) return Uri.file(cover.path);
   }
   final id = track['id'] as int;
   final coverFileName = getCoverFileName(track);

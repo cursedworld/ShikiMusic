@@ -4,10 +4,16 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import 'local_music_catalog.dart';
+import 'local_music_metadata.dart';
 
-const localMusicMatchPath = '/api/local-music/match/';
+const localMusicMatchPath = '/api/local-music/metadata/';
 
-enum LocalMusicMatchOutcome { imported, existing, noMatch, failed }
+enum LocalMusicMatchOutcome { queued, existing, metadata, noMatch, failed }
+
+typedef LocalMusicMatchResult = ({
+  LocalMusicMatchOutcome outcome,
+  LocalMusicMetadata? metadata,
+});
 
 /// One-shot lookups against the configured server. Nothing is queued for
 /// later reconnection; the copied audio always remains usable offline.
@@ -23,6 +29,7 @@ class LocalMusicServerMatchClient {
     try {
       final (status, json) = await _request(
         http.Request('GET', endpoint),
+        maxBytes: 4096,
       ).timeout(const Duration(seconds: 2));
       return status == 200 && json is Map && json['version'] == 1;
     } catch (_) {
@@ -30,11 +37,14 @@ class LocalMusicServerMatchClient {
     }
   }
 
-  Future<LocalMusicMatchOutcome> match(
+  Future<LocalMusicMatchResult> match(
     Uri endpoint,
-    LocalMusicEntry entry,
-  ) async {
-    if (entry.duration <= 0) return LocalMusicMatchOutcome.noMatch;
+    LocalMusicEntry entry, {
+    required String serverKey,
+  }) async {
+    if (entry.duration <= 0) {
+      return (outcome: LocalMusicMatchOutcome.noMatch, metadata: null);
+    }
     try {
       final request = http.Request('POST', endpoint)
         ..headers['Content-Type'] = 'application/json; charset=utf-8'
@@ -46,31 +56,42 @@ class LocalMusicServerMatchClient {
         });
       final (status, body) = await _request(
         request,
-      ).timeout(const Duration(minutes: 5));
-      if (body is! Map) return LocalMusicMatchOutcome.failed;
-      final id = body['track_id'];
-      if (id is int && id > 0) {
-        if (status == 201 && body['status'] == 'imported') {
-          return LocalMusicMatchOutcome.imported;
-        }
-        if (status == 200 && body['status'] == 'existing') {
-          return LocalMusicMatchOutcome.existing;
+        maxBytes: 1024 * 1024,
+      ).timeout(const Duration(minutes: 2));
+      if (body is Map) {
+        final outcome = switch ((status, body['status'])) {
+          (202, 'queued') => LocalMusicMatchOutcome.queued,
+          (200, 'existing') => LocalMusicMatchOutcome.existing,
+          (200, 'metadata') => LocalMusicMatchOutcome.metadata,
+          _ => null,
+        };
+        if (outcome != null) {
+          final metadata = LocalMusicMetadata.decode(
+            body['metadata'],
+            serverKey: serverKey,
+          );
+          if (metadata != null) return (outcome: outcome, metadata: metadata);
         }
       }
-      if (status == 422 || status == 400) return LocalMusicMatchOutcome.noMatch;
+      if (status == 422 || status == 400) {
+        return (outcome: LocalMusicMatchOutcome.noMatch, metadata: null);
+      }
     } catch (_) {
       // A network failure cannot undo the local import.
     }
-    return LocalMusicMatchOutcome.failed;
+    return (outcome: LocalMusicMatchOutcome.failed, metadata: null);
   }
 
-  Future<(int, Object?)> _request(http.Request request) async {
+  Future<(int, Object?)> _request(
+    http.Request request, {
+    required int maxBytes,
+  }) async {
     // Do not forward any tags on a redirect to another origin.
     request.followRedirects = false;
     final response = await _client.send(request);
     final body = BytesBuilder(copy: false);
     await for (final bytes in response.stream) {
-      if (body.length + bytes.length > 4096) {
+      if (body.length + bytes.length > maxBytes) {
         return (response.statusCode, null);
       }
       body.add(bytes);

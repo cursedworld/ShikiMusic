@@ -34,9 +34,11 @@ class LocalMusicImportResult {
     required this.problems,
     required this.cancelled,
     this.newEntries = const [],
+    this.matchEntries = const [],
   });
   final List<LocalMusicEntry> entries;
   final List<LocalMusicEntry> newEntries;
+  final List<LocalMusicEntry> matchEntries;
   final int added, alreadyPresent, restored;
   final List<({String name, LocalImportProblem problem})> problems;
   final bool cancelled;
@@ -82,6 +84,7 @@ Future<LocalMusicImportResult> importLocalMusic({
   var alreadyPresent = 0;
   var entries = <LocalMusicEntry>[];
   final newEntries = <LocalMusicEntry>[];
+  final matching = <String>{};
   if (tracks.isNotEmpty && !cancel.requested) {
     final staging = await directory.createTemp('.local_import_');
     try {
@@ -197,6 +200,7 @@ Future<LocalMusicImportResult> importLocalMusic({
                   restored++;
                 }
               }
+              if (byDigest[digest]!.metadata == null) matching.add(digest);
               progress(1);
             } on FormatException {
               problems.add((
@@ -241,6 +245,10 @@ Future<LocalMusicImportResult> importLocalMusic({
     problems: problems,
     cancelled: cancel.requested,
     newEntries: List.unmodifiable(newEntries),
+    matchEntries: [
+      for (final entry in entries)
+        if (matching.contains(entry.digest)) entry,
+    ],
   );
 }
 

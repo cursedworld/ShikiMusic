@@ -8,6 +8,7 @@ import 'package:shiki/local_music_server_match.dart';
 
 void main() {
   final endpoint = Uri.parse('http://localhost:8000$localMusicMatchPath');
+  final key = 'c' * 64;
   const entry = LocalMusicEntry(
     id: -7,
     digest: 'not transmitted',
@@ -37,14 +38,29 @@ void main() {
             'album': entry.album,
             'duration': entry.duration,
           });
-          return http.Response('{"status":"imported","track_id":11}', 201);
+          return http.Response(
+            jsonEncode({
+              'status': 'queued',
+              'metadata': {
+                'title': entry.title,
+                'artists': [entry.artist, 'Guest'],
+                'album': entry.album,
+                'source_id': 'youtube:abcdefghijk',
+                'lyrics': List.filled(600, '[00:01.00]Some text').join('\n'),
+                'audio_file': 'ignored',
+              },
+            }),
+            202,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
         }),
       );
       expect(await client.isAvailable(endpoint), isTrue);
-      expect(
-        await client.match(endpoint, entry),
-        LocalMusicMatchOutcome.imported,
-      );
+      final result = await client.match(endpoint, entry, serverKey: key);
+      expect(result.outcome, LocalMusicMatchOutcome.queued);
+      expect(result.metadata?.artists, [entry.artist, 'Guest']);
+      expect(result.metadata!.lyrics.length, greaterThan(4096));
+      expect(result.metadata!.toJson().containsKey('audio_file'), isFalse);
       expect(methods, ['GET', 'POST']);
     },
   );
@@ -73,28 +89,34 @@ void main() {
     'maps existing, unconfirmed and failed results without inventing success',
     () async {
       final responses = [
-        http.Response('{"status":"existing","track_id":21}', 200),
+        http.Response(
+          '{"status":"existing","metadata":{"track_id":21,"title":"Track","artists":["Artist"]}}',
+          200,
+        ),
         http.Response('{"status":"no_match"}', 422),
         http.Response('{"status":"search_failed"}', 502),
-        http.Response('{"status":"imported","track_id":-1}', 201),
+        http.Response(
+          '{"status":"queued","metadata":{"title":"Track","artists":[]}}',
+          202,
+        ),
       ];
       final client = LocalMusicServerMatchClient(
         client: MockClient((_) async => responses.removeAt(0)),
       );
       expect(
-        await client.match(endpoint, entry),
+        (await client.match(endpoint, entry, serverKey: key)).outcome,
         LocalMusicMatchOutcome.existing,
       );
       expect(
-        await client.match(endpoint, entry),
+        (await client.match(endpoint, entry, serverKey: key)).outcome,
         LocalMusicMatchOutcome.noMatch,
       );
       expect(
-        await client.match(endpoint, entry),
+        (await client.match(endpoint, entry, serverKey: key)).outcome,
         LocalMusicMatchOutcome.failed,
       );
       expect(
-        await client.match(endpoint, entry),
+        (await client.match(endpoint, entry, serverKey: key)).outcome,
         LocalMusicMatchOutcome.failed,
       );
     },
@@ -109,10 +131,11 @@ void main() {
         }),
       );
       expect(
-        await client.match(
+        (await client.match(
           endpoint,
           const LocalMusicEntry(id: -7, digest: '', title: 'No duration'),
-        ),
+          serverKey: key,
+        )).outcome,
         LocalMusicMatchOutcome.noMatch,
       );
     },

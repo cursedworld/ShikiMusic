@@ -66,10 +66,12 @@ List<Map> compatibleLocalOffsets(
       if (isPortableOffset(row))
         if (byId[row['track_id']] case final entry?)
           if (entry.digest == row['audio_sha256'] &&
-              entry.lyrics.isNotEmpty &&
+              entry.preferredLyrics.isNotEmpty &&
               textHashes.putIfAbsent(
                     entry.id,
-                    () => sha256.convert(utf8.encode(entry.lyrics)).toString(),
+                    () => sha256
+                        .convert(utf8.encode(entry.preferredLyrics))
+                        .toString(),
                   ) ==
                   row['lrc_sha256'])
             row as Map,

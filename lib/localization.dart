@@ -213,10 +213,15 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'The server is offline or doesn’t support this search yet',
     'ja': 'サーバーに接続できないか、この検索に未対応です',
   },
-  'local_match_imported': {
-    'ru': 'сервер добавил: {count}',
-    'en': 'added by server: {count}',
-    'ja': 'サーバーに追加: {count}',
+  'local_match_queued': {
+    'ru': 'найдено, сервер готовит запись: {count}',
+    'en': 'matched, adding to server: {count}',
+    'ja': '一致を確認、サーバーに追加中: {count}',
+  },
+  'local_match_metadata': {
+    'ru': 'данные обновлены без записи в БД: {count}',
+    'en': 'details updated, not added to server: {count}',
+    'ja': '曲情報を更新、サーバーには未登録: {count}',
   },
   'local_match_existing': {
     'ru': 'уже в каталоге: {count}',

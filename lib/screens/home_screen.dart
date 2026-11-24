@@ -41,6 +41,7 @@ import '../listening_statistics.dart';
 import '../local_download_remover.dart';
 import '../local_music_catalog.dart';
 import '../local_music_import.dart';
+import '../local_music_metadata.dart';
 import '../local_music_server_match.dart';
 import '../linux_media_session.dart';
 import '../statistics_store.dart';
@@ -105,7 +106,7 @@ class _VideoRequest {
   const _VideoRequest({required this.trackId, required this.videoUrl});
 
   factory _VideoRequest.from(dynamic trackData) {
-    if (trackData is! Map || isLocalMusic(trackData)) {
+    if (trackData is! Map) {
       return const _VideoRequest(trackId: null, videoUrl: null);
     }
     final rawTrackId = trackData['id'];
@@ -113,6 +114,12 @@ class _VideoRequest {
         ? rawTrackId
         : int.tryParse(rawTrackId?.toString() ?? '');
     final rawVideoUrl = trackData['video_file']?.toString().trim();
+    // An owned MP3 never asks Django to search for a negative track ID.
+    // It can use a clip once the verified catalog match has found one.
+    if (isLocalMusic(trackData) &&
+        (rawVideoUrl == null || rawVideoUrl.isEmpty)) {
+      return const _VideoRequest(trackId: null, videoUrl: null);
+    }
     return _VideoRequest(
       trackId: trackId,
       videoUrl: rawVideoUrl == null || rawVideoUrl.isEmpty ? null : rawVideoUrl,
@@ -476,7 +483,9 @@ class MainAppScreenState extends State<MainAppScreen>
   List<dynamic> cachedTracks = [];
   List<dynamic>? _serverTrackCache;
   List<dynamic> get _serverTracks => _serverTrackCache ?? cachedTracks;
+  List<LocalMusicEntry> _ownEntries = const [];
   Map<int, Map<String, Object?>> _ownTracks = const {};
+  Set<int> _matchedLocalServerIds = const {};
   int _ownCatalogRevision = 0;
   bool _ownCatalogRead = false;
   bool _localImportOpen = false;
@@ -1605,7 +1614,9 @@ class MainAppScreenState extends State<MainAppScreen>
       final downloadedTrack = cachedTracks
           .where((track) => track is Map && track['id'] == request.trackId)
           .firstOrNull;
-      if (downloadedTrack is Map && !_stateDisposing) {
+      if (downloadedTrack is Map &&
+          !isLocalMusic(downloadedTrack) &&
+          !_stateDisposing) {
         await _trackUpdates?.registerDownload(downloadedTrack);
       }
       if (_isCurrentVideoOperation(revision, operation) &&
@@ -2494,6 +2505,7 @@ class MainAppScreenState extends State<MainAppScreen>
       final entries = await readLocalMusicCatalog(appDir);
       if (_ownCatalogRevision == ownRevision) {
         _setOwnTracks(entries);
+        _projectOwnTracks(_serverTracks);
         _ownCatalogRead = true;
         await _pruneOwnTrackReferences(
           (id) => id < 0 && !_ownTracks.containsKey(id),
@@ -2575,6 +2587,10 @@ class MainAppScreenState extends State<MainAppScreen>
             return digest != null &&
                 digest != localTrackDigest(_ownTracks[track['id']]);
           });
+          for (final track in _playbackOrder.retainedTracks) {
+            final fresh = _ownTracks[track['id']];
+            if (fresh != null) _updatePlaybackMetadata(track, fresh);
+          }
         }
         if (_playbackOrder.current == null) return;
         isShuffledNotifier.value = isShuffled;
@@ -2861,13 +2877,21 @@ class MainAppScreenState extends State<MainAppScreen>
   bool _isLibraryTrackId(int id) => id > 0 || _ownTracks.containsKey(id);
 
   void _setOwnTracks(List<LocalMusicEntry> entries) {
-    _ownTracks = {
-      for (final entry in entries.reversed)
-        entry.id: entry.toTrack(
-          unknownArtist: tr('local_import_unknown_artist'),
-          unknownAlbum: tr('local_import_unknown_album'),
-        ),
-    };
+    _ownEntries = entries;
+  }
+
+  void _projectOwnTracks(List<dynamic> serverTracks) {
+    if (_ownEntries.isEmpty) {
+      _ownTracks = const {};
+      return;
+    }
+    _ownTracks = projectLocalMusic(
+      _ownEntries,
+      serverTracks,
+      server: configuredServerBaseUri,
+      unknownArtist: tr('local_import_unknown_artist'),
+      unknownAlbum: tr('local_import_unknown_album'),
+    );
   }
 
   @visibleForTesting
@@ -2880,10 +2904,6 @@ class MainAppScreenState extends State<MainAppScreen>
       invalidateTrackCover(entry.id);
     }
     _applyTracks(_serverTracks);
-    final current = playingTrack;
-    if (current != null && isLocalMusic(current)) {
-      unawaited(fetchLyrics(current));
-    }
   }
 
   Future<void> showLocalMusicImport() async {
@@ -2911,7 +2931,7 @@ class MainAppScreenState extends State<MainAppScreen>
             );
             if (mounted && !_stateDisposing) {
               publishLocalMusic(result.entries);
-              _queueOwnMusicMatch(result.newEntries);
+              _queueOwnMusicMatch(result.matchEntries);
             }
             return result;
           },
@@ -2931,6 +2951,7 @@ class MainAppScreenState extends State<MainAppScreen>
         .toList();
     if (batch.isEmpty) return;
     final endpoint = configuredServerUri(localMusicMatchPath);
+    final serverKey = localMusicServerKey(configuredServerBaseUri);
     _localMatchTail = _localMatchTail.then((_) async {
       try {
         if (_stateDisposing) return;
@@ -2943,12 +2964,30 @@ class MainAppScreenState extends State<MainAppScreen>
         for (final entry in batch) {
           if (_stateDisposing) return;
           if (localTrackDigest(_ownTracks[entry.id]) != entry.digest) continue;
-          final result = await service.match(endpoint, entry);
-          counts.update(result, (value) => value + 1, ifAbsent: () => 1);
+          final result = await service.match(
+            endpoint,
+            entry,
+            serverKey: serverKey,
+          );
+          if (_stateDisposing) return;
+          if (result.metadata case final metadata?) {
+            final updated = await updateLocalMusicMetadata(
+              directory: Directory(localPath),
+              target: entry,
+              metadata: metadata,
+            );
+            if (updated != null && mounted && !_stateDisposing) {
+              publishLocalMusic(updated);
+            }
+          }
+          counts.update(
+            result.outcome,
+            (value) => value + 1,
+            ifAbsent: () => 1,
+          );
         }
         if (_stateDisposing || counts.isEmpty) return;
-        if (counts.containsKey(LocalMusicMatchOutcome.imported) ||
-            counts.containsKey(LocalMusicMatchOutcome.existing)) {
+        if (counts.containsKey(LocalMusicMatchOutcome.existing)) {
           await syncDatabase();
         }
         _localMusicNotice(
@@ -2956,8 +2995,9 @@ class MainAppScreenState extends State<MainAppScreen>
             for (final result in LocalMusicMatchOutcome.values)
               if (counts[result] case final count?)
                 tr(switch (result) {
-                  LocalMusicMatchOutcome.imported => 'local_match_imported',
+                  LocalMusicMatchOutcome.queued => 'local_match_queued',
                   LocalMusicMatchOutcome.existing => 'local_match_existing',
+                  LocalMusicMatchOutcome.metadata => 'local_match_metadata',
                   LocalMusicMatchOutcome.noMatch => 'local_match_no_match',
                   LocalMusicMatchOutcome.failed => 'local_match_failed',
                 }).replaceFirst('{count}', '$count'),
@@ -3110,6 +3150,13 @@ class MainAppScreenState extends State<MainAppScreen>
   Future<void> _removeOwnTrackFromPlayback(int id, String digest) async {
     final wasCurrent = localTrackDigest(playingTrack) == digest;
     final heldSource = _audioSourceTrackId == id;
+    Future<void>? videoRelease;
+    if (supportsVideoClips && (wasCurrent || _videoTrackId == id)) {
+      _videoTrackSwitchTimer?.cancel();
+      _suspendVideoForTrackTransition();
+      _enqueueVideoWork(_disposeCurrentVideo);
+      videoRelease = _videoWork;
+    }
     final changed = _playbackOrder.removeTracks(
       (track) => localTrackDigest(track) == digest,
     );
@@ -3164,7 +3211,12 @@ class MainAppScreenState extends State<MainAppScreen>
         unawaited(_saveState());
       }
     }
-    await Future.wait([?sourceRelease, ?crossfadeRelease, ?outgoingRelease]);
+    await Future.wait([
+      ?sourceRelease,
+      ?crossfadeRelease,
+      ?outgoingRelease,
+      ?videoRelease,
+    ]);
   }
 
   void _localMusicMissing() {
@@ -3196,30 +3248,29 @@ class MainAppScreenState extends State<MainAppScreen>
   void _applyTracks(List<dynamic> serverTracks) {
     if (_stateDisposing) return;
     _serverTrackCache = serverTracks;
+    _projectOwnTracks(serverTracks);
     final tracks = _ownTracks.isEmpty
         ? serverTracks
-        : [..._ownTracks.values, ...serverTracks];
+        : [...serverTracks, ..._ownTracks.values];
+    _matchedLocalServerIds = {
+      for (final track in _ownTracks.values)
+        if (track['local_match_id'] case final int id)
+          if (isTrackDownloadComplete(track)) id,
+    };
     final freshById = {
       for (final track in tracks)
         if (track is Map) track['id']: track,
     };
     trackSelection.retain(freshById.keys.whereType<int>());
-    // Metadata only: keep the current source and loaded lyrics untouched.
+    final current = activeTrackNotifier.value;
+    final currentIsOwn = isLocalMusic(current);
+    final previousLyrics = currentIsOwn ? current['lyrics'] : null;
+    final previousVideo = currentIsOwn ? current['video_file'] : null;
+    // Never replace the source of an already playing MP3.
     for (final track in _playbackOrder.retainedTracks) {
       final fresh = freshById[track['id']];
       if (fresh == null || identical(fresh, track)) continue;
-      for (final key in [
-        'title',
-        'album',
-        'artists',
-        'duration',
-        'audio_file',
-        'video_file',
-        'lyrics',
-        'content_versions',
-      ]) {
-        track[key] = fresh[key];
-      }
+      _updatePlaybackMetadata(track, fresh);
     }
     if (mounted) {
       setState(() {
@@ -3232,10 +3283,38 @@ class MainAppScreenState extends State<MainAppScreen>
     }
     _notifyArtistLibraryChanged();
     if (searchQuery.trim().isNotEmpty) _scheduleLyricsSearch();
+    if (currentIsOwn && mounted) {
+      if (previousLyrics != current['lyrics']) unawaited(fetchLyrics(current));
+      if (supportsVideoClips &&
+          playVideoClipNotifier.value &&
+          previousVideo != current['video_file']) {
+        _initializeVideo(current);
+      }
+    }
     if (activeTrackNotifier.value != null) {
       uiSignal.value++;
       _syncMediaSessionMetadata();
       updateRPC(force: true);
+    }
+  }
+
+  static void _updatePlaybackMetadata(Map track, Map fresh) {
+    if (isLocalMusic(track) &&
+        localTrackDigest(track) != localTrackDigest(fresh)) {
+      return;
+    }
+    for (final key in [
+      'title',
+      'album',
+      'artists',
+      'duration',
+      'audio_file',
+      'video_file',
+      'lyrics',
+      'content_versions',
+      'local_match_id',
+    ]) {
+      track[key] = fresh[key];
     }
   }
 
@@ -3773,8 +3852,12 @@ class MainAppScreenState extends State<MainAppScreen>
         : resolveLocalMusicAsset(Directory(localPath), localAudioName(digest));
   }
 
-  File _localVideoFile(int id) =>
-      _trackUpdates?.videoFile(id) ?? File('$localPath/video_$id.mp4');
+  File _localVideoFile(int id) {
+    final digest = localTrackDigest(_ownTracks[id]);
+    return digest == null
+        ? (_trackUpdates?.videoFile(id) ?? File('$localPath/video_$id.mp4'))
+        : localMusicVideo(Directory(localPath), digest);
+  }
 
   void _onTrackUpdates() {
     if (_stateDisposing || !mounted) return;
@@ -7356,7 +7439,11 @@ class MainAppScreenState extends State<MainAppScreen>
       finalListToRender = [];
       headText = tr('sidebar_artists');
     } else if (navId == 0) {
-      finalListToRender = cachedTracks;
+      finalListToRender = _matchedLocalServerIds.isEmpty
+          ? cachedTracks
+          : cachedTracks
+                .where((track) => !_matchedLocalServerIds.contains(track['id']))
+                .toList();
       headText = tr('nav_home');
     } else if (navId == 1) {
       finalListToRender = cachedTracks
