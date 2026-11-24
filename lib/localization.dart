@@ -65,14 +65,14 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'ライブラリは最新です',
   },
   'catalog_offline': {
-    'ru': 'Сервер недоступен · музыка доступна офлайн',
-    'en': 'Server offline · downloaded music is available',
-    'ja': 'サーバー未接続・ダウンロード済みの音楽は再生できます',
+    'ru': 'Сервер недоступен. Скачанное можно слушать.',
+    'en': 'Server unavailable. You can still play downloads.',
+    'ja': 'サーバーに接続できません。ダウンロード済みの曲は再生できます。',
   },
   'catalog_error': {
-    'ru': 'Не удалось обновить каталог · сохранённая музыка на месте',
-    'en': 'Library update failed · saved music is unchanged',
-    'ja': 'ライブラリの更新に失敗・保存済みの音楽は変更されていません',
+    'ru': 'Не удалось обновить каталог. Скачанные треки на месте.',
+    'en': 'Could not refresh the library. Downloads are still available.',
+    'ja': 'ライブラリを更新できませんでした。ダウンロード済みの曲はそのままです。',
   },
   'catalog_last_sync': {
     'ru': 'Последняя проверка: {time}',
@@ -89,15 +89,17 @@ const Map<String, Map<String, String>> _translations = {
   },
   'local_import_copy': {
     'ru':
-        'Плеер скопирует MP3 в папку со скачанными треками. Копии займут место; исходники останутся на месте.',
+        'Плеер скопирует MP3 в папку со скачанными треками и не тронет исходники. Копии займут место на диске.',
     'en':
-        'MP3s are copied to the downloads folder. The copies take up space; the originals stay where they are.',
-    'ja': 'MP3をダウンロード済みの曲と同じフォルダにコピーします。コピーの分だけ容量を使います。元のファイルはそのままです。',
+        'The player keeps your MP3s and saves copies next to your downloads. You’ll need free space for the copies.',
+    'ja': 'MP3をダウンロード済みの曲と同じフォルダにコピーします。空き容量が必要です。元のファイルはそのままです。',
   },
   'local_import_lrc_desktop': {
-    'ru': 'Текст из .lrc с тем же именем подхватится из папки с MP3.',
-    'en': 'A matching .lrc file next to the MP3 comes with it.',
-    'ja': 'MP3と同じフォルダにある同名の.lrcも取り込みます。',
+    'ru':
+        'Если рядом с MP3 есть .lrc с тем же именем, плеер возьмёт из него текст.',
+    'en':
+        'The player also imports lyrics from a matching .lrc next to the MP3.',
+    'ja': '同じフォルダに同名の.lrcがあれば、歌詞も取り込みます。',
   },
   'local_import_lrc_mobile': {
     'ru': 'Чтобы добавить текст, выбери .lrc с тем же именем вместе с MP3.',
@@ -219,9 +221,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '一致を確認、サーバーに追加中: {count}',
   },
   'local_match_metadata': {
-    'ru': 'данные обновлены без записи в БД: {count}',
-    'en': 'details updated, not added to server: {count}',
-    'ja': '曲情報を更新、サーバーには未登録: {count}',
+    'ru': 'данные обновлены только на этом устройстве: {count}',
+    'en': 'track details updated on this device only: {count}',
+    'ja': 'この端末のみ曲情報を更新: {count}',
   },
   'local_match_existing': {
     'ru': 'уже в каталоге: {count}',
@@ -270,9 +272,9 @@ const Map<String, Map<String, String>> _translations = {
   },
   'play_next_clear': {'ru': 'Очистить', 'en': 'Clear', 'ja': 'クリア'},
   'play_next_empty': {
-    'ru': 'Нет вставок. Добавь трек через «Сыграть следующим».',
-    'en': 'No insertions. Use Play next on a track to add one.',
-    'ja': '追加された曲はありません。「次に再生する」から曲を追加できます。',
+    'ru': 'Чтобы добавить трек, выбери «Сыграть следующим» в его меню.',
+    'en': 'To add a track, choose Play next from its menu.',
+    'ja': '曲を追加するには、曲のメニューで「次に再生する」を選びます。',
   },
   'play_next_remove': {
     'ru': 'Убрать из «Следом»',
@@ -280,9 +282,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '次に再生から取り除く',
   },
   'play_next_starting': {
-    'ru': 'Уже начинается',
-    'en': 'Already starting',
-    'ja': '再生開始済み',
+    'ru': 'Трек уже начал играть',
+    'en': 'Track has already started',
+    'ja': 'この曲はすでに再生が始まっています',
   },
   'play_next_added': {
     'ru': 'Добавлено в «Следом»: {count}',
@@ -456,11 +458,11 @@ const Map<String, Map<String, String>> _translations = {
   },
   'transfer_hint': {
     'ru':
-        'Один ZIP: плейлисты, обложки, избранное, каталог, настройки и статистика. Без аккаунта. Архив содержит личные данные — передавайте его только доверенным людям.',
+        'В ZIP попадут плейлисты, обложки, избранное, каталог, настройки и статистика. В архиве есть личные данные. Делись им только с теми, кому доверяешь.',
     'en':
-        'One ZIP: playlists, artwork, favorites, catalog, settings and statistics. No account. The archive contains private data; share only with people you trust.',
+        'The ZIP contains your playlists, artwork, favorites, catalog, settings and statistics. It holds private data, so share it only with people you trust.',
     'ja':
-        'プレイリスト、画像、お気に入り、カタログ、設定、統計を1つのZIPに保存します。アカウントは不要です。個人データが含まれるため、信頼できる相手とのみ共有してください。',
+        'ZIPにプレイリスト、画像、お気に入り、カタログ、設定、統計を保存します。個人データが含まれるので、信頼できる相手とだけ共有してください。',
   },
   'transfer_media': {
     'ru': 'Включить скачанную музыку и видео',
@@ -491,9 +493,9 @@ const Map<String, Map<String, String>> _translations = {
         '次回起動時にデータを統合します。既存の音楽は置き換えません。ライブラリが競合する場合はインポートを中止します。移行先でサーバーアドレスの変更が必要な場合があります。',
   },
   'transfer_pending': {
-    'ru': 'Архив проверен. Закройте и снова откройте плеер для применения.',
-    'en': 'Archive verified. Close and reopen the player to apply it.',
-    'ja': 'アーカイブを確認しました。適用するにはプレーヤーを再起動してください。',
+    'ru': 'Архив проверен. Перезапусти плеер, чтобы завершить импорт.',
+    'en': 'Archive verified. Restart the player to finish importing.',
+    'ja': 'アーカイブを確認しました。プレーヤーを再起動するとインポートが完了します。',
   },
   'transfer_saved': {
     'ru': 'Архив сохранён.',
@@ -547,9 +549,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '再生履歴について',
   },
   'stats_private': {
-    'ru': 'История на этом устройстве · без аккаунта',
-    'en': 'History on this device · no account needed',
-    'ja': 'この端末の履歴 · アカウント不要',
+    'ru': 'История хранится на этом устройстве. Аккаунт не нужен.',
+    'en': 'Your history stays on this device. No account needed.',
+    'ja': '履歴はこの端末に保存します。アカウントは不要です。',
   },
   'stats_listening': {
     'ru': 'Время прослушивания',
@@ -606,11 +608,11 @@ const Map<String, Map<String, String>> _translations = {
   },
   'stats_backup_hint': {
     'ru':
-        'Экспорт — для переноса и резервной копии. Импорт объединяет историю; повторный импорт не удваивает статистику. Обновления и очистка кэша сохраняют историю.',
+        'Сохрани копию истории через «Экспорт». «Импорт» добавит записи из файла без дублей. Обновление плеера и очистка кэша историю не удаляют.',
     'en':
-        'Export to transfer or back up your history. Import merges records without counting duplicates. App updates and cache cleanup preserve your history.',
+        'Use Export to save a copy of your history. Import adds records from a file without duplicates. Updating the player or clearing its cache keeps your history.',
     'ja':
-        'エクスポートで履歴を移行・バックアップできます。インポートでは重複を除いて履歴を統合します。アプリの更新やキャッシュの消去で履歴は失われません。',
+        '「エクスポート」で履歴のコピーを保存できます。「インポート」ではファイルの履歴を重複なく追加します。アプリを更新したりキャッシュを消去したりしても履歴は残ります。',
   },
   'stats_since': {'ru': 'История с', 'en': 'History since', 'ja': '記録開始日'},
   'stats_refresh': {
@@ -724,9 +726,9 @@ const Map<String, Map<String, String>> _translations = {
   'playlist_crop_apply': {'ru': 'Выбрать', 'en': 'Use image', 'ja': 'この画像を使用'},
   'settings': {'ru': 'Настройки', 'en': 'Settings', 'ja': '設定'},
   'search_hint_senpai': {
-    'ru': 'Поиск треков, исполнителей, слов...',
-    'en': 'Search tracks, artists, lyrics...',
-    'ja': '曲、アーティスト、歌詞を検索...',
+    'ru': 'Треки, исполнители, текст',
+    'en': 'Tracks, artists, lyrics',
+    'ja': '曲名・アーティスト・歌詞',
   },
   'search_lyrics_loading': {
     'ru': 'Ищем в сохранённых текстах…',
@@ -786,11 +788,10 @@ const Map<String, Map<String, String>> _translations = {
   },
   'track_transition_crossfade_hint': {
     'ru':
-        'При автоматической смене скачанных треков следующий начинает звучать, пока затихает текущий. В остальных случаях треки плавно сменяются без наложения.',
+        'При автопереходе между скачанными треками следующий начнётся чуть раньше. В остальных случаях треки сменяются плавно, без наложения.',
     'en':
-        'When the player automatically switches between downloaded tracks, the next one starts while the current one fades out. Otherwise, tracks fade without overlapping.',
-    'ja':
-        'ダウンロード済みの曲が自動で切り替わるときは、今の曲がフェードアウトする間に次の曲が始まります。それ以外では、曲を重ねずにフェードします。',
+        'On automatic transitions between downloaded tracks, the next one starts a little early. Other transitions fade without overlap.',
+    'ja': 'ダウンロード済みの曲が自動で切り替わるときは、次の曲が少し早く始まります。それ以外では、曲を重ねずにフェードします。',
   },
   'settings_data': {'ru': 'Данные', 'en': 'Data', 'ja': 'データ'},
   'settings_accent': {
@@ -865,9 +866,9 @@ const Map<String, Map<String, String>> _translations = {
   'storage': {'ru': 'Хранилище', 'en': 'Storage', 'ja': 'ストレージ'},
   'clear_cache': {'ru': 'Очистить кэш', 'en': 'Clear Cache', 'ja': 'キャッシュを消去'},
   'clear_cache_desc': {
-    'ru': 'Очистить обложки; музыка и видео останутся',
-    'en': 'Clear artwork; keep music and videos',
-    'ja': '画像キャッシュのみ消去。音楽と動画は保持',
+    'ru': 'Удаляет кэш обложек. Музыка и видео останутся.',
+    'en': 'Clears cached artwork. Music and videos stay.',
+    'ja': 'ジャケットのキャッシュを消去します。音楽と動画はそのままです。',
   },
   'clear_cache_confirm': {
     'ru': 'Подтвердить очистку',
@@ -927,9 +928,10 @@ const Map<String, Map<String, String>> _translations = {
   },
   'metadata_confirmation_hint': {
     'ru':
-        'Автор не подтверждён источником. Укажите исполнителя, не владельца канала.',
-    'en': 'Artist not confirmed by source. Enter performer, not channel owner.',
-    'ja': 'アーティスト未確認。投稿者ではなく演奏者を入力してください。',
+        'Не удалось подтвердить исполнителя. Укажи его имя, а не название канала.',
+    'en':
+        'Could not confirm the artist. Enter the artist’s name, not the channel name.',
+    'ja': 'アーティストを確認できませんでした。チャンネル名ではなく、アーティスト名を入力してください。',
   },
   'track_title': {'ru': 'Название трека', 'en': 'Track title', 'ja': '曲名'},
   'track_artist': {'ru': 'Исполнитель', 'en': 'Artist', 'ja': 'アーティスト'},
@@ -940,24 +942,29 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '確認してダウンロード',
   },
   'import_album': {
-    'ru': 'Импорт альбома по ссылке',
-    'en': 'Import album by link',
-    'ja': 'リンクからアルバムを取込',
+    'ru': 'Добавить альбом или плейлист',
+    'en': 'Add an album or playlist',
+    'ja': 'アルバムまたはプレイリストを追加',
   },
   'import_partial': {
-    'ru': 'Альбом импортирован частично',
-    'en': 'Album partially imported',
-    'ja': 'アルバムの一部を取込',
+    'ru': 'Не все треки добавлены',
+    'en': 'Not all tracks were added',
+    'ja': '一部の曲を追加できませんでした',
   },
   'import_failed': {
-    'ru': 'Не удалось импортировать альбом',
-    'en': 'Album import failed',
-    'ja': 'アルバム取込失敗',
+    'ru': 'Не удалось добавить треки',
+    'en': 'Could not add tracks',
+    'ja': '曲を追加できませんでした',
   },
   'import_complete': {
-    'ru': 'Альбом импортирован',
-    'en': 'Album imported',
-    'ja': 'アルバム取込完了',
+    'ru': 'Добавлено треков',
+    'en': 'Tracks added',
+    'ja': '追加した曲数',
+  },
+  'track_search_complete': {
+    'ru': 'Трек найден',
+    'en': 'Track found',
+    'ja': '曲が見つかりました',
   },
   'search_failed': {
     'ru': 'Поиск не удался',
@@ -1025,9 +1032,14 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '接続タイムアウト',
   },
   'import_progress': {
-    'ru': 'Импорт альбома',
-    'en': 'Importing album',
-    'ja': 'アルバム取込中',
+    'ru': 'Добавляем треки',
+    'en': 'Adding tracks',
+    'ja': '曲を追加中',
+  },
+  'server_waiting_for_response': {
+    'ru': 'Ждём ответа сервера…',
+    'en': 'Waiting for the server…',
+    'ja': 'サーバーからの応答を待っています…',
   },
   'album_link_hint': {
     'ru': 'Ссылка на альбом / плейлист YouTube Music',
@@ -1075,9 +1087,9 @@ const Map<String, Map<String, String>> _translations = {
   'about': {'ru': 'О приложении', 'en': 'About', 'ja': 'アプリについて'},
   'version': {'ru': 'Версия', 'en': 'Version', 'ja': 'バージョン'},
   'personal_player': {
-    'ru': 'Персональный музыкальный плеер',
-    'en': 'Personal music player',
-    'ja': 'パーソナルミュージックプレイヤー',
+    'ru': 'Скачанные треки можно слушать без сервера и аккаунта.',
+    'en': 'Play downloaded tracks without a server or an account.',
+    'ja': 'ダウンロード済みの曲は、サーバーやアカウントなしで聴けます。',
   },
 
   // ── Color names ──
@@ -1112,20 +1124,20 @@ const Map<String, Map<String, String>> _translations = {
     'ja': "「{query}」に一致する結果はありません",
   },
   'favorites_empty': {
-    'ru': 'Поставь сердечко на любимую песенку и она окажется тут!',
-    'en': 'Like your favorite songs and they will appear here!',
-    'ja': 'お気に入りの曲にハートを付けて、ここに表示させましょう！',
+    'ru': 'Нажми на сердечко рядом с треком, чтобы добавить его в избранное.',
+    'en': 'Tap the heart next to a track to add it to favorites.',
+    'ja': '曲の横にあるハートを押すと、お気に入りに追加できます。',
   },
   'playlist_empty': {
-    'ru': 'Плейлист пока пуст. Добавь сюда треки через плюсик!',
-    'en': 'Playlist is empty. Add tracks via the plus button!',
-    'ja': 'プレイリストは空です。プラスボタンから曲を追加してください！',
+    'ru': 'В библиотеке открой «⋯» рядом с треком и выбери этот плейлист.',
+    'en': 'Open ⋯ next to a track in your library and choose this playlist.',
+    'ja': 'ライブラリで曲の横の「⋯」を開き、このプレイリストを選びます。',
   },
   'no_data': {'ru': 'Нет данных', 'en': 'No data', 'ja': 'データなし'},
   'search_online': {
-    'ru': 'Поискать в интернете?',
-    'en': 'Search the internet?',
-    'ja': 'インターネットで検索しますか？',
+    'ru': 'Искать в интернете',
+    'en': 'Search online',
+    'ja': 'ウェブで検索',
   },
   'shuffle_on_tooltip': {
     'ru': 'Выключить перемешивание',
@@ -1135,6 +1147,11 @@ const Map<String, Map<String, String>> _translations = {
   'shuffle_off_tooltip': {'ru': 'Перемешать', 'en': 'Shuffle', 'ja': 'シャッフル'},
 
   // ── Lyrics ──
+  'open_lyrics': {
+    'ru': 'Открыть текст песни',
+    'en': 'Open lyrics',
+    'ja': '歌詞を開く',
+  },
   'no_lyrics': {
     'ru': 'Текст песни не найден',
     'en': 'Lyrics not found',
@@ -1170,14 +1187,14 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '保存できませんでした。もう一度お試しください。',
   },
   'lyric_timing_propose': {
-    'ru': 'Предложить серверу',
-    'en': 'Suggest to server',
-    'ja': 'サーバーに提案',
+    'ru': 'Отправить на проверку',
+    'en': 'Send for review',
+    'ja': '確認用に送信',
   },
   'lyric_timing_propose_hint': {
-    'ru': 'Сохранить на устройстве и отправить на проверку',
-    'en': 'Save on this device and send for review',
-    'ja': '端末に保存して確認用に送信します',
+    'ru': 'Сохранить поправку на этом устройстве и отправить её на сервер',
+    'en': 'Save the adjustment on this device and send it to the server',
+    'ja': '調整をこの端末に保存して、サーバーに送信します',
   },
   'lyric_timing_sending': {
     'ru': 'Отправляем на проверку…',
@@ -1234,9 +1251,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'ビデオクリップ',
   },
   'play_video_clip_hint': {
-    'ru': 'Воспроизводит клип с YouTube в круге плеера',
-    'en': 'Plays YouTube music video inside the player circle',
-    'ja': 'プレイヤーのサークル内でYouTubeクリップを再生します',
+    'ru': 'Если у трека есть клип, плеер покажет его вместо обложки.',
+    'en': 'Show the music video in place of the cover when one is available.',
+    'ja': '曲に動画がある場合、ジャケットの代わりに再生します。',
   },
   'discord_settings': {'ru': 'Discord', 'en': 'Discord', 'ja': 'Discord'},
   'discord_lyrics_status': {
@@ -1246,11 +1263,11 @@ const Map<String, Map<String, String>> _translations = {
   },
   'discord_lyrics_status_hint': {
     'ru':
-        'Текущая строка вместо трека и артиста. Без текста или на паузе — трек и артист. Карточка профиля не меняется.',
+        'Показывает текущую строку в коротком статусе. На паузе и без текста видны название и исполнитель. Карточка профиля не меняется.',
     'en':
-        'Show the current lyric instead of track and artist. Without lyrics or when paused, show track and artist. The profile card stays unchanged.',
+        'Show the current lyric in the short status. When paused or without lyrics, show the track and artist instead. The profile card stays the same.',
     'ja':
-        '曲名とアーティストの代わりに現在の歌詞を表示。歌詞がない場合や一時停止中は曲名とアーティストを表示します。プロフィールカードは変わりません。',
+        '短いステータスに再生中の歌詞を表示します。一時停止中や歌詞がないときは曲名とアーティスト名を表示します。プロフィールカードは変わりません。',
   },
   'discord_github_button': {
     'ru': 'Кнопка GitHub в Discord',
@@ -1263,8 +1280,8 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'リポジトリリンク',
   },
   'discord_github_button_hint': {
-    'ru': 'Отображать кнопку со ссылкой на GitHub в статусе Discord',
-    'en': 'Show the GitHub link button in Discord Rich Presence',
+    'ru': 'Показывать кнопку GitHub в статусе',
+    'en': 'Show the GitHub button in your status',
     'ja': 'DiscordステータスにGitHubリンクボタンを表示',
   },
 
@@ -1275,17 +1292,17 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'ダウンロードから削除',
   },
   'track_deleted_from_storage': {
-    'ru': 'Трек удален из памяти',
-    'en': 'Track deleted from storage',
-    'ja': '曲がストレージから削除されました',
+    'ru': 'Скачанная копия удалена',
+    'en': 'Download removed',
+    'ja': 'ダウンロード済みのコピーを削除しました',
   },
 
   // ── Artists & Albums ──
   'sidebar_artists': {'ru': 'Исполнители', 'en': 'Artists', 'ja': 'アーティスト'},
   'artists_empty': {
-    'ru': 'Здесь появятся исполнители из твоей музыки.',
-    'en': 'Artists from your music library will appear here.',
-    'ja': 'ライブラリのアーティストがここに表示されます。',
+    'ru': 'Исполнители появятся здесь, когда добавишь треки в библиотеку.',
+    'en': 'Add tracks to your library to see their artists here.',
+    'ja': 'ライブラリに曲を追加すると、アーティストがここに表示されます。',
   },
   'artists_search_empty': {
     'ru': 'Исполнители не найдены. Попробуй другое имя.',

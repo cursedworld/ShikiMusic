@@ -14,6 +14,7 @@ import 'package:shiki/atomic_file_store.dart';
 import 'package:shiki/local_music_catalog.dart';
 import 'package:shiki/local_music_import.dart';
 import 'package:shiki/local_music_metadata.dart';
+import 'package:shiki/localization.dart';
 import 'package:shiki/screens/home_screen.dart';
 import 'package:shiki/server_config.dart';
 import 'package:shiki/widgets/play_next_panel.dart';
@@ -492,7 +493,7 @@ void main() {
       expect(panelTracks(), ['Track 4', 'Track 2']);
       await tester.tap(panel);
       await tester.pumpAndSettle();
-      expect(find.textContaining('Нет вставок'), findsOneWidget);
+      expect(find.text(tr('play_next_empty')), findsOneWidget);
       expect(state.trackSelection.ids, {3, 4});
       expect(queueIds(state), [1, 2, 3, 4]);
       expect(state.myPlaylists.first['tracks'], [1, 2, 3, 4]);

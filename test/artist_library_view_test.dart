@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/globals.dart';
+import 'package:shiki/localization.dart';
 import 'package:shiki/widgets/artist_library_view.dart';
 
 void main() {
@@ -275,7 +276,7 @@ void main() {
 
   testWidgets('empty library differs from an unmatched search', (tester) async {
     await show(tester, artists: []);
-    expect(find.textContaining('Здесь появятся'), findsOneWidget);
+    expect(find.text(tr('artists_empty')), findsOneWidget);
     await show(tester, query: 'missing');
     expect(find.textContaining('Исполнители не найдены'), findsOneWidget);
     expect(tester.takeException(), isNull);

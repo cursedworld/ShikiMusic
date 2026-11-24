@@ -67,6 +67,7 @@ import '../track_updates.dart';
 import '../track_selection.dart';
 import '../widgets/track_updates_dialog.dart';
 import '../widgets/catalog_sync_button.dart';
+import '../widgets/desktop_player_panel.dart';
 import '../widgets/local_music_import_dialog.dart';
 import '../widgets/track_selection_bar.dart';
 import '../widgets/mobile_playback_controls.dart';
@@ -3599,7 +3600,7 @@ class MainAppScreenState extends State<MainAppScreen>
         if (mounted && !_stateDisposing) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(tr('import_complete')),
+              content: Text(tr('track_search_complete')),
               backgroundColor: Colors.green,
             ),
           );
@@ -6607,7 +6608,7 @@ class MainAppScreenState extends State<MainAppScreen>
                 key: const ValueKey('import_album_link'),
                 tooltip: _albumImportProgress == null
                     ? tr('import_album')
-                    : '${tr('import_album')}: $_albumImportProgress',
+                    : '${tr('import_progress')}: $_albumImportProgress',
                 onPressed: isSearchLoading ? null : _showAlbumImport,
                 icon: isSearchLoading
                     ? const SizedBox(
@@ -7135,15 +7136,12 @@ class MainAppScreenState extends State<MainAppScreen>
 
   // ── Desktop player panel ─────────────────────────────────────────────────
 
-  Widget buildDesktopPlayer() {
-    return Container(
-      width: 360,
-      color: Colors.black.withValues(alpha: 0.6),
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+  Widget buildDesktopPlayer(BuildContext context) {
+    return DesktopPlayerPanel(
       child: playingQueue.isEmpty
-          ? const SizedBox()
+          ? const SizedBox.shrink()
           : Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 // ── Vinyl-style spinning cover art ──
                 // Tap to stop/resume, double-tap to reset to 0°.
@@ -7361,6 +7359,7 @@ class MainAppScreenState extends State<MainAppScreen>
                           color: Colors.white,
                           size: 36,
                         ),
+                        tooltip: tr('taskbar_previous'),
                         onPressed: () => prevTrack(),
                       ),
                       const SizedBox(width: 10),
@@ -7372,6 +7371,9 @@ class MainAppScreenState extends State<MainAppScreen>
                               ? Icons.pause_circle_filled
                               : Icons.play_circle_fill,
                         ),
+                        tooltip: tr(
+                          isPlaying ? 'taskbar_pause' : 'taskbar_play',
+                        ),
                         onPressed: pauseTrack,
                       ),
                       const SizedBox(width: 10),
@@ -7381,6 +7383,7 @@ class MainAppScreenState extends State<MainAppScreen>
                           color: Colors.white,
                           size: 36,
                         ),
+                        tooltip: tr('taskbar_next'),
                         onPressed: () => nextTrack(),
                       ),
                       const SizedBox(width: 10),
@@ -7390,6 +7393,7 @@ class MainAppScreenState extends State<MainAppScreen>
                           color: Colors.white54,
                           size: 24,
                         ),
+                        tooltip: tr('open_lyrics'),
                         onPressed: showLyricsScreen,
                       ),
                       const SizedBox(width: 5),
@@ -7416,6 +7420,11 @@ class MainAppScreenState extends State<MainAppScreen>
                               : Colors.white54,
                           size: 24,
                         ),
+                        tooltip: tr(switch (loopMode) {
+                          LoopMode.off => 'repeat_off',
+                          LoopMode.list => 'repeat_queue',
+                          LoopMode.one => 'repeat_track',
+                        }),
                         onPressed: toggleLoopMode,
                       ),
                     ],
@@ -7713,8 +7722,8 @@ class MainAppScreenState extends State<MainAppScreen>
                                 const SizedBox(height: 20),
                                 Text(
                                   _albumImportProgress != null
-                                      ? '${tr('import_album')}: $_albumImportProgress'
-                                      : tr('import_progress'),
+                                      ? '${tr('import_progress')}: $_albumImportProgress'
+                                      : tr('server_waiting_for_response'),
                                   style: const TextStyle(
                                     color: Colors.white54,
                                     fontSize: 16,
@@ -8105,7 +8114,8 @@ class MainAppScreenState extends State<MainAppScreen>
                       children: [
                         buildSidebar(),
                         mainContent,
-                        if (playingQueue.isNotEmpty) buildDesktopPlayer(),
+                        if (playingQueue.isNotEmpty)
+                          buildDesktopPlayer(context),
                       ],
                     ),
             );

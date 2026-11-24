@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/local_music_import.dart';
+import 'package:shiki/localization.dart';
 import 'package:shiki/widgets/local_music_import_dialog.dart';
 
 import 'fixtures/local_mp3.dart';
@@ -59,7 +60,13 @@ void main() {
       );
       expect(find.textContaining('Копии займут место'), findsOneWidget);
       expect(
-        find.textContaining(width < 800 ? 'вместе с MP3' : 'из папки'),
+        find.text(
+          tr(
+            width < 800
+                ? 'local_import_lrc_mobile'
+                : 'local_import_lrc_desktop',
+          ),
+        ),
         findsOneWidget,
       );
       await tester.tap(find.byKey(const ValueKey('pick_local_music')));

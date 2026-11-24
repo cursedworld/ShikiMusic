@@ -35,22 +35,43 @@ migrate_working_dir/
 /third_party/flutter_discord_rpc/target/
 /third_party/flutter_discord_rpc/cargokit/build_tool/.dart_tool/
 
-# Local agent planning/performance artifacts
+# Local assistant instructions, settings and work artifacts
 .agents/
+.claude/
 .codex/
+.gemini/
 .omx/
+.mcp.json
+AGENTS.md
+AGENTS.override.md
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
 
 # Local configuration and secrets
 .env
 .env.*
 !.env.example
 
-# Private runtime track revision index (for custom data directories)
+# Private profiles and library exports. Use .shiki-data for a repo-local profile.
+/.shiki-data/
+ShikiMusic/
+shiki-library.zip
+shiki-library-*.zip
+
+# Private files that may be left outside the profile directory
 track_versions.json
 track_versions.json.tmp.*
-
-# Private listening history and portable backups
+shiki_settings.json
+my_playlists.json
+liked_tracks.json
+offline_tracks.json
+offline_artists.json
+local_music.json
+lyric_offsets.json
+local_lyric_offsets.json
 listening_statistics.sqlite*
+listening_statistics.json
 shiki-statistics-*.json
 
 # Symbolication related
