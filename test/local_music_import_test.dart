@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
@@ -53,6 +54,7 @@ void main() {
       },
     );
     expect(result.added, 1);
+    expect(result.newEntries, result.entries);
     expect(reports, greaterThanOrEqualTo(2));
     final copy = File(
       '${library.path}/local_audio_${result.entries.single.digest}.mp3',
@@ -81,12 +83,106 @@ void main() {
       final result = await add([selection]);
       expect(result.alreadyPresent, 1);
       expect(result.added, 0);
+      expect(result.newEntries, isEmpty);
       expect(result.entries.single.id, -1);
       expect(resolveLocalMusicAsset(library, name).path, oldCopy.path);
       expect(await oldCopy.readAsBytes(), bytes);
       expect(await localMusicAsset(library, name).exists(), isFalse);
     },
   );
+
+  test('only removes the owned copy, cover and catalog row', () async {
+    final source = await given('Original.mp3', fixtureMp3());
+    final entry = (await add([source])).entries.single;
+    final legacy = await Directory('${library.path}/local_music').create();
+    final copies = [
+      localMusicAsset(library, localAudioName(entry.digest)),
+      await localMusicAsset(
+        legacy,
+        localAudioName(entry.digest),
+      ).writeAsBytes(fixtureMp3()),
+      await localMusicAsset(
+        library,
+        localCoverName(entry.digest),
+      ).writeAsBytes([1, 2, 3]),
+      await localMusicAsset(
+        legacy,
+        localCoverName(entry.digest),
+      ).writeAsBytes([4, 5, 6]),
+    ];
+    final downloaded = await File(
+      '${library.path}/track_1.mp3',
+    ).writeAsBytes([1, 2, 3, 4]);
+    final stale = await removeLocalMusic(
+      directory: library,
+      id: entry.id == -1 ? -2 : -1,
+      digest: entry.digest,
+    );
+    expect(stale.removed, isFalse);
+    expect(await copies.first.exists(), isTrue);
+
+    final result = await removeLocalMusic(
+      directory: library,
+      id: entry.id,
+      digest: entry.digest,
+      onRemoved: (entries) async {
+        expect(entries, isEmpty);
+        expect(await readLocalMusicCatalog(library), isEmpty);
+        expect(await copies.first.exists(), isTrue);
+      },
+    );
+    expect(result, (removed: true, cleanupComplete: true));
+    for (final copy in copies) {
+      expect(await copy.exists(), isFalse);
+    }
+    expect(await File(source.path!).readAsBytes(), fixtureMp3());
+    expect(await downloaded.readAsBytes(), [1, 2, 3, 4]);
+  });
+
+  test(
+    'cleanup cannot erase a same-recording import waiting for its turn',
+    () async {
+      final source = await given('Original.mp3', fixtureMp3());
+      final entry = (await add([source])).entries.single;
+      final blocked = Completer<void>();
+      final committed = Completer<void>();
+      final removal = removeLocalMusic(
+        directory: library,
+        id: entry.id,
+        digest: entry.digest,
+        onRemoved: (_) {
+          committed.complete();
+          return blocked.future;
+        },
+      );
+      await committed.future;
+      final reimport = add([source]);
+      blocked.complete();
+      expect((await removal).cleanupComplete, isTrue);
+      expect((await reimport).newEntries.single.digest, entry.digest);
+      expect(await readLocalMusicCatalog(library), hasLength(1));
+      expect(
+        await localMusicAsset(library, localAudioName(entry.digest)).exists(),
+        isTrue,
+      );
+    },
+  );
+
+  test('skips an unexpected directory instead of removing it', () async {
+    final source = await given('Original.mp3', fixtureMp3());
+    final entry = (await add([source])).entries.single;
+    final unexpected = await Directory(
+      localMusicAsset(library, localCoverName(entry.digest)).path,
+    ).create();
+    final result = await removeLocalMusic(
+      directory: library,
+      id: entry.id,
+      digest: entry.digest,
+    );
+    expect(result, (removed: true, cleanupComplete: false));
+    expect(await unexpected.exists(), isTrue);
+    expect(await readLocalMusicCatalog(library), isEmpty);
+  });
 
   test(
     'Unicode tags, disc/track number and attached PNG survive import',

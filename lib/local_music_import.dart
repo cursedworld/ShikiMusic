@@ -33,8 +33,10 @@ class LocalMusicImportResult {
     required this.restored,
     required this.problems,
     required this.cancelled,
+    this.newEntries = const [],
   });
   final List<LocalMusicEntry> entries;
+  final List<LocalMusicEntry> newEntries;
   final int added, alreadyPresent, restored;
   final List<({String name, LocalImportProblem problem})> problems;
   final bool cancelled;
@@ -79,6 +81,7 @@ Future<LocalMusicImportResult> importLocalMusic({
   var restored = 0;
   var alreadyPresent = 0;
   var entries = <LocalMusicEntry>[];
+  final newEntries = <LocalMusicEntry>[];
   if (tracks.isNotEmpty && !cancel.requested) {
     final staging = await directory.createTemp('.local_import_');
     try {
@@ -181,6 +184,7 @@ Future<LocalMusicImportResult> importLocalMusic({
                   duration: tags.duration,
                   lyrics: lrc,
                 );
+                newEntries.add(byDigest[digest]!);
                 added++;
               } else {
                 if (old.lyrics != lrc) {
@@ -189,6 +193,7 @@ Future<LocalMusicImportResult> importLocalMusic({
                 if (audioMatches) {
                   alreadyPresent++;
                 } else {
+                  newEntries.add(byDigest[digest]!);
                   restored++;
                 }
               }
@@ -235,6 +240,7 @@ Future<LocalMusicImportResult> importLocalMusic({
     restored: restored,
     problems: problems,
     cancelled: cancel.requested,
+    newEntries: List.unmodifiable(newEntries),
   );
 }
 

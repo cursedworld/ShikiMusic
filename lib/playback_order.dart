@@ -121,6 +121,79 @@ class PlaybackOrder {
     return _pending.length != before;
   }
 
+  /// Remove an owned recording from every lane without rebuilding the other
+  /// slots. The caller decides whether to stop/prepare a replacement decoder.
+  bool removeTracks(bool Function(Map track) matches) {
+    final current = _current;
+    if (current == null || !retainedTracks.any(matches)) return false;
+    bool remove(PlaybackEntry entry) => matches(entry.track);
+    final removeCurrent = remove(current);
+    final afterAnchor = _base
+        .take(_baseIndex + 1)
+        .where((e) => !remove(e))
+        .length;
+    final anchorRemoved = remove(_base[_baseIndex]);
+    _pendingAheadOfForward = _pending
+        .take(_pendingAheadOfForward)
+        .where((entry) => !remove(entry))
+        .length;
+    _pending.removeWhere(remove);
+    _history.removeWhere(remove);
+    _forward.removeWhere(remove);
+    if (_forward.isEmpty) _pendingAheadOfForward = 0;
+    _base.removeWhere(remove);
+    if (_base.isEmpty) {
+      // An insertion can outlive the last base track. Keep it and the other
+      // pending tracks usable instead of resetting the whole session.
+      final survivor = !removeCurrent
+          ? current
+          : _forward.lastOrNull ?? _pending.firstOrNull ?? _history.lastOrNull;
+      if (survivor == null) {
+        reset(const [], 0);
+        return true;
+      }
+      _pending.remove(survivor);
+      _forward.remove(survivor);
+      _history.remove(survivor);
+      _pendingAheadOfForward = 0;
+      _unshuffled = null;
+      _unshuffledTracks = const [];
+      _base = [PlaybackEntry._(survivor.slot, survivor.track)];
+      _baseIndex = 0;
+      _current = _base.first;
+    } else {
+      _baseIndex = (removeCurrent ? afterAnchor : afterAnchor - 1).clamp(
+        0,
+        _base.length - 1,
+      );
+      if (removeCurrent) {
+        // Resume the redo path if the deleted recording was revisited.
+        // Otherwise a newer base anchor could be played twice.
+        if (_forward.isNotEmpty) {
+          _current = _forward.removeLast();
+          _baseIndex = (afterAnchor - 1).clamp(0, _base.length - 1);
+          if (_forward.isEmpty) _pendingAheadOfForward = 0;
+        } else {
+          _current = _base[_baseIndex];
+          _history.removeWhere((entry) => entry == _current);
+        }
+      } else if (anchorRemoved &&
+          afterAnchor == 0 &&
+          _forward.isEmpty &&
+          current != _base.first) {
+        // The active insertion had not reached the next surviving base item.
+        _forward.add(_base.first);
+        _pendingAheadOfForward = _pending.length;
+      }
+      if (_unshuffled case final original?) {
+        original.removeWhere(remove);
+        _unshuffledTracks = _tracks(original);
+      }
+    }
+    _indexBase();
+    return true;
+  }
+
   PlaybackMove? next(
     LoopMode loop, {
     required bool automatic,

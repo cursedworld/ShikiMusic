@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+
+import 'atomic_file_store.dart';
 
 const localMusicCatalogName = 'local_music.json';
 const _legacyLocalMusicDirectoryName = 'local_music';
@@ -221,4 +224,71 @@ String encodeLocalMusicCatalogText(Iterable<LocalMusicEntry> entries) {
     throw const FormatException('Local music catalog is too large');
   }
   return text;
+}
+
+/// Unlist the exact owned recording before deleting either managed copy.
+/// The same catalog FIFO turn excludes an import of those bytes during cleanup.
+Future<({bool removed, bool cleanupComplete})> removeLocalMusic({
+  required Directory directory,
+  required int id,
+  required String digest,
+  FutureOr<void> Function(List<LocalMusicEntry>)? onRemoved,
+}) async {
+  if (!isLocalId(id) || !isLocalDigest(digest)) {
+    return (removed: false, cleanupComplete: true);
+  }
+  var removed = false;
+  var cleanupComplete = true;
+  late List<LocalMusicEntry> remaining;
+  await atomicFileStore.writeStringLazy(
+    File('${directory.path}/$localMusicCatalogName'),
+    () async {
+      final entries = await readLocalMusicCatalog(directory);
+      remaining = entries.where((entry) {
+        if (entry.id != id || entry.digest != digest) return true;
+        removed = true;
+        return false;
+      }).toList();
+      return encodeLocalMusicCatalogText(remaining);
+    },
+    afterCommit: () async {
+      if (!removed) return;
+      try {
+        await onRemoved?.call(remaining);
+      } catch (_) {
+        // Publication has happened. A caller that couldn't relinquish audio
+        // must not be told that its files were erased.
+        cleanupComplete = false;
+        return;
+      }
+      final legacy = Directory(
+        '${directory.path}/$_legacyLocalMusicDirectoryName',
+      );
+      final roots = [
+        directory,
+        if (await FileSystemEntity.type(legacy.path, followLinks: false) ==
+            FileSystemEntityType.directory)
+          legacy,
+      ];
+      for (final root in roots) {
+        for (final name in [localAudioName(digest), localCoverName(digest)]) {
+          final file = localMusicAsset(root, name);
+          try {
+            final type = await FileSystemEntity.type(
+              file.path,
+              followLinks: false,
+            );
+            if (type == FileSystemEntityType.file) {
+              await file.delete();
+            } else if (type != FileSystemEntityType.notFound) {
+              cleanupComplete = false;
+            }
+          } on FileSystemException {
+            cleanupComplete = false;
+          }
+        }
+      }
+    },
+  );
+  return (removed: removed, cleanupComplete: cleanupComplete);
 }

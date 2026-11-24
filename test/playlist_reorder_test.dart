@@ -32,6 +32,19 @@ class _PlaylistState extends MainAppScreenState {
   int playbackCalls = 0;
   List<dynamic> lastPlaybackQueue = [];
   List<dynamic> lastDownloadBatch = [];
+  bool captureLocalRemoval = false;
+  Map? confirmedLocalRemoval;
+
+  @override
+  Future<void> deleteLocalTrack(Map track) async {
+    // The widget test checks where the confirmation dispatches. The real I/O
+    // and app-state update below run in a regular test zone.
+    if (captureLocalRemoval) {
+      confirmedLocalRemoval = track;
+    } else {
+      await super.deleteLocalTrack(track);
+    }
+  }
 
   @override
   void startPlayback(List<dynamic> targetQueue, int index, {int? playlistId}) {
@@ -250,6 +263,116 @@ void main() {
     );
     await tester.pumpAndSettle();
     return state;
+  }
+
+  test(
+    'confirmed MP3 removal clears only local audio and its app references',
+    () async {
+      final state = await fixture();
+      final root = Directory(state.localPath);
+      final source = await File(
+        '${root.path}/source.mp3',
+      ).writeAsBytes(fixtureMp3());
+      final imported = await importLocalMusic(
+        directory: root,
+        files: [(name: 'My original.mp3', path: source.path)],
+        cancel: LocalImportCancel(),
+      );
+      final entry = imported.newEntries.single;
+      final ownTrack = entry.toTrack();
+      state.publishLocalMusic(imported.entries);
+      state.playingQueue = [
+        Map<String, dynamic>.of(tracks.first),
+        ownTrack,
+        Map<String, dynamic>.of(tracks[1]),
+      ];
+      state.favs = {1, entry.id};
+      state.myPlaylists.first['tracks'] = [1, entry.id, 2];
+      final copy = resolveLocalMusicAsset(root, localAudioName(entry.digest));
+      expect(await copy.exists(), isTrue);
+      await state.deleteLocalTrack(ownTrack);
+      expect(await copy.exists(), isFalse);
+      expect(await source.exists(), isTrue);
+      expect(await readLocalMusicCatalog(root), isEmpty);
+      expect(state.cachedTracks.map((track) => track['id']), [1, 2, 3, 4]);
+      expect(state.favs, {1});
+      expect(state.myPlaylists.first['tracks'], [1, 2]);
+      expect(
+        jsonDecode(await File('${root.path}/liked_tracks.json').readAsString()),
+        [1],
+      );
+      final savedPlaylists =
+          jsonDecode(
+                await File('${root.path}/my_playlists.json').readAsString(),
+              )
+              as List;
+      expect(savedPlaylists.first['tracks'], [1, 2]);
+      expect(queueIds(state), [1, 2]);
+      expect(state.playingTrack['id'], 1);
+    },
+  );
+
+  for (final width in [375.0, 1024.0]) {
+    testWidgets('the MP3 icon confirms removal at width $width', (
+      tester,
+    ) async {
+      final state = await selectionScreen(tester, width);
+      final root = await widgetDirectory(tester);
+      addTearDown(() async {
+        await atomicFileStore.writeStringLazy(
+          File('${root.path}/app_state.json'),
+          () => '{}',
+        );
+        await root.delete(recursive: true);
+      });
+      final (source, entry) = (await tester.runAsync(() async {
+        final source = await File(
+          '${root.path}/source.mp3',
+        ).writeAsBytes(fixtureMp3());
+        final result = await importLocalMusic(
+          directory: root,
+          files: [(name: 'My original.mp3', path: source.path)],
+          cancel: LocalImportCancel(),
+        );
+        return (source, result.newEntries.single);
+      }))!;
+      state.localPath = root.path;
+      state.captureLocalRemoval = true;
+      state.publishLocalMusic([entry]);
+      await tester.pumpAndSettle();
+
+      final remove = find.byKey(ValueKey('local_music_remove_${entry.id}'));
+      final confirm = find.byKey(const ValueKey('confirm_local_music_removal'));
+      final copy = resolveLocalMusicAsset(root, localAudioName(entry.digest));
+      expect(
+        find.descendant(
+          of: remove,
+          matching: find.byIcon(Icons.audio_file_outlined),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byTooltip('Удалить свой MP3'), findsOneWidget);
+      await tester.tap(remove);
+      await tester.pumpAndSettle();
+      expect(confirm, findsOneWidget);
+      await tester.tap(find.text('Отмена'));
+      await tester.pumpAndSettle();
+      expect(copy.existsSync(), isTrue);
+      expect(remove, findsOneWidget);
+      expect(state.confirmedLocalRemoval, isNull);
+
+      await tester.tap(remove);
+      await tester.pumpAndSettle();
+      expect(confirm, findsOneWidget);
+      await tester.tap(confirm);
+      await tester.pumpAndSettle();
+      expect(state.confirmedLocalRemoval?['id'], entry.id);
+      expect(tester.takeException(), isNull);
+      expect(source.existsSync(), isTrue);
+      state.rebuild = null;
+      state.testContext = null;
+      await tester.pumpWidget(const SizedBox());
+    });
   }
 
   for (final (width, nav) in [(320.0, 3), (1024.0, 0)]) {

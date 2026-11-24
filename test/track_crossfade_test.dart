@@ -161,6 +161,22 @@ void main() {
     expect(playback.crossfade.takeAtEnd(), isNull);
   });
 
+  test('deleting a preroll track waits for its decoder to close', () async {
+    final playback = _Playback();
+    final prepare = playback.deck.prepareGate = Completer<Duration?>();
+    playback.remaining(1200);
+    await _flush();
+    expect(playback.crossfade.releaseTrack(99), isNull);
+    final released = playback.crossfade.releaseTrack(_source.trackId);
+    expect(released, isNotNull);
+    expect(playback.crossfade.holdsTrack(_source.trackId), isTrue);
+    expect(playback.deck.disposals, 0);
+    prepare.complete(_duration);
+    await released;
+    expect(playback.crossfade.holdsTrack(_source.trackId), isFalse);
+    expect(playback.deck.disposals, 1);
+  });
+
   test('pause or seek during mix silences and disposes the new deck', () async {
     final playback = _Playback();
     playback.remaining(1200);

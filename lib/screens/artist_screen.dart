@@ -35,6 +35,8 @@ class ArtistScreen extends StatefulWidget {
   final Future<void> Function(List<dynamic> tracks)? onDownloadAlbum;
   final Function(dynamic track) onDeleteDownloadedTrack;
   final VoidCallback? onMissingLocalMusic;
+  final ValueChanged<Map>? onRemoveLocalMusic;
+  final ValueChanged<Map>? onMatchLocalMusic;
   final bool Function(dynamic track) isTrackDownloaded;
   final bool Function(int trackId) isTrackFavorited;
   final bool Function(int trackId) isDownloading;
@@ -61,6 +63,8 @@ class ArtistScreen extends StatefulWidget {
     this.onDownloadAlbum,
     required this.onDeleteDownloadedTrack,
     this.onMissingLocalMusic,
+    this.onRemoveLocalMusic,
+    this.onMatchLocalMusic,
     required this.isTrackDownloaded,
     required this.isTrackFavorited,
     required this.isDownloading,
@@ -902,6 +906,10 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                   LocalMusicIndicator(
                                     available: isDownloaded,
                                     onMissing: widget.onMissingLocalMusic,
+                                    onRemove: widget.onRemoveLocalMusic == null
+                                        ? null
+                                        : () =>
+                                              widget.onRemoveLocalMusic!(track),
                                   )
                                 else if (isDownloading)
                                   const SizedBox(
@@ -937,11 +945,19 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                       setState(() {});
                                     },
                                   ),
-                                if (canPlayNext)
+                                if (canPlayNext ||
+                                    (isLocalMusic(track) &&
+                                        widget.onMatchLocalMusic != null))
                                   TrackPlayNextMenu(
                                     key: ValueKey('artist_play_next_$trackId'),
-                                    onPlayNext: () =>
-                                        widget.onPlayNext!(targets),
+                                    onPlayNext: canPlayNext
+                                        ? () => widget.onPlayNext!(targets)
+                                        : null,
+                                    onMatchLocal:
+                                        isLocalMusic(track) &&
+                                            widget.onMatchLocalMusic != null
+                                        ? () => widget.onMatchLocalMusic!(track)
+                                        : null,
                                     playNextCount: targets.length,
                                   ),
                                 const SizedBox(width: 8),

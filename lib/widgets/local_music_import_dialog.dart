@@ -140,6 +140,8 @@ class _LocalMusicImportDialogState extends State<LocalMusicImportDialog> {
                   ),
                   style: muted,
                 ),
+                const SizedBox(height: 10),
+                Text(tr('local_match_after_import'), style: muted),
               ] else ...[
                 Text(
                   tr('local_import_summary')
@@ -223,12 +225,25 @@ class LocalMusicIndicator extends StatelessWidget {
     super.key,
     required this.available,
     this.onMissing,
+    this.onRemove,
   });
   final bool available;
   final VoidCallback? onMissing;
+  final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
+    if (onRemove != null) {
+      return IconButton(
+        tooltip: tr('local_track_remove'),
+        onPressed: onRemove,
+        icon: Icon(
+          available ? Icons.audio_file_outlined : Icons.error_outline,
+          color: Colors.white54,
+          size: 20,
+        ),
+      );
+    }
     if (!available && onMissing != null) {
       return IconButton(
         tooltip: tr('local_import_missing'),

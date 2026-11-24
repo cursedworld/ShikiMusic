@@ -23,6 +23,60 @@ int? _next(
 }
 
 void main() {
+  test(
+    'deleting an owned track drops every occurrence, not the other slots',
+    () {
+      final order = PlaybackOrder()
+        ..reset([_track(-1), _track(2), _track(3)], 0);
+      order.insertNext([_track(-1), _track(4), _track(-1)]);
+      expect(_next(order), -1);
+      expect(order.removeTracks((track) => track['id'] == -1), isTrue);
+      expect(order.current?.trackId, 2);
+      expect(order.baseTracks.map((track) => track['id']), [2, 3]);
+      expect(order.insertions.map((entry) => entry.trackId), [4]);
+      expect(order.previous(LoopMode.off), isNull);
+      final restored = PlaybackOrder()
+        ..restore(jsonDecode(jsonEncode(order.snapshot())) as Map);
+      expect([_next(restored), _next(restored), _next(restored)], [4, 3, null]);
+    },
+  );
+
+  test('current insertion survives deletion of the base anchor', () {
+    final order = PlaybackOrder()..reset([_track(-1), _track(2)], 0);
+    order.insertNext([_track(3), _track(4)]);
+    expect(_next(order), 3);
+    expect(order.removeTracks((track) => track['id'] == -1), isTrue);
+    expect(order.current?.trackId, 3);
+    expect([_next(order), _next(order)], [4, 2]);
+  });
+
+  test(
+    'deleting the sole base track retains a playing insertion and upcoming slots',
+    () {
+      final order = PlaybackOrder()..reset([_track(-1)], 0);
+      order.insertNext([_track(3), _track(4)]);
+      expect(_next(order), 3);
+      order.removeTracks((track) => track['id'] == -1);
+      expect(order.current?.trackId, 3);
+      expect(order.baseTracks.map((track) => track['id']), [3]);
+      expect([_next(order), _next(order)], [4, null]);
+    },
+  );
+
+  test(
+    'deleting a revisited current track resumes redo without duplicating the anchor',
+    () {
+      final order = PlaybackOrder()
+        ..reset([_track(-1), _track(2), _track(3)], 0);
+      expect([_next(order), _next(order)], [2, 3]);
+      expect(order.previous(LoopMode.off)?.trackId, 2);
+      expect(order.previous(LoopMode.off)?.trackId, -1);
+      order.removeTracks((track) => track['id'] == -1);
+      expect(order.current?.trackId, 2);
+      expect([_next(order), _next(order)], [3, null]);
+    },
+  );
+
   test('a batch plays in visible order, then resumes the untouched base', () {
     final base = [_track(1), _track(2), _track(3)];
     final order = PlaybackOrder()..reset(base, 0);

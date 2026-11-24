@@ -167,6 +167,72 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'コピーを保存できませんでした。空き容量とShikiMusicフォルダへのアクセスを確認してください。',
   },
   'local_import_owned': {'ru': 'Свой MP3', 'en': 'Your MP3', 'ja': 'ローカルMP3'},
+  'local_track_remove': {
+    'ru': 'Удалить свой MP3',
+    'en': 'Remove your MP3',
+    'ja': 'ローカルMP3を削除',
+  },
+  'local_track_remove_action': {'ru': 'Удалить', 'en': 'Remove', 'ja': '削除'},
+  'local_track_remove_confirm': {
+    'ru':
+        '«{title}» будет удалён из библиотеки, плейлистов и очереди. Исходный файл и каталог сервера не изменятся.',
+    'en':
+        '“{title}” will be removed from your library, playlists, and queue. The original file and server catalog won’t change.',
+    'ja': '「{title}」をライブラリ、プレイリスト、再生キューから削除します。元のファイルとサーバーのカタログは変更されません。',
+  },
+  'local_track_removed': {
+    'ru': 'Свой MP3 удалён',
+    'en': 'Your MP3 was removed',
+    'ja': 'ローカルMP3を削除しました',
+  },
+  'local_track_remove_failed': {
+    'ru': 'Не удалось удалить свой MP3',
+    'en': 'Couldn’t remove your MP3',
+    'ja': 'ローカルMP3を削除できませんでした',
+  },
+  'local_track_remove_incomplete': {
+    'ru': 'Трек убран из библиотеки, но не все данные удалось очистить',
+    'en':
+        'Track removed from the library, but some local data couldn’t be cleaned up',
+    'ja': '曲をライブラリから削除しましたが、一部のデータを消去できませんでした',
+  },
+  'local_match_on_server': {
+    'ru': 'Найти на сервере',
+    'en': 'Find on server',
+    'ja': 'サーバーで探す',
+  },
+  'local_match_after_import': {
+    'ru':
+        'Если сервер доступен, плеер поищет эту запись по тегам. Сам MP3 не отправляется.',
+    'en':
+        'If the server is online, the player looks for the recording by its tags. It doesn’t upload the MP3.',
+    'ja': 'サーバーに接続できる場合、タグから同じ音源を探します。MP3自体は送信しません。',
+  },
+  'local_match_unavailable': {
+    'ru': 'Сервер недоступен или ещё не поддерживает этот поиск',
+    'en': 'The server is offline or doesn’t support this search yet',
+    'ja': 'サーバーに接続できないか、この検索に未対応です',
+  },
+  'local_match_imported': {
+    'ru': 'сервер добавил: {count}',
+    'en': 'added by server: {count}',
+    'ja': 'サーバーに追加: {count}',
+  },
+  'local_match_existing': {
+    'ru': 'уже в каталоге: {count}',
+    'en': 'already in catalog: {count}',
+    'ja': '登録済み: {count}',
+  },
+  'local_match_no_match': {
+    'ru': 'совпадение не подтверждено: {count}',
+    'en': 'no confirmed match: {count}',
+    'ja': '一致を確認できず: {count}',
+  },
+  'local_match_failed': {
+    'ru': 'ошибок поиска: {count}',
+    'en': 'search errors: {count}',
+    'ja': '検索エラー: {count}',
+  },
   'local_import_missing': {
     'ru': 'Копии MP3 нет. Добавь исходный файл снова.',
     'en': 'The MP3 copy is missing. Add the original file again.',

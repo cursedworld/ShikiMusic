@@ -36,12 +36,16 @@ class AtomicFileStore {
     File destination,
     FutureOr<String> Function() producer, {
     Encoding encoding = utf8,
+    FutureOr<void> Function()? afterCommit,
   }) {
     final target = _absoluteNormalizedFile(destination);
     return _enqueue(target, () async {
       final contents = await producer();
       final captured = Uint8List.fromList(encoding.encode(contents));
       await _writeCaptured(target, captured);
+      // Keep the FIFO turn until associated assets have been cleaned up.
+      // A failure here cannot roll back the already-published contents.
+      await afterCommit?.call();
     });
   }
 

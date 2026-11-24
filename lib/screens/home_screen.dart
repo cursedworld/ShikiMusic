@@ -41,6 +41,7 @@ import '../listening_statistics.dart';
 import '../local_download_remover.dart';
 import '../local_music_catalog.dart';
 import '../local_music_import.dart';
+import '../local_music_server_match.dart';
 import '../linux_media_session.dart';
 import '../statistics_store.dart';
 import '../media_file_downloader.dart';
@@ -177,6 +178,7 @@ class MainAppScreenState extends State<MainAppScreen>
   TrackFade get _trackFade => _audioDeck.fade;
   TrackCrossfade<PlaybackDeck>? _crossfade;
   int? _closingAudioTrackId;
+  Future<void>? _closingAudioWork;
   bool _androidDeckUsesSharedFocus = false;
   AndroidPlaybackFocus? _androidPlaybackFocus;
   int? _resumeAfterFocusRevision;
@@ -476,7 +478,12 @@ class MainAppScreenState extends State<MainAppScreen>
   List<dynamic> get _serverTracks => _serverTrackCache ?? cachedTracks;
   Map<int, Map<String, Object?>> _ownTracks = const {};
   int _ownCatalogRevision = 0;
+  bool _ownCatalogRead = false;
   bool _localImportOpen = false;
+  bool _localRemovalOpen = false;
+  LocalMusicServerMatchClient? _localMusicServer;
+  Future<void> _localMatchTail = Future<void>.value();
+  final _pendingLocalMatches = <String>{};
   List<dynamic> cachedArtists = [];
   WindowsTaskbarControls? _taskbarControls;
   bool _isSyncingArtists = false;
@@ -758,6 +765,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _discordArtwork?.dispose();
     _discordCovers?.dispose();
     _artistArtworkClient.close();
+    _localMusicServer?.close();
     _artistPhotoQueue.clear();
     _trackUpdates?.offers.removeListener(_onTrackUpdates);
     _trackUpdates?.dispose();
@@ -2484,7 +2492,13 @@ class MainAppScreenState extends State<MainAppScreen>
     final ownRevision = _ownCatalogRevision;
     try {
       final entries = await readLocalMusicCatalog(appDir);
-      if (_ownCatalogRevision == ownRevision) _setOwnTracks(entries);
+      if (_ownCatalogRevision == ownRevision) {
+        _setOwnTracks(entries);
+        _ownCatalogRead = true;
+        await _pruneOwnTrackReferences(
+          (id) => id < 0 && !_ownTracks.containsKey(id),
+        );
+      }
     } catch (error) {
       debugPrint('Local music catalog read failed: ${error.runtimeType}');
     }
@@ -2554,6 +2568,14 @@ class MainAppScreenState extends State<MainAppScreen>
           return;
         }
         _playbackOrder.restore(data);
+        final savedTrack = playingTrack;
+        if (_ownCatalogRead) {
+          _playbackOrder.removeTracks((track) {
+            final digest = localTrackDigest(track);
+            return digest != null &&
+                digest != localTrackDigest(_ownTracks[track['id']]);
+          });
+        }
         if (_playbackOrder.current == null) return;
         isShuffledNotifier.value = isShuffled;
         loopModeNotifier.value = loopMode;
@@ -2580,7 +2602,9 @@ class MainAppScreenState extends State<MainAppScreen>
           );
         }
 
-        final savedPosition = data['position'];
+        final savedPosition = identical(savedTrack, targetTrack)
+            ? data['position']
+            : null;
         final position = Duration(
           milliseconds: savedPosition is num
               ? max(0, savedPosition.toInt())
@@ -2850,6 +2874,7 @@ class MainAppScreenState extends State<MainAppScreen>
   void publishLocalMusic(List<LocalMusicEntry> entries) {
     if (_stateDisposing) return;
     _ownCatalogRevision++;
+    _ownCatalogRead = true;
     _setOwnTracks(entries);
     for (final entry in entries) {
       invalidateTrackCover(entry.id);
@@ -2862,7 +2887,11 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> showLocalMusicImport() async {
-    if (!mounted || localPath.isEmpty || _localImportOpen || _stateDisposing) {
+    if (!mounted ||
+        localPath.isEmpty ||
+        _localImportOpen ||
+        _localRemovalOpen ||
+        _stateDisposing) {
       return;
     }
     _localImportOpen = true;
@@ -2880,7 +2909,10 @@ class MainAppScreenState extends State<MainAppScreen>
               lookForAdjacentLyrics: isDesktop,
               onProgress: onProgress,
             );
-            if (mounted) publishLocalMusic(result.entries);
+            if (mounted && !_stateDisposing) {
+              publishLocalMusic(result.entries);
+              _queueOwnMusicMatch(result.newEntries);
+            }
             return result;
           },
         ),
@@ -2888,6 +2920,251 @@ class MainAppScreenState extends State<MainAppScreen>
     } finally {
       _localImportOpen = false;
     }
+  }
+
+  void _queueOwnMusicMatch(
+    Iterable<LocalMusicEntry> entries, {
+    bool manual = false,
+  }) {
+    final batch = entries
+        .where((entry) => _pendingLocalMatches.add(entry.digest))
+        .toList();
+    if (batch.isEmpty) return;
+    final endpoint = configuredServerUri(localMusicMatchPath);
+    _localMatchTail = _localMatchTail.then((_) async {
+      try {
+        if (_stateDisposing) return;
+        final service = _localMusicServer ??= LocalMusicServerMatchClient();
+        if (!await service.isAvailable(endpoint)) {
+          if (manual) _localMusicNotice(tr('local_match_unavailable'));
+          return;
+        }
+        final counts = <LocalMusicMatchOutcome, int>{};
+        for (final entry in batch) {
+          if (_stateDisposing) return;
+          if (localTrackDigest(_ownTracks[entry.id]) != entry.digest) continue;
+          final result = await service.match(endpoint, entry);
+          counts.update(result, (value) => value + 1, ifAbsent: () => 1);
+        }
+        if (_stateDisposing || counts.isEmpty) return;
+        if (counts.containsKey(LocalMusicMatchOutcome.imported) ||
+            counts.containsKey(LocalMusicMatchOutcome.existing)) {
+          await syncDatabase();
+        }
+        _localMusicNotice(
+          [
+            for (final result in LocalMusicMatchOutcome.values)
+              if (counts[result] case final count?)
+                tr(switch (result) {
+                  LocalMusicMatchOutcome.imported => 'local_match_imported',
+                  LocalMusicMatchOutcome.existing => 'local_match_existing',
+                  LocalMusicMatchOutcome.noMatch => 'local_match_no_match',
+                  LocalMusicMatchOutcome.failed => 'local_match_failed',
+                }).replaceFirst('{count}', '$count'),
+          ].join(' · '),
+        );
+      } catch (error) {
+        debugPrint('Local recording lookup failed: ${error.runtimeType}');
+        _localMusicNotice(
+          tr('local_match_failed').replaceFirst('{count}', '1'),
+        );
+      } finally {
+        for (final entry in batch) {
+          _pendingLocalMatches.remove(entry.digest);
+        }
+      }
+    });
+  }
+
+  Future<void> _matchOwnTrack(Map track) async {
+    final digest = localTrackDigest(track);
+    if (_stateDisposing || localPath.isEmpty || digest == null) return;
+    try {
+      final entries = await readLocalMusicCatalog(Directory(localPath));
+      if (_stateDisposing) return;
+      _queueOwnMusicMatch(
+        entries.where((entry) => entry.digest == digest),
+        manual: true,
+      );
+    } catch (error) {
+      debugPrint('Local recording metadata read failed: ${error.runtimeType}');
+      _localMusicNotice(tr('local_match_failed').replaceFirst('{count}', '1'));
+    }
+  }
+
+  void _localMusicNotice(String message) {
+    if (!mounted || _stateDisposing) return;
+    ScaffoldMessenger.maybeOf(
+      context,
+    )?.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _confirmRemoveOwnTrack(Map track) async {
+    if (!isLocalMusic(track) ||
+        !mounted ||
+        _stateDisposing ||
+        localPath.isEmpty ||
+        _localImportOpen ||
+        _localRemovalOpen) {
+      return;
+    }
+    _localRemovalOpen = true;
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text(tr('local_track_remove')),
+          scrollable: true,
+          content: Text(
+            tr(
+              'local_track_remove_confirm',
+            ).replaceFirst('{title}', track['title']?.toString() ?? ''),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: Text(tr('cancel')),
+            ),
+            TextButton(
+              key: const ValueKey('confirm_local_music_removal'),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: TextButton.styleFrom(
+                foregroundColor: Theme.of(dialogContext).colorScheme.error,
+              ),
+              child: Text(tr('local_track_remove_action')),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true) await deleteLocalTrack(track);
+    } finally {
+      _localRemovalOpen = false;
+    }
+  }
+
+  Future<void> deleteLocalTrack(Map track) async {
+    final digest = localTrackDigest(track);
+    if (_stateDisposing || localPath.isEmpty || digest == null) return;
+    final id = track['id'] as int;
+    try {
+      var referencesSaved = true;
+      final outcome = await removeLocalMusic(
+        directory: Directory(localPath),
+        id: id,
+        digest: digest,
+        onRemoved: (entries) async {
+          if (_stateDisposing) return;
+          final release = _removeOwnTrackFromPlayback(id, digest);
+          invalidateTrackCover(id);
+          trackDurations.remove(id);
+          publishLocalMusic(entries);
+          referencesSaved = await _pruneOwnTrackReferences(
+            (value) => value == id,
+          );
+          await release;
+        },
+      );
+      if (outcome.removed) {
+        _localMusicNotice(
+          tr(
+            outcome.cleanupComplete && referencesSaved
+                ? 'local_track_removed'
+                : 'local_track_remove_incomplete',
+          ),
+        );
+      }
+    } catch (error) {
+      debugPrint('Local recording removal failed: ${error.runtimeType}');
+      _localMusicNotice(tr('local_track_remove_failed'));
+    }
+  }
+
+  Future<bool> _pruneOwnTrackReferences(bool Function(int) remove) async {
+    await _favoritesTail;
+    await _playlistReorderTail;
+    if (_stateDisposing) return false;
+    final liked = favs.any(remove);
+    if (liked) favs.removeWhere(remove);
+    var playlistsChanged = false;
+    for (final playlist in myPlaylists) {
+      final tracks = playlist['tracks'];
+      if (tracks is List && tracks.whereType<int>().any(remove)) {
+        playlist['tracks'] = tracks
+            .where((id) => id is! int || !remove(id))
+            .toList();
+        playlistsChanged = true;
+      }
+    }
+    if ((liked || playlistsChanged) && mounted) {
+      setState(() {});
+      _syncTaskbarControls();
+      _notifyArtistLibraryChanged();
+    }
+    final saved = await Future.wait([
+      if (liked) saveFavorites(),
+      if (playlistsChanged) savePlaylists(),
+    ]);
+    return saved.every((value) => value);
+  }
+
+  Future<void> _removeOwnTrackFromPlayback(int id, String digest) async {
+    final wasCurrent = localTrackDigest(playingTrack) == digest;
+    final heldSource = _audioSourceTrackId == id;
+    final changed = _playbackOrder.removeTracks(
+      (track) => localTrackDigest(track) == digest,
+    );
+    final crossfadeRelease = _crossfade?.releaseTrack(id);
+    final outgoingRelease = _closingAudioTrackId == id
+        ? _closingAudioWork
+        : null;
+    Future<void>? sourceRelease;
+    if (wasCurrent || heldSource) {
+      final deck = _audioDeck;
+      sourceRelease = _enqueueAudioWork(() async {
+        if (!wasCurrent && _audioSourceTrackId != id) return;
+        await deck.player.release();
+        deck.localAudio = null;
+        _audioSourceTrackId = null;
+        _audioSourceLocal = false;
+        await _androidPlaybackFocus?.release();
+      });
+    }
+    if (changed) {
+      isShuffledNotifier.value = isShuffled;
+      if (!wasCurrent) {
+        _savePlayNextEdit();
+      } else if (playingTrack != null) {
+        _activateTrackForPlayback(playingTrack, play: false);
+      } else {
+        _trackRevision++;
+        _transportRevision++;
+        _seekRevision++;
+        _lyricsRevision++;
+        _statistics?.endTrack();
+        _crossfade?.cancel();
+        _trackFade.hold();
+        _linuxPlaybackStopped = true;
+        playingPlaylistId = null;
+        discordStart = null;
+        _setPlaying(false);
+        activeTrackNotifier.value = null;
+        currentPositionNotifier.value = Duration.zero;
+        fullDurationNotifier.value = Duration.zero;
+        _pendingTimedLyrics = null;
+        _lyricTiming.value = null;
+        globalLyrics.clear();
+        currentLine = -1;
+        lrcLoading = false;
+        _notifyPlayNext();
+        _syncMediaSessionPlayback();
+        _discordActivityRevision++;
+        if (isDesktop) {
+          unawaited(_clearDiscordActivity().catchError(_logAudioError));
+        }
+        unawaited(_saveState());
+      }
+    }
+    await Future.wait([?sourceRelease, ?crossfadeRelease, ?outgoingRelease]);
   }
 
   void _localMusicMissing() {
@@ -2930,7 +3207,7 @@ class MainAppScreenState extends State<MainAppScreen>
     // Metadata only: keep the current source and loaded lyrics untouched.
     for (final track in _playbackOrder.retainedTracks) {
       final fresh = freshById[track['id']];
-      if (fresh == null) continue;
+      if (fresh == null || identical(fresh, track)) continue;
       for (final key in [
         'title',
         'album',
@@ -3728,6 +4005,9 @@ class MainAppScreenState extends State<MainAppScreen>
           onDownloadAlbum: (tracks) => downloadAllTracks(tracks),
           onDeleteDownloadedTrack: (t) => deleteDownloadedTrack(t),
           onMissingLocalMusic: () => unawaited(showLocalMusicImport()),
+          onRemoveLocalMusic: (track) =>
+              unawaited(_confirmRemoveOwnTrack(track)),
+          onMatchLocalMusic: (track) => unawaited(_matchOwnTrack(track)),
           isTrackDownloaded: (t) => isTrackDownloadComplete(t),
           isTrackFavorited: (id) => favs.contains(id),
           isDownloading: (id) => downloadQueue.contains(id),
@@ -4250,6 +4530,9 @@ class MainAppScreenState extends State<MainAppScreen>
   Future<void> toggleTrackFavorites(Iterable<int> trackIds) {
     final ids = trackIds.toSet();
     final work = _favoritesTail.then((_) async {
+      if (_ownCatalogRead) {
+        ids.removeWhere((id) => id < 0 && !_isLibraryTrackId(id));
+      }
       if (ids.isEmpty || _stateDisposing) return;
       final previous = {for (final id in ids) id: favs.contains(id)};
       final add = !ids.every(favs.contains);
@@ -4326,6 +4609,9 @@ class MainAppScreenState extends State<MainAppScreen>
   }) {
     final ids = trackIds.toSet();
     final work = _playlistReorderTail.then((_) async {
+      if (!remove && _ownCatalogRead) {
+        ids.removeWhere((id) => id < 0 && !_isLibraryTrackId(id));
+      }
       if (_stateDisposing || ids.isEmpty) return false;
       final index = myPlaylists.indexWhere((p) => p['id'] == playlistId);
       if (index < 0) return false;
@@ -4711,11 +4997,12 @@ class MainAppScreenState extends State<MainAppScreen>
   Future<void> _retireOutgoingDeck(PlaybackDeck old, int? sourceId) async {
     _closingAudioTrackId = sourceId;
     try {
-      await old.dispose();
-    } catch (error) {
-      _logAudioError(error);
+      final work = old.dispose().catchError(_logAudioError);
+      _closingAudioWork = work;
+      await work;
     } finally {
       _closingAudioTrackId = null;
+      _closingAudioWork = null;
       unawaited(_drainDownloadRemovals());
     }
   }
@@ -6082,10 +6369,11 @@ class MainAppScreenState extends State<MainAppScreen>
     if (playingQueue.isEmpty) return const SizedBox(width: 24);
     final trackId = playingTrack['id'];
     final isDownloaded = isTrackDownloadComplete(playingTrack);
-    if (isLocalMusic(playingTrack)) {
+    final track = playingTrack;
+    if (isLocalMusic(track)) {
       return LocalMusicIndicator(
         available: isDownloaded,
-        onMissing: () => unawaited(showLocalMusicImport()),
+        onRemove: () => unawaited(_confirmRemoveOwnTrack(track)),
       );
     }
     final isDownloading = downloadQueue.contains(trackId);
@@ -7525,7 +7813,8 @@ class MainAppScreenState extends State<MainAppScreen>
                                         ),
                                       ),
                                     ),
-                                  if (playingTrack != null ||
+                                  if (ownTrack ||
+                                      playingTrack != null ||
                                       (playlistId == null &&
                                           myPlaylists.isNotEmpty))
                                     TrackPlayNextMenu(
@@ -7539,6 +7828,11 @@ class MainAppScreenState extends State<MainAppScreen>
                                           ? null
                                           : () => playTracksNext(actionTracks),
                                       playNextCount: actionTracks.length,
+                                      onMatchLocal: ownTrack
+                                          ? () => unawaited(
+                                              _matchOwnTrack(currentObject),
+                                            )
+                                          : null,
                                       playlists: trackMenuPlaylists,
                                       onPlaylistSelected: (pId) => unawaited(
                                         changePlaylistTracks(
@@ -7580,9 +7874,13 @@ class MainAppScreenState extends State<MainAppScreen>
                                     )
                                   else if (ownTrack)
                                     LocalMusicIndicator(
+                                      key: ValueKey(
+                                        'local_music_remove_$trackId',
+                                      ),
                                       available: isDownloaded,
-                                      onMissing: () =>
-                                          unawaited(showLocalMusicImport()),
+                                      onRemove: () => unawaited(
+                                        _confirmRemoveOwnTrack(currentObject),
+                                      ),
                                     )
                                   else if (isDownloading)
                                     const SizedBox(

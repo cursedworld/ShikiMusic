@@ -54,6 +54,12 @@ class TrackCrossfade<T extends CrossfadeDeck> {
   bool holdsTrack(int id) =>
       _attempt?.source.trackId == id || _retiring?.source.trackId == id;
 
+  Future<void>? releaseTrack(int id) {
+    if (_attempt?.source.trackId == id) cancel(allowRetry: true);
+    final retiring = _retiring;
+    return retiring?.source.trackId == id ? retiring?.retirement : null;
+  }
+
   /// Once a nonzero level has been requested, queue edits must not cut off
   /// the incoming track. A muted but prepared decoder is not reserved.
   CrossfadeSource? get audibleSource {
@@ -225,7 +231,9 @@ class TrackCrossfade<T extends CrossfadeDeck> {
     if (attempt.audible) _onAudibleChanged?.call();
     attempt.deadline?.cancel();
     _retiring = attempt;
-    unawaited(_retire(attempt));
+    final retirement = _retire(attempt);
+    attempt.retirement = retirement;
+    unawaited(retirement);
   }
 
   Future<void> _retire(_CrossfadeAttempt<T> attempt) async {
@@ -257,6 +265,7 @@ class _CrossfadeAttempt<T extends CrossfadeDeck> {
   T? deck;
   Duration? duration;
   Future<void>? work;
+  Future<void>? retirement;
   Timer? deadline;
   bool starting = false;
   bool audible = false;

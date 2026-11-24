@@ -172,14 +172,17 @@ class TrackPlayNextMenu extends StatelessWidget {
     this.playNextCount = 1,
     this.playlists = const {},
     this.onPlaylistSelected,
+    this.onMatchLocal,
   });
 
   final VoidCallback? onPlayNext;
   final int playNextCount;
   final Map<int, String> playlists;
   final ValueChanged<int>? onPlaylistSelected;
+  final VoidCallback? onMatchLocal;
 
   static const _next = 'play_next';
+  static const _match = 'match_local';
 
   @override
   Widget build(BuildContext context) {
@@ -190,6 +193,7 @@ class TrackPlayNextMenu extends StatelessWidget {
       _ => false,
     };
 
+    final hasLocalActions = onMatchLocal != null;
     PopupMenuItem<Object> entry(Object value, String title) =>
         PopupMenuItem<Object>(
           value: value,
@@ -201,6 +205,9 @@ class TrackPlayNextMenu extends StatelessWidget {
             overflow: compact ? TextOverflow.ellipsis : null,
           ),
         );
+    final divider = compact
+        ? const PopupMenuDivider(height: 8, indent: 10, endIndent: 10)
+        : const PopupMenuDivider();
 
     return PopupMenuButton<Object>(
       style: IconButton.styleFrom(
@@ -212,10 +219,12 @@ class TrackPlayNextMenu extends StatelessWidget {
           ? const BoxConstraints(minWidth: 112, maxWidth: 224)
           : null,
       tooltip: tr(
-        onPlayNext != null ? 'track_actions' : 'add_selected_to_playlist',
+        onPlayNext != null || hasLocalActions
+            ? 'track_actions'
+            : 'add_selected_to_playlist',
       ),
       icon: Icon(
-        onPlayNext != null
+        onPlayNext != null || hasLocalActions
             ? Icons.more_horiz_rounded
             : Icons.add_circle_outline,
         color: Colors.white54,
@@ -224,6 +233,8 @@ class TrackPlayNextMenu extends StatelessWidget {
       onSelected: (item) {
         if (item == _next) {
           onPlayNext?.call();
+        } else if (item == _match) {
+          onMatchLocal?.call();
         } else if (item is int) {
           onPlaylistSelected?.call(item);
         }
@@ -234,12 +245,12 @@ class TrackPlayNextMenu extends StatelessWidget {
             _next,
             tr(playNextCount > 1 ? 'play_next_selection' : 'play_next_track'),
           ),
-        if (onPlayNext != null && playlists.isNotEmpty)
-          compact
-              ? const PopupMenuDivider(height: 8, indent: 10, endIndent: 10)
-              : const PopupMenuDivider(),
+        if (onPlayNext != null && playlists.isNotEmpty) divider,
         for (final playlist in playlists.entries)
           entry(playlist.key, playlist.value),
+        if (hasLocalActions && (onPlayNext != null || playlists.isNotEmpty))
+          divider,
+        if (onMatchLocal != null) entry(_match, tr('local_match_on_server')),
       ],
     );
   }
