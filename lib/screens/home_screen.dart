@@ -17,7 +17,6 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_media_session/flutter_media_session.dart' as fms;
 import 'package:video_player/video_player.dart';
-import 'package:video_player_media_kit/video_player_media_kit.dart';
 import 'package:crypto/crypto.dart';
 
 import '../app_paths.dart';
@@ -43,6 +42,7 @@ import '../local_music_catalog.dart';
 import '../local_music_import.dart';
 import '../local_music_metadata.dart';
 import '../local_music_server_match.dart';
+import '../local_video_backend.dart';
 import '../linux_media_session.dart';
 import '../statistics_store.dart';
 import '../media_file_downloader.dart';
@@ -68,6 +68,7 @@ import '../track_selection.dart';
 import '../widgets/track_updates_dialog.dart';
 import '../widgets/catalog_sync_button.dart';
 import '../widgets/desktop_player_panel.dart';
+import '../widgets/player_backdrop.dart';
 import '../widgets/local_music_import_dialog.dart';
 import '../widgets/track_selection_bar.dart';
 import '../widgets/mobile_playback_controls.dart';
@@ -158,14 +159,6 @@ class _SharedClipGeneration {
 
 class _ClipGenerationCancelledException implements Exception {
   const _ClipGenerationCancelledException();
-}
-
-bool _linuxVideoBackendInitialized = false;
-
-void _ensureLinuxVideoBackendInitialized() {
-  if (!Platform.isLinux || _linuxVideoBackendInitialized) return;
-  VideoPlayerMediaKit.ensureInitialized(linux: true);
-  _linuxVideoBackendInitialized = true;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1445,7 +1438,7 @@ class MainAppScreenState extends State<MainAppScreen>
       return;
     }
 
-    _ensureLinuxVideoBackendInitialized();
+    ensureLocalVideoBackend();
     final controller = VideoPlayerController.file(localVideoFile);
     _initializingVideoController = controller;
     var installed = false;
@@ -8083,43 +8076,31 @@ class MainAppScreenState extends State<MainAppScreen>
             : null,
         body: ValueListenableBuilder<String?>(
           valueListenable: customBackgroundNotifier,
-          builder: (context, customBg, _) {
-            return Container(
-              decoration: customBg != null && globalLocalPath.isNotEmpty
-                  ? BoxDecoration(
-                      image: DecorationImage(
-                        image: FileImage(File('$globalLocalPath/$customBg')),
-                        fit: BoxFit.cover,
-                        colorFilter: ColorFilter.mode(
-                          Colors.black.withValues(alpha: 0.65),
-                          BlendMode.srcOver,
-                        ),
-                      ),
-                    )
-                  : BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: _gradientFromAccent(accentColorNotifier.value),
-                      ),
-                    ),
-              child: isMobile
-                  ? Column(
-                      children: [
-                        mainContent,
-                        if (playingQueue.isNotEmpty) buildMobileMiniPlayer(),
-                      ],
-                    )
-                  : Row(
-                      children: [
-                        buildSidebar(),
-                        mainContent,
-                        if (playingQueue.isNotEmpty)
-                          buildDesktopPlayer(context),
-                      ],
-                    ),
-            );
-          },
+          builder: (context, customBg, child) => PlayerBackdrop(
+            directory: globalLocalPath,
+            name: customBg,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: _gradientFromAccent(accentColorNotifier.value),
+            ),
+            allowMotion: !_isVideoInitialized || !playVideoClipNotifier.value,
+            child: child!,
+          ),
+          child: isMobile
+              ? Column(
+                  children: [
+                    mainContent,
+                    if (playingQueue.isNotEmpty) buildMobileMiniPlayer(),
+                  ],
+                )
+              : Row(
+                  children: [
+                    buildSidebar(),
+                    mainContent,
+                    if (playingQueue.isNotEmpty) buildDesktopPlayer(context),
+                  ],
+                ),
         ),
       ),
     );

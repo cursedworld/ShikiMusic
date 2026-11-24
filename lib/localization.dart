@@ -810,6 +810,47 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Custom image',
     'ja': 'カスタム画像',
   },
+  'settings_background_formats': {
+    'ru': 'Фото, GIF или MP4',
+    'en': 'Photo, GIF or MP4',
+    'ja': '写真、GIF、MP4',
+  },
+  'settings_background_gif': {'ru': 'GIF', 'en': 'GIF', 'ja': 'GIF'},
+  'settings_background_video': {
+    'ru': 'Видео MP4',
+    'en': 'MP4 video',
+    'ja': 'MP4動画',
+  },
+  'settings_select_background': {
+    'ru': 'Выбрать фон',
+    'en': 'Choose a background',
+    'ja': '背景を選択',
+  },
+  'settings_background_preparing': {
+    'ru': 'Проверяем файл…',
+    'en': 'Checking file…',
+    'ja': 'ファイルを確認中…',
+  },
+  'settings_background_limit': {
+    'ru': 'Для фона: до 1080p, GIF до 24 МиБ, MP4 до 64 МиБ и 30 секунд.',
+    'en':
+        'Background limit: up to 1080p, GIF up to 24 MiB, MP4 up to 64 MiB and 30 seconds.',
+    'ja': '背景は1080pまで。GIFは24 MiBまで、MP4は64 MiBかつ30秒までです。',
+  },
+  'settings_background_invalid': {
+    'ru':
+        'Не удалось открыть фон. Попробуй другой файл. Для видео подойдёт MP4 с кодеком H.264.',
+    'en':
+        'Could not open this background. Try another file; for video, use an H.264 MP4.',
+    'ja': '背景を開けませんでした。別のファイルを試してください。動画にはH.264のMP4が使えます。',
+  },
+  'settings_background_save_failed': {
+    'ru':
+        'Не удалось сохранить фон. Проверь свободное место. Прежний фон не изменился.',
+    'en':
+        'Could not save the background. Check free storage. The previous background is unchanged.',
+    'ja': '背景を保存できませんでした。空き容量を確認してください。元の背景はそのままです。',
+  },
   'settings_custom_color': {
     'ru': 'Свой цвет',
     'en': 'Custom color',

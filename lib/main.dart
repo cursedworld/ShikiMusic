@@ -7,6 +7,7 @@ import 'dart:io';
 import 'app_paths.dart';
 import 'app_build_info.dart';
 import 'atomic_file_store.dart';
+import 'custom_background.dart';
 import 'globals.dart';
 import 'perf/frame_metrics.dart';
 import 'screens/home_screen.dart';
@@ -97,15 +98,10 @@ Future<void> _loadSavedSettings() async {
       }
 
       // Restore custom background
-      final savedBackground = data['customBackground'];
-      if (savedBackground is String && savedBackground.isNotEmpty) {
-        final backgroundFile = File('${appDir.path}/$savedBackground');
-        customBackgroundNotifier.value = await backgroundFile.exists()
-            ? savedBackground
-            : null;
-      } else {
-        customBackgroundNotifier.value = null;
-      }
+      customBackgroundNotifier.value = await availableCustomBackground(
+        appDir,
+        data['customBackground'],
+      );
 
       // Restore language
       languageNotifier.value = data['language'] ?? 'ru';

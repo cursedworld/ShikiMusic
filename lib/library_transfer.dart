@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'atomic_file_store.dart';
+import 'custom_background.dart';
 import 'local_music_catalog.dart';
 import 'local_music_transfer.dart';
 import 'mp3_metadata.dart';
@@ -18,6 +19,7 @@ const _manifest = 'shiki-transfer.json';
 const _pending = 'transfer_pending.json';
 const _jsonLimit = 64 * 1024 * 1024;
 const _totalLimit = 64 * 1024 * 1024 * 1024;
+const _videoBackgroundVersion = 3;
 const _jsonFiles = {
   'my_playlists.json',
   'liked_tracks.json',
@@ -42,18 +44,27 @@ bool _ownEntry(String name) =>
     name == portableLocalOffsets ||
     localAssetDigest(name) != null;
 
-bool _allowed(String name, {int version = 2}) =>
+bool _isVideoBackground(Object? name) =>
+    savedBackgroundKind(name) == BackgroundKind.video;
+
+bool _supportedVersion(Object? version) =>
+    version is int && version >= 1 && version <= _videoBackgroundVersion;
+
+bool _allowed(String name, {int version = _videoBackgroundVersion}) =>
     name.length <= 240 &&
     !name.contains('..') &&
     (version >= 2 || !_ownEntry(name)) &&
     (_jsonFiles.contains(name) ||
         _mediaName.hasMatch(name) ||
         _imageName.hasMatch(name) ||
+        (version >= _videoBackgroundVersion && _isVideoBackground(name)) ||
         localAssetDigest(name) != null);
 bool _audioVideo(String name) => name.endsWith('.mp3') || name.endsWith('.mp4');
-int _entryLimit(String name) => localAssetDigest(name) != null
-    ? (name.endsWith('.mp3') ? localMusicMaxBytes : localArtworkMaxBytes)
-    : (_audioVideo(name) ? 8 * 1024 * 1024 * 1024 : _jsonLimit);
+int _entryLimit(String name) =>
+    motionBackgroundByteLimit(savedBackgroundKind(name)) ??
+    (localAssetDigest(name) != null
+        ? (name.endsWith('.mp3') ? localMusicMaxBytes : localArtworkMaxBytes)
+        : (_audioVideo(name) ? 8 * 1024 * 1024 * 1024 : _jsonLimit));
 Future<String> _hash(File file) async =>
     (await sha256.bind(file.openRead()).first).toString();
 File _file(String root, String name) =>
@@ -89,7 +100,16 @@ Future<String> exportLibraryArchive({
 Future<String> _export(Map<String, Object?> job) async {
   final root = job['root'] as String;
   final localMusic = await readLocalMusicCatalog(Directory(root));
-  final version = localMusic.isEmpty ? 1 : 2;
+  final settingsFile = _file(root, 'shiki_settings.json');
+  final settings =
+      await FileSystemEntity.type(settingsFile.path, followLinks: false) ==
+          FileSystemEntityType.file
+      ? await _readJson(settingsFile)
+      : null;
+  final background = settings is Map ? settings['customBackground'] : null;
+  final version = _isVideoBackground(background)
+      ? _videoBackgroundVersion
+      : (localMusic.isEmpty ? 1 : 2);
   final ownIds = localMusic.map((entry) => entry.id).toSet();
   final output = File(job['destination'] as String);
   await _regularTarget(output);
@@ -179,7 +199,10 @@ Future<String> _export(Map<String, Object?> job) async {
           _ownEntry(name) ||
           name == 'my_playlists.json' ||
           name == 'listening_statistics.json' ||
-          (job['media'] != true && _audioVideo(name))) {
+          (_isVideoBackground(name) && name != background) ||
+          (job['media'] != true &&
+              _audioVideo(name) &&
+              !_isVideoBackground(name))) {
         continue;
       }
       if (_jsonFiles.contains(name)) {
@@ -325,6 +348,7 @@ void _validateJson(
       valid =
           value is Map &&
           (value['customBackground'] == null ||
+              _isVideoBackground(value['customBackground']) ||
               (value['customBackground'] is String &&
                   _imageName.hasMatch(value['customBackground']))) &&
           (value['serverBaseUrl'] == null ||
@@ -408,7 +432,7 @@ Future<void> _prepare(Map<String, Object?> job) async {
     final manifest = jsonDecode(utf8.decode(manifestBytes));
     if (manifest is! Map ||
         manifest['format'] != 'shiki-library' ||
-        (manifest['version'] != 1 && manifest['version'] != 2) ||
+        !_supportedVersion(manifest['version']) ||
         manifest['files'] is! Map) {
       throw const FormatException('Unsupported Shiki archive version');
     }
@@ -443,14 +467,22 @@ Future<void> _prepare(Map<String, Object?> job) async {
         throw const FormatException('Archive checksum mismatch');
       }
       if (_jsonFiles.contains(entry.name)) {
-        _validateJson(
-          entry.name,
-          await _readJson(destination),
-          allowUnboundOwnIds: version == 2,
-        );
+        final value = await _readJson(destination);
+        _validateJson(entry.name, value, allowUnboundOwnIds: version >= 2);
+        if (entry.name == 'shiki_settings.json' &&
+            version < _videoBackgroundVersion &&
+            _isVideoBackground((value as Map)['customBackground'])) {
+          throw const FormatException('Video background requires archive v3');
+        }
+      } else if (_isVideoBackground(entry.name)) {
+        try {
+          await checkMotionBackgroundHeader(destination, BackgroundKind.video);
+        } on BackgroundProblem {
+          throw const FormatException('Invalid background video');
+        }
       }
     }
-    if (version == 2) {
+    if (version >= 2) {
       await _verifyOwnArchive(
         stage,
         inventory,
@@ -560,13 +592,14 @@ Future<bool> _apply(String root) async {
     throw const FormatException('Missing import staging directory');
   }
   final inventory = pending['files'] as Map;
-  final version = pending['version'] ?? 1;
-  if (version != 1 && version != 2) {
+  final pendingVersion = pending['version'] ?? 1;
+  if (!_supportedVersion(pendingVersion)) {
     throw const FormatException('Invalid staged archive version');
   }
+  final version = pendingVersion as int;
   for (final item in inventory.entries) {
     if (item.key is! String ||
-        !_allowed(item.key, version: version as int) ||
+        !_allowed(item.key, version: version) ||
         item.value is! Map) {
       throw const FormatException('Invalid staged entry');
     }
@@ -580,7 +613,7 @@ Future<bool> _apply(String root) async {
     await _regularTarget(_libraryAsset(root, item.key));
   }
   final ownDestination = await readLocalMusicCatalog(Directory(root));
-  final ownIncoming = version == 2
+  final ownIncoming = version >= 2
       ? await _verifyOwnArchive(
           Directory(stage),
           inventory,

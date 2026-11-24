@@ -3,14 +3,51 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/globals.dart';
+import 'package:shiki/localization.dart';
 import 'package:shiki/screens/settings_screen.dart';
 import 'package:shiki/track_transition_mode.dart';
+
+import 'fixtures/animated_background.dart';
+
+class _WallpaperPicker extends FilePicker {
+  File? selected;
+
+  @override
+  Future<FilePickerResult?> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    bool allowCompression = false,
+    int compressionQuality = 0,
+    bool allowMultiple = false,
+    bool withData = false,
+    bool withReadStream = false,
+    bool lockParentWindow = false,
+    bool readSequential = false,
+  }) async {
+    expect(type, FileType.custom);
+    expect(allowedExtensions, containsAll(['gif', 'mp4', 'png']));
+    expect(withData, isFalse);
+    final file = selected;
+    if (file == null) return null;
+    return FilePickerResult([
+      PlatformFile(
+        name: file.uri.pathSegments.last,
+        path: file.path,
+        size: file.lengthSync(),
+      ),
+    ]);
+  }
+}
 
 void main() {
   late Directory directory;
@@ -139,6 +176,62 @@ void main() {
       ),
     );
   }
+
+  testWidgets('chooses a GIF intact and keeps it if a replacement is invalid', (
+    tester,
+  ) async {
+    final picker = _WallpaperPicker();
+    FilePicker.platform = picker;
+    addTearDown(() => picker.selected = null);
+    final gif = testGif();
+    final original = File('${directory.path}/picked.GIF')
+      ..writeAsBytesSync(gif);
+    picker.selected = original;
+
+    await show(tester, width: 375);
+    await drive(tester, () => editable(tester));
+    final row = find.byKey(const ValueKey('settings_background'));
+    Future<void> pick() async {
+      final onTap = tester
+          .widget<InkWell>(
+            find.descendant(of: row, matching: find.byType(InkWell)).first,
+          )
+          .onTap!;
+      // The shared persistence queue must not outlive a test's fake clock.
+      await tester.runAsync(() async => onTap());
+    }
+
+    await pick();
+    await drive(
+      tester,
+      () =>
+          customBackgroundNotifier.value != null &&
+          find.text(tr('settings_background_preparing')).evaluate().isEmpty,
+    );
+    final saved = customBackgroundNotifier.value!;
+    expect(saved, endsWith('.gif'));
+    expect(File('${directory.path}/$saved').readAsBytesSync(), gif);
+    expect(original.readAsBytesSync(), gif);
+    final settings = File('${directory.path}/shiki_settings.json');
+    expect(
+      (jsonDecode(settings.readAsStringSync()) as Map)['customBackground'],
+      saved,
+    );
+
+    picker.selected = File('${directory.path}/bad.mp4')
+      ..writeAsStringSync('not MP4');
+    await pick();
+    await drive(
+      tester,
+      () => find.text(tr('settings_background_invalid')).evaluate().isNotEmpty,
+    );
+    expect(customBackgroundNotifier.value, saved);
+    expect(
+      (jsonDecode(settings.readAsStringSync()) as Map)['customBackground'],
+      saved,
+    );
+    expect(File('${directory.path}/$saved').existsSync(), isTrue);
+  });
 
   for (final platform in [
     TargetPlatform.android,

@@ -11,6 +11,8 @@ import 'package:image/image.dart' as img;
 import '../app_paths.dart';
 import '../app_build_info.dart';
 import '../atomic_file_store.dart';
+import '../background_video.dart';
+import '../custom_background.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../listening_statistics.dart';
@@ -153,6 +155,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static Future<void> _backgroundMutation = Future<void>.value();
   bool _isDisposed = false;
   bool _isClearingCache = false;
+  bool _isImportingBackground = false;
   String _serverBaseUrl = configuredServerBaseUrl;
   bool _settingsReady = false;
   bool _settingsLoadFailed = false;
@@ -194,13 +197,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final file = File('${appDir.path}/shiki_settings.json');
       if (await file.exists()) {
         final data = jsonDecode(await file.readAsString());
-        final savedBackground = data['customBackground'];
-        final availableBackground =
-            savedBackground is String &&
-                savedBackground.isNotEmpty &&
-                await File('${appDir.path}/$savedBackground').exists()
-            ? savedBackground
-            : null;
+        final availableBackground = await availableCustomBackground(
+          appDir,
+          data['customBackground'],
+        );
         if (!mounted) return;
         setState(() {
           final savedColor = data['themeColor'];
@@ -300,7 +300,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         builder: (context, customBg, _) => Stack(
           fit: StackFit.expand,
           children: [
-            if (customBg != null && globalLocalPath.isNotEmpty)
+            if (savedBackgroundKind(customBg) == BackgroundKind.image &&
+                globalLocalPath.isNotEmpty)
               Image.file(
                 File('$globalLocalPath/$customBg'),
                 fit: BoxFit.cover,
@@ -344,18 +345,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       _row(
                         key: const ValueKey('settings_background'),
                         title: tr('settings_background'),
+                        hint: tr('settings_background_formats'),
                         value: tr(
-                          customBg == null
-                              ? 'settings_background_default'
-                              : 'settings_background_custom',
+                          _isImportingBackground
+                              ? 'settings_background_preparing'
+                              : switch (savedBackgroundKind(customBg)) {
+                                  BackgroundKind.image =>
+                                    'settings_background_custom',
+                                  BackgroundKind.gif =>
+                                    'settings_background_gif',
+                                  BackgroundKind.video =>
+                                    'settings_background_video',
+                                  null => 'settings_background_default',
+                                },
                         ),
-                        onTap: _settingsReady ? _uploadCustomBackground : null,
+                        onTap: _settingsReady && !_isImportingBackground
+                            ? _uploadCustomBackground
+                            : null,
                         action: customBg == null
                             ? null
                             : IconButton(
                                 key: const ValueKey('remove_custom_background'),
                                 tooltip: tr('settings_remove_background'),
-                                onPressed: _settingsReady
+                                onPressed:
+                                    _settingsReady && !_isImportingBackground
                                     ? _removeCustomBackground
                                     : null,
                                 icon: const Icon(
@@ -907,51 +920,82 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _uploadCustomBackgroundNow() async {
     if (_isDisposed) return;
+    setState(() => _isImportingBackground = true);
+    File? candidate;
+    var committed = false;
     try {
       final result = await FilePicker.platform.pickFiles(
-        type: FileType.image,
-        dialogTitle: tr('select_image'),
+        type: FileType.custom,
+        allowedExtensions: backgroundPickerExtensions,
+        dialogTitle: tr('settings_select_background'),
         allowMultiple: false,
       );
-      if (result != null && result.files.single.path != null) {
-        if (_isDisposed) return;
-        final pickedPath = result.files.single.path!;
+      if (_isDisposed || result == null) return;
+      final selected = result.files.single;
+      final pickedPath = selected.path;
+      if (pickedPath == null) throw BackgroundProblem.invalid;
+      final ext = switch (selected.extension?.toLowerCase()) {
+        'gif' => 'gif',
+        'mp4' => 'mp4',
+        _ => 'jpg',
+      };
+      final appDir = await _getDataDirectory();
+      if (_isDisposed) return;
+      final newFileName =
+          'custom_bg_${DateTime.now().microsecondsSinceEpoch}.$ext';
+      final newFile = File('${appDir.path}/$newFileName');
+
+      if (ext == 'gif' || ext == 'mp4') {
+        await copyMotionBackground(File(pickedPath), newFile);
+        candidate = newFile;
+        if (ext == 'mp4' && !_isDisposed) {
+          // Validate on the user's decoder before replacing their old wallpaper.
+          final video = await openBackgroundVideo(newFile);
+          await closeBackgroundVideo(video);
+        }
+      } else {
         final jpegBytes = await compute(
           processCustomBackgroundImage,
           pickedPath,
           debugLabel: 'custom-background-image',
         );
-        if (_isDisposed || jpegBytes == null) return;
-
-        final appDir = await _getDataDirectory();
         if (_isDisposed) return;
-
-        // Save as optimized JPEG
-        final ext = 'jpg';
-        final newFileName =
-            'custom_bg_${DateTime.now().microsecondsSinceEpoch}.$ext';
-        final newPath = '${appDir.path}/$newFileName';
-        final newFile = File(newPath);
+        if (jpegBytes == null) throw BackgroundProblem.invalid;
         await atomicFileStore.writeBytes(newFile, jpegBytes);
-        if (_isDisposed) {
-          await _deleteUnusedBackgroundCandidate(newFile);
-          return;
-        }
-
-        final previousBackground = customBackgroundNotifier.value;
-        customBackgroundNotifier.value = newFileName;
-        if (await _saveSettings()) {
-          await _deleteCustomBgFiles(exceptFileName: newFileName);
-        } else {
-          if (customBackgroundNotifier.value == newFileName) {
-            customBackgroundNotifier.value = previousBackground;
-          }
-          await _deleteUnusedBackgroundCandidate(newFile);
-        }
+        candidate = newFile;
       }
+
+      if (_isDisposed) return;
+      final previousBackground = customBackgroundNotifier.value;
+      customBackgroundNotifier.value = newFileName;
+      committed = await _saveSettings();
+      if (!committed) {
+        if (customBackgroundNotifier.value == newFileName) {
+          customBackgroundNotifier.value = previousBackground;
+        }
+        throw const FileSystemException('Could not save background setting');
+      }
+      await _deleteCustomBgFiles(exceptFileName: newFileName);
+    } on BackgroundProblem catch (problem) {
+      _showBackgroundError(switch (problem) {
+        BackgroundProblem.tooLarge => 'settings_background_limit',
+        BackgroundProblem.invalid => 'settings_background_invalid',
+      });
     } catch (e) {
-      debugPrint('Error uploading custom background: $e');
+      _showBackgroundError('settings_background_save_failed');
+    } finally {
+      if (candidate != null && !committed) {
+        await _deleteUnusedBackgroundCandidate(candidate);
+      }
+      if (mounted) setState(() => _isImportingBackground = false);
     }
+  }
+
+  void _showBackgroundError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(tr(message))));
   }
 
   Future<void> _removeCustomBackgroundNow() async {

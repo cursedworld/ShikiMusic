@@ -110,6 +110,44 @@ void main() {
     );
     expect(await File('${target.path}/shiki_settings.json').exists(), isFalse);
   });
+
+  test(
+    'video wallpaper transfers with settings even without track media',
+    () async {
+      const name = 'custom_bg_123.mp4';
+      final header = [
+        0,
+        0,
+        0,
+        16,
+        102,
+        116,
+        121,
+        112,
+        105,
+        115,
+        111,
+        109,
+        0,
+        0,
+        0,
+        0,
+      ];
+      await json(source, 'shiki_settings.json', {'customBackground': name});
+      await File('${source.path}/$name').writeAsBytes(header);
+      await File('${source.path}/custom_bg_122.mp4').writeAsBytes(header);
+      await export(media: false);
+      await restore(settings: true);
+
+      final settings = jsonDecode(
+        await File('${target.path}/shiki_settings.json').readAsString(),
+      );
+      expect(settings['customBackground'], name);
+      expect(await File('${target.path}/$name').readAsBytes(), header);
+      expect(await File('${target.path}/custom_bg_122.mp4').exists(), isFalse);
+      expect(await File('${target.path}/video_1.mp4').exists(), isFalse);
+    },
+  );
   test(
     'merge preserves existing files/settings and imports are idempotent',
     () async {
