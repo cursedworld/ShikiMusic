@@ -5,10 +5,23 @@ final RegExp _lrcOffset = RegExp(
   r'\[offset\s*:\s*([+-]?\d+)\s*\]',
   caseSensitive: false,
 );
+final _lineControls = RegExp(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]');
+const lyricLineTextLimit = 512;
+const lyricSourceLineLimit = 65536;
+
+bool validLyricLineText(String text) =>
+    text.runes.length <= lyricLineTextLimit &&
+    !_lineControls.hasMatch(text) &&
+    !_lrcTimestamp.hasMatch(text) &&
+    !_lrcOffset.hasMatch(text);
 
 /// Parses ordinary LRC without discarding repeated timestamps or silent gaps.
 /// Positive LRC offsets advance the lyrics; negative offsets delay them.
-List<LyricLine> parseLrcString(String contents, {int advanceMilliseconds = 0}) {
+List<LyricLine> parseLrcString(
+  String contents, {
+  int advanceMilliseconds = 0,
+  Map<int, String> lineEdits = const {},
+}) {
   var offsetMilliseconds = 0;
   for (final match in _lrcOffset.allMatches(contents)) {
     offsetMilliseconds = int.tryParse(match.group(1)!) ?? offsetMilliseconds;
@@ -17,10 +30,18 @@ List<LyricLine> parseLrcString(String contents, {int advanceMilliseconds = 0}) {
 
   final entries = <({LyricLine line, int order})>[];
   var order = 0;
-  for (final rawLine in contents.split(RegExp(r'\r?\n'))) {
+  final rows = contents.split(RegExp(r'\r?\n'));
+  for (var row = 0; row < rows.length; row++) {
+    final rawLine = rows[row];
     final matches = _lrcTimestamp.allMatches(rawLine).toList();
     if (matches.isEmpty) continue;
-    final text = rawLine.substring(matches.last.end).trim();
+    final original = rawLine.substring(matches.last.end).trim();
+    // Replacing a suffix that contains an offset directive would alter timing.
+    final sourceLine =
+        row < lyricSourceLineLimit && !_lrcOffset.hasMatch(original)
+        ? row
+        : null;
+    final text = lineEdits[sourceLine] ?? original;
     for (final match in matches) {
       final minutes = int.tryParse(match.group(1)!);
       final seconds = int.tryParse(match.group(2)!);
@@ -36,6 +57,7 @@ List<LyricLine> parseLrcString(String contents, {int advanceMilliseconds = 0}) {
           Duration(milliseconds: timestamp < 0 ? 0 : timestamp),
           text,
           text,
+          sourceLine: sourceLine,
         ),
         order: order++,
       ));

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart' show compute;
 import 'atomic_file_store.dart';
 import 'globals.dart' show LyricLine;
 import 'lrc_parser.dart';
+import 'lyric_text_edits.dart';
 
 const lyricTimingStep = 100;
 const lyricTimingLimit = 10000;
@@ -166,12 +167,14 @@ class LyricTimingStore {
 class LyricTimingSession {
   LyricTimingSession({
     required LyricTimingStore store,
+    LyricTextEditStore? textStore,
     required int trackId,
     required String contents,
     required Future<String> Function() fingerprintAudio,
     required bool Function() isCurrent,
     required void Function(List<LyricLine>) onTimeline,
   }) : _store = store,
+       _textStore = textStore,
        _trackId = trackId,
        _contents = contents,
        _fingerprintAudio = fingerprintAudio,
@@ -179,6 +182,7 @@ class LyricTimingSession {
        _onTimeline = onTimeline;
 
   final LyricTimingStore _store;
+  final LyricTextEditStore? _textStore;
   final int _trackId;
   final String _contents;
   final Future<String> Function() _fingerprintAudio;
@@ -190,11 +194,36 @@ class LyricTimingSession {
   String? _audioHash;
   int _saved = 0;
   int? _preview;
+  late final _originalLines = <int, String>{
+    for (final line in parseLrcString(_contents)) ?line.sourceLine: line.txt,
+  };
+  Map<int, String> _textEdits = const {};
 
   bool get isCurrent => _isCurrent();
   bool get isServerTrack => _trackId > 0;
   bool get hasPreview => _preview != null;
   int get advanceMilliseconds => _preview ?? _saved;
+  bool get canEditText => isCurrent && _textStore != null;
+  bool get hasTextEdits => _textEdits.isNotEmpty;
+
+  String? originalLine(int sourceLine) =>
+      canEditText ? _originalLines[sourceLine] : null;
+
+  String? lineText(int sourceLine) =>
+      canEditText ? _textEdits[sourceLine] ?? _originalLines[sourceLine] : null;
+
+  LyricTextCorrection? get savedTextCorrection {
+    final audio = _audioHash;
+    if (!canEditText || !isServerTrack || !hasTextEdits || audio == null) {
+      return null;
+    }
+    return (
+      trackId: _trackId,
+      audioSha256: audio,
+      lrcSha256: _lyricsHash,
+      edits: _textEdits,
+    );
+  }
 
   LyricTimingCorrection? get savedCorrection {
     final audio = _audioHash;
@@ -226,6 +255,54 @@ class LyricTimingSession {
     if (!isCurrent || value == _saved) return;
     _saved = value;
     _publish();
+  }
+
+  Future<void> restoreTextEdits() async {
+    final store = _textStore;
+    if (store == null || !isCurrent) return;
+    final edits = await store.lookup(
+      _trackId,
+      lyricsFingerprint: () => _lyricsHash,
+      audioFingerprint: () =>
+          isCurrent ? _audioFingerprint() : Future.value(''),
+    );
+    if (isCurrent && edits.isNotEmpty) {
+      _readTextEdits(edits);
+      _publish();
+    }
+  }
+
+  Future<bool> saveLineText(int sourceLine, String text) async {
+    final store = _textStore;
+    if (store == null || !isCurrent) return false;
+    final original = _originalLines[sourceLine];
+    final replacement = text.trim();
+    if (original == null || !validLyricLineText(replacement)) {
+      throw const FormatException('Invalid lyric line edit');
+    }
+    if (replacement == lineText(sourceLine)) return true;
+    final audio = await _audioFingerprint();
+    if (!isCurrent) return false;
+    final saved = await store.saveLine(
+      _trackId,
+      audio: audio,
+      lrc: _lyricsHash,
+      index: sourceLine,
+      replacement: replacement == original ? null : replacement,
+    );
+    if (!isCurrent) return false;
+    _readTextEdits(saved);
+    _publish();
+    return true;
+  }
+
+  void _readTextEdits(Map<int, String> edits) {
+    _textEdits = Map.unmodifiable({
+      for (final edit in edits.entries)
+        if (_originalLines.containsKey(edit.key) &&
+            _originalLines[edit.key] != edit.value)
+          edit.key: edit.value,
+    });
   }
 
   void preview(int advance) {
@@ -264,6 +341,10 @@ class LyricTimingSession {
   }
 
   void _publish() => _onTimeline(
-    parseLrcString(_contents, advanceMilliseconds: advanceMilliseconds),
+    parseLrcString(
+      _contents,
+      advanceMilliseconds: advanceMilliseconds,
+      lineEdits: _textEdits,
+    ),
   );
 }

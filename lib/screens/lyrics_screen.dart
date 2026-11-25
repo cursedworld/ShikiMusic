@@ -11,6 +11,7 @@ import '../lyric_timing.dart';
 import '../lyric_timing_proposals.dart';
 import '../music_import.dart';
 import '../player_shortcuts.dart';
+import '../widgets/lyric_line_edit_dialog.dart';
 import '../widgets/lyric_timing_controls.dart';
 import '../widgets/synced_lyrics_view.dart';
 
@@ -43,6 +44,7 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
   bool _supportsProposals = false;
   bool _proposing = false;
   LyricTimingProposalResult? _proposalResult;
+  bool _lineEditorOpen = false;
 
   @override
   void initState() {
@@ -125,6 +127,45 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
       identical(_editing, timing) &&
       _editorRevision == revision &&
       timing.isCurrent;
+
+  int? get _activeSourceLine {
+    final lines = _lastLyrics;
+    final index = localSyncIndex;
+    return lines != null && index >= 0 && index < lines.length
+        ? lines[index].sourceLine
+        : null;
+  }
+
+  Future<void> _editLine(LyricTimingSession session, int sourceLine) async {
+    final timing = widget.timing;
+    final original = session.originalLine(sourceLine);
+    final text = session.lineText(sourceLine);
+    if (_lineEditorOpen || timing == null || original == null || text == null) {
+      return;
+    }
+    _lineEditorOpen = true;
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => ValueListenableBuilder<LyricTimingSession?>(
+          valueListenable: timing,
+          builder: (context, current, _) => PlaybackShortcutScope(
+            child: LyricLineEditDialog(
+              session: session,
+              sourceLine: sourceLine,
+              original: original,
+              initial: text,
+              active: identical(current, session),
+              proposals: widget.proposals,
+            ),
+          ),
+        ),
+      );
+    } finally {
+      _lineEditorOpen = false;
+    }
+  }
 
   void _cancelTiming() {
     final editing = _editing;
@@ -257,6 +298,7 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
 
         final timing = widget.timing?.value;
         final editing = _editing;
+        final sourceLine = _activeSourceLine;
         return Scaffold(
           backgroundColor: Colors.black,
           body: Stack(
@@ -374,6 +416,10 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
                                 onAdjust: _adjustTiming,
                                 onCancel: _cancelTiming,
                                 onSave: _saveTiming,
+                                onEditLine:
+                                    editing.canEditText && sourceLine != null
+                                    ? () => _editLine(editing, sourceLine)
+                                    : null,
                                 onPropose: _supportsProposals
                                     ? _proposeTiming
                                     : null,

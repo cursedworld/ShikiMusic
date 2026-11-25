@@ -16,7 +16,8 @@ class LyricLine {
   final Duration time;
   final String txt;
   final String textPayload;
-  LyricLine(this.time, this.textPayload, this.txt);
+  final int? sourceLine;
+  LyricLine(this.time, this.textPayload, this.txt, {this.sourceLine});
 }
 
 // ── Global state ───────────────────────────────────────────────────────────

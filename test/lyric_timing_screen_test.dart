@@ -12,9 +12,11 @@ import 'package:http/testing.dart';
 import 'package:shiki/globals.dart';
 import 'package:shiki/localization.dart';
 import 'package:shiki/lrc_parser.dart';
+import 'package:shiki/lyric_text_edits.dart';
 import 'package:shiki/lyric_timing.dart';
 import 'package:shiki/lyric_timing_proposals.dart';
 import 'package:shiki/screens/lyrics_screen.dart';
+import 'package:shiki/widgets/lyric_line_edit_dialog.dart';
 import 'package:shiki/widgets/lyric_timing_controls.dart';
 import 'package:shiki/widgets/synced_lyrics_view.dart';
 
@@ -33,6 +35,28 @@ class _RecordedOffsets extends LyricTimingStore {
   }) async {
     if (fail) throw const FileSystemException('Test failure');
     lastSaved = advanceMilliseconds;
+  }
+}
+
+class _RecordedLineEdits extends LyricTextEditStore {
+  _RecordedLineEdits() : super(Directory.systemTemp);
+
+  final saved = <int, String>{};
+
+  @override
+  Future<Map<int, String>> saveLine(
+    int trackId, {
+    required String audio,
+    required String lrc,
+    required int index,
+    required String? replacement,
+  }) async {
+    if (replacement == null) {
+      saved.remove(index);
+    } else {
+      saved[index] = replacement;
+    }
+    return Map.unmodifiable(saved);
   }
 }
 
@@ -78,6 +102,8 @@ void main() {
     String language = 'ru',
     bool eligible = true,
     LyricTimingProposalClient? proposals,
+    LyricTextEditStore? textEdits,
+    Duration position = const Duration(milliseconds: 960),
   }) async {
     final previousTrack = activeTrackNotifier.value;
     final previousLyrics = globalLyrics;
@@ -92,7 +118,7 @@ void main() {
 
     void showAtPausedPosition(List<LyricLine> lines) {
       globalLyrics = lines;
-      currentLine = lyricLineIndexAt(lines, const Duration(milliseconds: 960));
+      currentLine = lyricLineIndexAt(lines, position);
       uiSignal.value++;
     }
 
@@ -110,6 +136,7 @@ void main() {
     if (eligible) {
       timing.value = LyricTimingSession(
         store: store,
+        textStore: textEdits,
         trackId: 1791,
         contents: rawLrc,
         fingerprintAudio: () async => 'a' * 64,
@@ -182,6 +209,152 @@ void main() {
       }
     });
   }
+
+  final editLine = find.byKey(const ValueKey('lyric_edit_line'));
+  final input = find.byKey(const ValueKey('lyric_line_input'));
+
+  Future<void> tapLineEditor(WidgetTester tester) async {
+    await tester.ensureVisible(editLine);
+    await tester.tap(editLine);
+    await tester.pumpAndSettle();
+  }
+
+  Finder dialogAction(String key) => find.descendant(
+    of: find.byType(LyricLineEditDialog),
+    matching: find.text(tr(key)),
+  );
+
+  for (final (width, scale, language) in const [
+    (320.0, 1.45, 'ru'),
+    (768.0, 1.25, 'ja'),
+    (1024.0, 1.0, 'en'),
+    (1440.0, 1.0, 'ru'),
+  ]) {
+    testWidgets('edits the captured cue without a server at $width', (
+      tester,
+    ) async {
+      final store = _RecordedLineEdits();
+      await show(
+        tester,
+        width: width,
+        scale: scale,
+        language: language,
+        textEdits: store,
+        position: const Duration(seconds: 2),
+      );
+      await tester.tap(find.byKey(toggle));
+      await tester.pumpAndSettle();
+      await tapLineEditor(tester);
+      expect(tester.widget<TextField>(input).controller!.text, 'Первая строка');
+      await tester.enterText(input, 'Текст не должен сохраниться');
+      await tester.tap(dialogAction('cancel'));
+      await tester.pumpAndSettle();
+      expect(store.saved, isEmpty);
+
+      await tapLineEditor(tester);
+      currentLine = 1;
+      uiSignal.value++;
+      await tester.enterText(input, 'Точные слова');
+      await tester.pumpAndSettle();
+      expect(dialogAction('lyric_timing_propose'), findsNothing);
+      if (width == 320) await screenshot(tester, 'line-editor-320');
+      await tester.tap(dialogAction('playlist_save'));
+      await tester.pumpAndSettle();
+      expect(store.saved, {0: 'Точные слова'});
+      expect(globalLyrics.map((line) => line.txt), [
+        'Точные слова',
+        'Вторая строка',
+      ]);
+      expect(globalLyrics.map((line) => line.time.inSeconds), [1, 5]);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  testWidgets(
+    'a locally saved line can be sent explicitly after the server returns',
+    (tester) async {
+      var online = false;
+      final posted = <Map>[];
+      final proposals = LyricTimingProposalClient(
+        serverBase: 'http://localhost:8000',
+        client: MockClient((request) async {
+          if (request.method == 'GET') {
+            return request.url.path == '/api/lyric-text-proposals/' && online
+                ? http.Response('{"lyric_text_proposals":1}', 200)
+                : http.Response('{}', 503);
+          }
+          expect(request.url.path, '/api/tracks/1791/lyric-text-proposals/');
+          posted.add(jsonDecode(utf8.decode(request.bodyBytes)) as Map);
+          return http.Response('{"status":"pending"}', 201);
+        }),
+      );
+      addTearDown(proposals.close);
+      final store = _RecordedLineEdits();
+      await show(
+        tester,
+        textEdits: store,
+        proposals: proposals,
+        position: const Duration(seconds: 2),
+      );
+      await tester.tap(find.byKey(toggle));
+      await tester.pumpAndSettle();
+      await tapLineEditor(tester);
+      await tester.enterText(input, 'Правка офлайн');
+      await tester.tap(dialogAction('playlist_save'));
+      await tester.pumpAndSettle();
+      expect(store.saved, {0: 'Правка офлайн'});
+      expect(posted, isEmpty);
+
+      online = true;
+      currentLine = 1;
+      uiSignal.value++;
+      await tester.pump();
+      await tapLineEditor(tester);
+      await tester.enterText(input, 'Другая правка');
+      await tester.pumpAndSettle();
+      await tester.tap(dialogAction('lyric_timing_propose'));
+      await tester.pumpAndSettle();
+      expect(
+        posted.single.keys,
+        unorderedEquals(['audio_sha256', 'lrc_sha256', 'edits']),
+      );
+      expect(posted.single['edits'], [
+        {'line_index': 0, 'text': 'Правка офлайн'},
+        {'line_index': 1, 'text': 'Другая правка'},
+      ]);
+      expect(find.text(tr('lyric_timing_proposal_pending')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('changing tracks disables a draft without saving it', (
+    tester,
+  ) async {
+    final store = _RecordedLineEdits();
+    final fixture = await show(
+      tester,
+      textEdits: store,
+      position: const Duration(seconds: 2),
+    );
+    await tester.tap(find.byKey(toggle));
+    await tester.pumpAndSettle();
+    await tapLineEditor(tester);
+    await tester.enterText(input, 'Не для нового трека');
+    fixture.timing.value = null;
+    await tester.pumpAndSettle();
+    final save = tester.widget<FilledButton>(
+      find.ancestor(
+        of: dialogAction('playlist_save'),
+        matching: find.byType(FilledButton),
+      ),
+    );
+    expect(save.onPressed, isNull);
+    expect(find.text(tr('lyric_line_track_changed')), findsOneWidget);
+    expect(store.saved, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
     'preview updates the paused highlight and cue seek; cancel restores both',

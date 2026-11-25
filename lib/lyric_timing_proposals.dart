@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import 'lyric_text_edits.dart';
 import 'lyric_timing.dart';
 import 'server_config.dart';
 
@@ -30,31 +31,49 @@ class LyricTimingProposalClient {
   final String _serverBase;
   final Duration timeout;
 
-  Future<bool> supportsProposals() async {
+  Future<bool> supportsProposals() =>
+      _supports('api/lyric-timing-proposals/', 'lyric_timing_proposals');
+
+  Future<bool> supportsTextProposals() =>
+      _supports('api/lyric-text-proposals/', 'lyric_text_proposals');
+
+  Future<bool> _supports(String path, String capability) async {
     try {
-      final response = await _request('GET', 'api/lyric-timing-proposals/');
+      final response = await _request('GET', path);
       if (response.statusCode != HttpStatus.ok) return false;
       final body = jsonDecode(response.body);
-      return body is Map && body['lyric_timing_proposals'] == 1;
+      return body is Map && body[capability] == 1;
     } catch (_) {
       // Older, offline or unrelated servers do not expose the action.
       return false;
     }
   }
 
-  Future<LyricTimingProposalResult> submit(
-    LyricTimingCorrection correction,
+  Future<LyricTimingProposalResult> submit(LyricTimingCorrection correction) =>
+      _submit('api/tracks/${correction.trackId}/lyric-timing-proposals/', {
+        'audio_sha256': correction.audioSha256,
+        'lrc_sha256': correction.lrcSha256,
+        'advance_ms': correction.advanceMilliseconds,
+      });
+
+  Future<LyricTimingProposalResult> submitText(LyricTextCorrection correction) {
+    final indices = correction.edits.keys.toList()..sort();
+    return _submit('api/tracks/${correction.trackId}/lyric-text-proposals/', {
+      'audio_sha256': correction.audioSha256,
+      'lrc_sha256': correction.lrcSha256,
+      'edits': [
+        for (final index in indices)
+          {'line_index': index, 'text': correction.edits[index]!},
+      ],
+    });
+  }
+
+  Future<LyricTimingProposalResult> _submit(
+    String path,
+    Map<String, Object> body,
   ) async {
     try {
-      final response = await _request(
-        'POST',
-        'api/tracks/${correction.trackId}/lyric-timing-proposals/',
-        body: {
-          'audio_sha256': correction.audioSha256,
-          'lrc_sha256': correction.lrcSha256,
-          'advance_ms': correction.advanceMilliseconds,
-        },
-      );
+      final response = await _request('POST', path, body: body);
       return switch (response.statusCode) {
         HttpStatus.ok || HttpStatus.created => switch (jsonDecode(
           response.body,

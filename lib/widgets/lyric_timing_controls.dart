@@ -5,6 +5,18 @@ import '../localization.dart';
 import '../lyric_timing.dart';
 import '../lyric_timing_proposals.dart';
 
+String lyricProposalMessage(LyricTimingProposalResult result) =>
+    tr(switch (result) {
+      LyricTimingProposalResult.pending => 'lyric_timing_proposal_pending',
+      LyricTimingProposalResult.accepted => 'lyric_timing_proposal_accepted',
+      LyricTimingProposalResult.rejected => 'lyric_timing_proposal_rejected',
+      LyricTimingProposalResult.versionConflict =>
+        'lyric_timing_proposal_conflict',
+      LyricTimingProposalResult.unavailable => 'lyric_timing_proposal_offline',
+      LyricTimingProposalResult.rateLimited => 'lyric_timing_proposal_limit',
+      LyricTimingProposalResult.failed => 'lyric_timing_proposal_failed',
+    });
+
 /// Sits above the scrolling lyrics so the adjustment can be heard and seen.
 class LyricTimingControls extends StatelessWidget {
   const LyricTimingControls({
@@ -15,6 +27,7 @@ class LyricTimingControls extends StatelessWidget {
     required this.onAdjust,
     required this.onCancel,
     required this.onSave,
+    this.onEditLine,
     this.onPropose,
     this.proposing = false,
     this.proposalResult,
@@ -26,6 +39,7 @@ class LyricTimingControls extends StatelessWidget {
   final ValueChanged<int> onAdjust;
   final VoidCallback onCancel;
   final VoidCallback onSave;
+  final VoidCallback? onEditLine;
   final VoidCallback? onPropose;
   final bool proposing;
   final LyricTimingProposalResult? proposalResult;
@@ -43,17 +57,7 @@ class LyricTimingControls extends StatelessWidget {
 
   String? get _proposalLabel => switch (proposalResult) {
     null => proposing ? tr('lyric_timing_sending') : null,
-    LyricTimingProposalResult.pending => tr('lyric_timing_proposal_pending'),
-    LyricTimingProposalResult.accepted => tr('lyric_timing_proposal_accepted'),
-    LyricTimingProposalResult.rejected => tr('lyric_timing_proposal_rejected'),
-    LyricTimingProposalResult.versionConflict => tr(
-      'lyric_timing_proposal_conflict',
-    ),
-    LyricTimingProposalResult.unavailable => tr(
-      'lyric_timing_proposal_offline',
-    ),
-    LyricTimingProposalResult.rateLimited => tr('lyric_timing_proposal_limit'),
-    LyricTimingProposalResult.failed => tr('lyric_timing_proposal_failed'),
+    final result => lyricProposalMessage(result),
   };
 
   bool get _proposalHandled => switch (proposalResult) {
@@ -114,6 +118,14 @@ class LyricTimingControls extends StatelessWidget {
                   icon: const Icon(Icons.chevron_right_rounded, size: 18),
                   iconAlignment: IconAlignment.end,
                 ),
+                if (onEditLine != null)
+                  TextButton.icon(
+                    key: const ValueKey('lyric_edit_line'),
+                    style: actionStyle,
+                    onPressed: saving ? null : onEditLine,
+                    icon: const Icon(Icons.edit_outlined, size: 17),
+                    label: Text(tr('lyric_edit_line')),
+                  ),
               ],
             ),
             const Divider(height: 5, color: Colors.white12),

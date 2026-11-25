@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/disposable_cache.dart';
 import 'package:shiki/globals.dart' show LyricLine;
 import 'package:shiki/lrc_parser.dart';
+import 'package:shiki/lyric_text_edits.dart';
 import 'package:shiki/lyric_timing.dart';
 
 void main() {
@@ -33,8 +34,10 @@ void main() {
     String contents = lrc,
     Future<String> Function()? fingerprint,
     LyricTimingStore? offsets,
+    LyricTextEditStore? edits,
   }) => LyricTimingSession(
     store: offsets ?? store,
+    textStore: edits,
     trackId: trackId,
     contents: contents,
     fingerprintAudio: () async {
@@ -46,6 +49,107 @@ void main() {
   );
 
   List<int> times() => [for (final line in published) line.time.inMilliseconds];
+
+  test(
+    'line edits survive reopening without changing timestamps or the LRC',
+    () async {
+      const repeated =
+          '[offset:+200]\r\n[00:04]Second\r\n[00:01][00:05]Mistake';
+      final original = await File(
+        '${directory.path}/track_17.lrc',
+      ).writeAsString(repeated);
+      final editing = session(
+        contents: repeated,
+        edits: LyricTextEditStore(directory),
+      );
+      await editing.restoreTextEdits();
+      expect(audioReads, 0);
+      editing.preview(300);
+      await editing.savePreview();
+      final shifted = times();
+      expect(published.map((line) => line.sourceLine), [2, 1, 2]);
+      expect(await editing.saveLineText(2, ' Исправлено '), isTrue);
+      expect(times(), shifted);
+      expect(published.map((line) => line.txt), [
+        'Исправлено',
+        'Second',
+        'Исправлено',
+      ]);
+      expect(editing.savedTextCorrection?.edits, {2: 'Исправлено'});
+      expect(
+        audioReads,
+        1,
+        reason: 'Both forms of editing share the audio hash',
+      );
+      await clearDisposableArtwork(
+        directory,
+        protectedTrackIds: {},
+        protectedArtistIds: {},
+      );
+
+      final reopened = session(
+        contents: repeated,
+        edits: LyricTextEditStore(directory),
+      );
+      await reopened.restore();
+      await reopened.restoreTextEdits();
+      expect(reopened.lineText(2), 'Исправлено');
+      expect(reopened.advanceMilliseconds, 300);
+      expect(await reopened.saveLineText(2, reopened.originalLine(2)!), isTrue);
+      expect(reopened.savedTextCorrection, isNull);
+      expect(reopened.lineText(2), 'Mistake');
+      expect(await original.readAsString(), repeated);
+    },
+  );
+
+  test(
+    'word corrections never attach to different versions or submit local MP3s',
+    () async {
+      final edits = LyricTextEditStore(directory);
+      expect(await session(edits: edits).saveLineText(0, 'Edit'), isTrue);
+      final newText = session(
+        contents: lrc.replaceFirst('One', 'New'),
+        edits: edits,
+      );
+      final newAudio = session(edits: edits, fingerprint: () async => 'b' * 64);
+      audioReads = 0;
+      await newText.restoreTextEdits();
+      expect(audioReads, 0);
+      await newAudio.restoreTextEdits();
+      expect(audioReads, 1);
+      expect(newText.lineText(0), 'New');
+      expect(newAudio.lineText(0), 'One');
+
+      final ownTrack = session(trackId: -50, edits: edits);
+      expect(await ownTrack.saveLineText(1, ''), isTrue);
+      expect(ownTrack.lineText(1), '');
+      expect(ownTrack.savedTextCorrection, isNull);
+    },
+  );
+
+  test(
+    'line input cannot add LRC directives or write after a track change',
+    () async {
+      final edits = LyricTextEditStore(directory);
+      final digest = Completer<String>();
+      final editing = session(edits: edits, fingerprint: () => digest.future);
+      for (final text in ['[00:10]Cue', '[offset:300]Cue', 'A\nB', 'x' * 513]) {
+        await expectLater(editing.saveLineText(0, text), throwsFormatException);
+      }
+      await expectLater(
+        editing.saveLineText(2, 'Edit metadata'),
+        throwsFormatException,
+      );
+      final saving = editing.saveLineText(0, 'Too late');
+      isCurrent = false;
+      digest.complete(audio);
+      expect(await saving, isFalse);
+      expect(
+        await File('${directory.path}/lyric_text_edits.json').exists(),
+        isFalse,
+      );
+    },
+  );
 
   test(
     'preview and cancellation do not read the MP3 or write a correction',

@@ -34,6 +34,7 @@ import '../download_batch.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../lrc_parser.dart';
+import '../lyric_text_edits.dart';
 import '../lyric_timing.dart';
 import '../lyric_timing_proposals.dart';
 import '../lyrics_search.dart';
@@ -570,6 +571,7 @@ class MainAppScreenState extends State<MainAppScreen>
   int _settledTrackRevision = -1;
   int _lyricsRevision = 0;
   LyricTimingStore? _lyricTimingStore;
+  LyricTextEditStore? _lyricTextEditStore;
   ({String contents, int trackId, int revision})? _pendingTimedLyrics;
   final _lyricTiming = ValueNotifier<LyricTimingSession?>(null);
   LyricTimingProposalClient? _lyricTimingProposals;
@@ -2393,6 +2395,7 @@ class MainAppScreenState extends State<MainAppScreen>
     localPath = appDir.path;
     globalLocalPath = localPath;
     _lyricTimingStore = LyricTimingStore(appDir);
+    _lyricTextEditStore = LyricTextEditStore(appDir);
     try {
       await LocalDownloadRemover(appDir).recover();
     } catch (error) {
@@ -5927,6 +5930,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final trackRevision = _trackRevision;
     final session = LyricTimingSession(
       store: store,
+      textStore: _lyricTextEditStore,
       trackId: input.trackId,
       contents: input.contents,
       fingerprintAudio: localAudio.fingerprint,
@@ -5943,6 +5947,11 @@ class MainAppScreenState extends State<MainAppScreen>
         await session.restore();
       } catch (error) {
         debugPrint('Could not restore lyric timing: ${error.runtimeType}');
+      }
+      try {
+        await session.restoreTextEdits();
+      } catch (error) {
+        debugPrint('Could not restore lyric edits: ${error.runtimeType}');
       }
       if (session.isCurrent) _lyricTiming.value = session;
     }());

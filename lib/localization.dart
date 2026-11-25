@@ -1250,6 +1250,32 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Lyric timing',
     'ja': '歌詞のタイミング調整',
   },
+  'lyric_edit_line': {'ru': 'Изменить строку', 'en': 'Edit line', 'ja': '行を編集'},
+  'lyric_line_label': {
+    'ru': 'Текст строки',
+    'en': 'Lyrics for this line',
+    'ja': 'この行の歌詞',
+  },
+  'lyric_line_invalid': {
+    'ru': 'Только текст, без меток времени и переносов.',
+    'en': 'Use plain text, without timestamps or line breaks.',
+    'ja': 'タイムタグや改行を入れずに入力してください。',
+  },
+  'lyric_line_revert': {
+    'ru': 'Вернуть исходную строку',
+    'en': 'Restore original line',
+    'ja': '元の行に戻す',
+  },
+  'lyric_line_share_hint': {
+    'ru': 'На проверку уйдут все изменённые строки этого трека.',
+    'en': 'Send all edited lines for this track for review.',
+    'ja': 'この曲で編集したすべての行を確認用に送信します。',
+  },
+  'lyric_line_track_changed': {
+    'ru': 'Трек сменился. Открой редактор снова.',
+    'en': 'The track changed. Open the editor again.',
+    'ja': '曲が切り替わりました。編集画面を開き直してください。',
+  },
   'lyric_timing_earlier': {'ru': 'Раньше', 'en': 'Earlier', 'ja': '早める'},
   'lyric_timing_later': {'ru': 'Позже', 'en': 'Later', 'ja': '遅らせる'},
   'lyric_timing_reset': {'ru': 'Сбросить', 'en': 'Reset', 'ja': 'リセット'},
