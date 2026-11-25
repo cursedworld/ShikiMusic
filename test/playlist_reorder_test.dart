@@ -297,6 +297,63 @@ void main() {
   }
 
   for (final width in [375.0, 1440.0]) {
+    testWidgets(
+      'tapping the playing home row leaves playback alone at $width',
+      (tester) async {
+        final state = await selectionScreen(tester, width)
+          ..playingQueue = [tracks[3], Map.of(tracks[1]), tracks[2]]
+          ..playingIndex = 1
+          ..playingPlaylistId = 42
+          ..isPlaying = true;
+        const position = Duration(seconds: 77);
+        const duration = Duration(minutes: 3);
+        state.currentPositionNotifier.value = position;
+        state.fullDurationNotifier.value = duration;
+        state.rebuild!();
+        await tester.pumpAndSettle();
+
+        Finder row(String title) => find.descendant(
+          of: find.byKey(const ValueKey('track_list_0')),
+          matching: find.text(title),
+        );
+        for (var i = 0; i < 8; i++) {
+          await tester.tap(row('Track 2'));
+          await tester.pump(const Duration(milliseconds: 12));
+        }
+        expect(
+          state.playbackCalls,
+          0,
+          reason: 'Do not reopen the playing track',
+        );
+        expect(state.currentPositionNotifier.value, position);
+        expect(state.fullDurationNotifier.value, duration);
+        expect(state.playingPlaylistId, 42);
+        expect(queueIds(state), [4, 2, 3]);
+
+        if (width < 800) {
+          await tester.longPress(row('Track 2'));
+        } else {
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+          await tester.tap(row('Track 2'));
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+        }
+        await tester.pumpAndSettle();
+        expect(state.trackSelection.ids, {2});
+        expect(state.playbackCalls, 0);
+        state.clearTrackSelection();
+        await tester.pump();
+
+        await tester.tap(row('Track 3'));
+        expect(state.playbackCalls, 1);
+        state.isPlaying = false;
+        await tester.tap(row('Track 2'));
+        expect(state.playbackCalls, 2);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  for (final width in [375.0, 1440.0]) {
     testWidgets('playlist photo and reset menu at $width', (tester) async {
       final state = await selectionScreen(tester, width, nav: 3);
       const photo = 'playlist_bg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg';

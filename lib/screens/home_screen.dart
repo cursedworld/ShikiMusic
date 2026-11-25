@@ -4825,7 +4825,10 @@ class MainAppScreenState extends State<MainAppScreen>
     } else {
       select();
     }
-    if (!selected) startPlayback(tracks, index, playlistId: playlistId);
+    if (selected || (isPlaying && _playbackOrder.current?.trackId == id)) {
+      return;
+    }
+    startPlayback(tracks, index, playlistId: playlistId);
   }
 
   ImageProvider getPlaylistImage(String pathOrUrl) {
