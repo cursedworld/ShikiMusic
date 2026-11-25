@@ -29,7 +29,23 @@ void main() {
     final root = (await tester.runAsync(
       () => Directory.systemTemp.createTemp('shiki-volume-test-'),
     ))!;
-    addTearDown(() => root.delete(recursive: true));
+    addTearDown(() async {
+      // Widget disposal schedules the final statistics write on an isolate.
+      final cleanup = Stopwatch()..start();
+      while (true) {
+        try {
+          await root.delete(recursive: true);
+          return;
+        } on FileSystemException catch (error) {
+          if (!Platform.isWindows ||
+              error.osError?.errorCode != 32 ||
+              cleanup.elapsed >= const Duration(seconds: 2)) {
+            rethrow;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 25));
+        }
+      }
+    });
     final previousPath = globalLocalPath;
     final previousTrack = activeTrackNotifier.value;
     addTearDown(() {
