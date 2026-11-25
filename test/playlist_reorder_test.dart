@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
@@ -18,10 +19,37 @@ import 'package:shiki/localization.dart';
 import 'package:shiki/screens/home_screen.dart';
 import 'package:shiki/server_config.dart';
 import 'package:shiki/widgets/play_next_panel.dart';
+import 'package:shiki/widgets/player_backdrop.dart';
 import 'package:shiki/widgets/playlist_track_list.dart';
 import 'package:shiki/lyrics_search.dart';
 
 import 'fixtures/local_mp3.dart';
+import 'fixtures/playlist_photos.dart';
+
+class _PhotoPicker extends FilePicker {
+  PlatformFile? selected;
+
+  @override
+  Future<FilePickerResult?> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    bool allowCompression = false,
+    int compressionQuality = 0,
+    bool allowMultiple = false,
+    bool withData = false,
+    bool withReadStream = false,
+    bool lockParentWindow = false,
+    bool readSequential = false,
+  }) async {
+    expect(type, FileType.custom);
+    expect(allowedExtensions, contains('webp'));
+    final file = selected;
+    return file == null ? null : FilePickerResult([file]);
+  }
+}
 
 class _PlaylistState extends MainAppScreenState {
   BuildContext? testContext;
@@ -267,6 +295,112 @@ void main() {
     await tester.pumpAndSettle();
     return state;
   }
+
+  for (final width in [375.0, 1440.0]) {
+    testWidgets('playlist photo and reset menu at $width', (tester) async {
+      final state = await selectionScreen(tester, width, nav: 3);
+      const photo = 'playlist_bg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg';
+      state.myPlaylists.first['background'] = photo;
+      state.rebuild!();
+      await tester.pump();
+      String? visiblePhoto() => tester
+          .widget<PlayerBackdrop>(find.byType(PlayerBackdrop))
+          .playlistPhoto;
+      expect(visiblePhoto(), photo);
+      state.navId = 4;
+      state.rebuild!();
+      await tester.pumpAndSettle();
+      expect(visiblePhoto(), isNull);
+      state.navId = 3;
+      state.rebuild!();
+      await tester.pumpAndSettle();
+
+      unawaited(
+        state.showPlaylistContextMenu(state.context, const Offset(38, 100), 0),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text(tr('playlist_change_background')), findsOneWidget);
+      final reset = find.text(tr('playlist_reset_background'));
+      expect(reset, findsOneWidget);
+      if (width < 800) {
+        expect(
+          tester
+              .getSize(
+                find.ancestor(
+                  of: reset,
+                  matching: find.byType(PopupMenuItem<String>),
+                ),
+              )
+              .height,
+          greaterThanOrEqualTo(48),
+        );
+      }
+      await tester.tap(reset);
+      await tester.pumpAndSettle();
+      expect(visiblePhoto(), isNull);
+      expect(state.myPlaylists.first['tracks'], [1, 2, 3, 4]);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('choosing a still WebP from a picker cache applies the photo', (
+    tester,
+  ) async {
+    final state = await selectionScreen(tester, 375, nav: 3);
+    final directory = await widgetDirectory(tester);
+    final previousPath = globalLocalPath;
+    state.localPath = directory.path;
+    state.memoryOnly = false;
+    globalLocalPath = directory.path;
+    addTearDown(() async {
+      globalLocalPath = previousPath;
+      await directory.delete(recursive: true);
+    });
+    final source = File('${directory.path}/temporary-picker-copy')
+      ..writeAsBytesSync(stillWebP());
+    final picker = _PhotoPicker()
+      ..selected = PlatformFile(
+        name: 'wallpaper.webp',
+        path: source.path,
+        size: source.lengthSync(),
+      );
+    FilePicker.platform = picker;
+    addTearDown(() => picker.selected = null);
+
+    late Future<void> menuOperation;
+    // The actual picker continuation decodes in an isolate and writes files.
+    await tester.runAsync(() async {
+      menuOperation = state.showPlaylistContextMenu(
+        state.context,
+        const Offset(38, 100),
+        0,
+      );
+    });
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(tr('playlist_add_background')));
+    await tester.pumpAndSettle();
+    await tester.runAsync(
+      () => menuOperation.timeout(const Duration(seconds: 4)),
+    );
+    await tester.pump();
+    final saved = find.text(tr('playlist_background_saved'));
+    expect(saved, findsOneWidget);
+    expect(find.text(tr('playlist_background_invalid')), findsNothing);
+    final name = state.myPlaylists.first['background'] as String;
+    expect(
+      tester.widget<PlayerBackdrop>(find.byType(PlayerBackdrop)).playlistPhoto,
+      name,
+    );
+    expect(File('${directory.path}/$name').existsSync(), isTrue);
+    final stored =
+        jsonDecode(
+              File('${directory.path}/my_playlists.json').readAsStringSync(),
+            )
+            as List;
+    expect(stored.first['background'], name);
+    expect(source.readAsBytesSync(), stillWebP());
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('a confirmed duplicate plays the owned MP3 at the bottom', (
     tester,

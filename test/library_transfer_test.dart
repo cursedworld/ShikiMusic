@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:archive/archive_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 import 'package:shiki/library_transfer.dart';
 import 'package:shiki/statistics_store.dart';
 import 'package:shiki/track_updates.dart';
@@ -148,6 +149,42 @@ void main() {
       expect(await File('${target.path}/video_1.mp4').exists(), isFalse);
     },
   );
+  test('playlist photos transfer without music or global settings', () async {
+    const chosen = 'playlist_bg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg';
+    const unused = 'playlist_bg_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.jpg';
+    final photo = img.encodeJpg(img.Image(width: 48, height: 24));
+    await File('${source.path}/$chosen').writeAsBytes(photo);
+    await File('${source.path}/$unused').writeAsBytes(photo);
+    await json(source, 'my_playlists.json', [
+      {
+        'id': 5,
+        'name': 'My list',
+        'tracks': [1],
+        'background': chosen,
+      },
+    ]);
+    await json(target, 'my_playlists.json', [
+      {
+        'id': 5,
+        'name': 'My list',
+        'tracks': [2],
+      },
+    ]);
+    await export(media: false);
+    await restore();
+    final restored =
+        jsonDecode(
+              await File('${target.path}/my_playlists.json').readAsString(),
+            )
+            as List;
+    expect(restored.single['background'], chosen);
+    expect(restored.single['tracks'], [2, 1]);
+    expect(await File('${target.path}/$chosen').readAsBytes(), photo);
+    expect(await File('${target.path}/$unused').exists(), isFalse);
+    expect(await File('${target.path}/shiki_settings.json').exists(), isFalse);
+    expect(await File('${target.path}/track_1.mp3').exists(), isFalse);
+  });
+
   test(
     'merge preserves existing files/settings and imports are idempotent',
     () async {

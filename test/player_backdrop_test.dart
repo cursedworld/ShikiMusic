@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 import 'package:shiki/widgets/player_backdrop.dart';
 import 'package:video_player/video_player.dart';
 
@@ -31,6 +32,8 @@ Future<void> _mount(
   bool allowMotion = true,
   bool reduceMotion = false,
   String? name = 'custom_bg_1.mp4',
+  String? playlistPhoto,
+  String directory = 'test-profile',
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -43,8 +46,9 @@ Future<void> _mount(
             enabled: routeVisible,
             child: Scaffold(
               body: PlayerBackdrop(
-                directory: 'test-profile',
+                directory: directory,
                 name: name,
+                playlistPhoto: playlistPhoto,
                 gradient: const LinearGradient(
                   colors: [Colors.black, Colors.blueGrey],
                 ),
@@ -62,6 +66,46 @@ Future<void> _mount(
 }
 
 void main() {
+  testWidgets(
+    'a playlist photo replaces the global animation without mounting a second player',
+    (tester) async {
+      const photo = 'playlist_bg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg';
+      final directory = (await tester.runAsync(() async {
+        final path = await Directory.systemTemp.createTemp(
+          'shiki_photo_backdrop_',
+        );
+        await File(
+          '${path.path}/$photo',
+        ).writeAsBytes(img.encodeJpg(img.Image(width: 32, height: 16)));
+        return path;
+      }))!;
+      addTearDown(() => directory.delete(recursive: true));
+      final controllers = <_TestVideo>[];
+      Future<VideoPlayerController> open(File file) async {
+        final next = _TestVideo(file);
+        controllers.add(next);
+        return next;
+      }
+
+      await _mount(tester, open, directory: directory.path);
+      expect(controllers.single.starts, 1);
+      final controls = tester.element(find.text('Music controls'));
+      await _mount(
+        tester,
+        open,
+        directory: directory.path,
+        playlistPhoto: photo,
+      );
+      expect(find.byType(VideoPlayer), findsNothing);
+      expect(find.byType(Image), findsOneWidget);
+      expect(controllers.single.closes, 1);
+      expect(tester.element(find.text('Music controls')), same(controls));
+      await _mount(tester, open, directory: directory.path);
+      expect(controllers.length, 2);
+      expect(controllers.last.starts, 1);
+    },
+  );
+
   testWidgets('default and GIF backgrounds never open a video decoder', (
     tester,
   ) async {

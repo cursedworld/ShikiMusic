@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'atomic_file_store.dart';
+import 'background_photo.dart';
 import 'custom_background.dart';
 import 'local_music_catalog.dart';
 import 'local_music_transfer.dart';
@@ -20,6 +21,7 @@ const _pending = 'transfer_pending.json';
 const _jsonLimit = 64 * 1024 * 1024;
 const _totalLimit = 64 * 1024 * 1024 * 1024;
 const _videoBackgroundVersion = 3;
+const _playlistBackgroundVersion = 4;
 const _jsonFiles = {
   'my_playlists.json',
   'liked_tracks.json',
@@ -48,9 +50,9 @@ bool _isVideoBackground(Object? name) =>
     savedBackgroundKind(name) == BackgroundKind.video;
 
 bool _supportedVersion(Object? version) =>
-    version is int && version >= 1 && version <= _videoBackgroundVersion;
+    version is int && version >= 1 && version <= _playlistBackgroundVersion;
 
-bool _allowed(String name, {int version = _videoBackgroundVersion}) =>
+bool _allowed(String name, {int version = _playlistBackgroundVersion}) =>
     name.length <= 240 &&
     !name.contains('..') &&
     (version >= 2 || !_ownEntry(name)) &&
@@ -58,11 +60,15 @@ bool _allowed(String name, {int version = _videoBackgroundVersion}) =>
         _mediaName.hasMatch(name) ||
         _imageName.hasMatch(name) ||
         (version >= _videoBackgroundVersion && _isVideoBackground(name)) ||
+        (version >= _playlistBackgroundVersion &&
+            isPlaylistBackgroundName(name)) ||
         localAssetDigest(name) != null);
 bool _audioVideo(String name) => name.endsWith('.mp3') || name.endsWith('.mp4');
 int _entryLimit(String name) =>
     motionBackgroundByteLimit(savedBackgroundKind(name)) ??
-    (localAssetDigest(name) != null
+    (isPlaylistBackgroundName(name)
+        ? playlistBackgroundMaxBytes
+        : localAssetDigest(name) != null
         ? (name.endsWith('.mp3') ? localMusicMaxBytes : localArtworkMaxBytes)
         : (_audioVideo(name) ? 8 * 1024 * 1024 * 1024 : _jsonLimit));
 Future<String> _hash(File file) async =>
@@ -100,6 +106,26 @@ Future<String> exportLibraryArchive({
 Future<String> _export(Map<String, Object?> job) async {
   final root = job['root'] as String;
   final localMusic = await readLocalMusicCatalog(Directory(root));
+  final playlistFile = _file(root, 'my_playlists.json');
+  final playlists = await playlistFile.exists()
+      ? await _readJson(playlistFile) as List
+      : null;
+  final playlistPhotos = <String>{};
+  for (final raw in playlists ?? const []) {
+    final item = raw as Map;
+    final photo = item['background'];
+    if (isPlaylistBackgroundName(photo)) {
+      final name = photo as String;
+      final file = _file(root, name);
+      if (await FileSystemEntity.type(file.path, followLinks: false) ==
+              FileSystemEntityType.file &&
+          isStoredPlaylistPhoto(file)) {
+        playlistPhotos.add(name);
+      } else {
+        item.remove('background');
+      }
+    }
+  }
   final settingsFile = _file(root, 'shiki_settings.json');
   final settings =
       await FileSystemEntity.type(settingsFile.path, followLinks: false) ==
@@ -107,7 +133,9 @@ Future<String> _export(Map<String, Object?> job) async {
       ? await _readJson(settingsFile)
       : null;
   final background = settings is Map ? settings['customBackground'] : null;
-  final version = _isVideoBackground(background)
+  final version = playlistPhotos.isNotEmpty
+      ? _playlistBackgroundVersion
+      : _isVideoBackground(background)
       ? _videoBackgroundVersion
       : (localMusic.isEmpty ? 1 : 2);
   final ownIds = localMusic.map((entry) => entry.id).toSet();
@@ -169,9 +197,7 @@ Future<String> _export(Map<String, Object?> job) async {
   }
 
   try {
-    final playlistFile = _file(root, 'my_playlists.json');
-    if (await playlistFile.exists()) {
-      final playlists = await _readJson(playlistFile) as List;
+    if (playlists != null) {
       for (final raw in playlists) {
         final item = raw as Map;
         final image = item['image'];
@@ -199,6 +225,7 @@ Future<String> _export(Map<String, Object?> job) async {
           _ownEntry(name) ||
           name == 'my_playlists.json' ||
           name == 'listening_statistics.json' ||
+          (isPlaylistBackgroundName(name) && !playlistPhotos.contains(name)) ||
           (_isVideoBackground(name) && name != background) ||
           (job['media'] != true &&
               _audioVideo(name) &&
@@ -307,6 +334,8 @@ void _validateJson(
                 row['name'] is String &&
                 (row['name'] as String).length <= 1000 &&
                 ids(row['tracks']) &&
+                (row['background'] == null ||
+                    isPlaylistBackgroundName(row['background'])) &&
                 (row['image'] == null ||
                     row['image'] == '' ||
                     (row['image'] is String &&
@@ -473,6 +502,21 @@ Future<void> _prepare(Map<String, Object?> job) async {
             version < _videoBackgroundVersion &&
             _isVideoBackground((value as Map)['customBackground'])) {
           throw const FormatException('Video background requires archive v3');
+        }
+        if (entry.name == 'my_playlists.json' &&
+            (value as List).any((dynamic row) {
+              final photo = row['background'];
+              return photo != null &&
+                  (version < _playlistBackgroundVersion ||
+                      !inventory.containsKey(photo));
+            })) {
+          throw const FormatException(
+            'Missing or unsupported playlist background',
+          );
+        }
+      } else if (isPlaylistBackgroundName(entry.name)) {
+        if (!isStoredPlaylistPhoto(destination)) {
+          throw const FormatException('Invalid playlist background photo');
         }
       } else if (_isVideoBackground(entry.name)) {
         try {
@@ -748,6 +792,10 @@ Future<bool> _apply(String root) async {
         ...same['tracks'] as List,
         ...playlist['tracks'] as List,
       }.toList();
+      final photo = playlist['background'];
+      if (same['background'] == null && inventory.containsKey(photo)) {
+        same['background'] = photo;
+      }
       continue;
     }
     if (usedIds.contains(playlist['id'])) {

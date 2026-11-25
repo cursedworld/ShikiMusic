@@ -1,16 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
-import 'package:image/image.dart' as img;
 
 import '../app_paths.dart';
 import '../app_build_info.dart';
 import '../atomic_file_store.dart';
+import '../background_photo.dart';
 import '../background_video.dart';
 import '../custom_background.dart';
 import '../globals.dart';
@@ -42,10 +41,6 @@ const Map<String, String> availableLanguages = {
   'ja': '日本語',
 };
 
-const int _maxCustomBackgroundFileBytes = 64 * 1024 * 1024;
-const int _maxCustomBackgroundPixels = 40 * 1000 * 1000;
-const int _maxCustomBackgroundSide = 20 * 1000;
-
 /// Runs settings writes in invocation order, including their async setup.
 ///
 /// The queue tail absorbs failures so one failed write cannot block newer
@@ -62,63 +57,6 @@ class SettingsPersistenceQueue {
     return result;
   }
 }
-
-/// Converts a selected background to the same JPEG format used by the UI.
-///
-/// This is top-level so [compute] can run all file IO, decoding, resizing, and
-/// encoding outside the UI isolate. The limits reject decompression bombs
-/// before allocating their full pixel buffers.
-Uint8List? processCustomBackgroundImage(String sourcePath) {
-  final sourceFile = File(sourcePath);
-  final sourceLength = sourceFile.lengthSync();
-  if (sourceLength <= 0 || sourceLength > _maxCustomBackgroundFileBytes) {
-    return null;
-  }
-
-  final bytes = sourceFile.readAsBytesSync();
-  if (bytes.isEmpty || bytes.length > _maxCustomBackgroundFileBytes) {
-    return null;
-  }
-
-  final decoder = img.findDecoderForData(bytes);
-  final info = decoder?.startDecode(bytes);
-  if (decoder == null ||
-      info == null ||
-      info.numFrames < 1 ||
-      !_isSafeCustomBackgroundSize(info.width, info.height)) {
-    return null;
-  }
-
-  final image = decoder.decodeFrame(0);
-  if (image == null ||
-      !_isSafeCustomBackgroundSize(image.width, image.height)) {
-    return null;
-  }
-
-  img.Image processedImage = image;
-  if (image.width > 1920 || image.height > 1080) {
-    final aspectRatio = image.width / image.height;
-    final int newWidth;
-    final int newHeight;
-    if (image.width > image.height) {
-      newWidth = 1920;
-      newHeight = (1920 / aspectRatio).round();
-    } else {
-      newHeight = 1080;
-      newWidth = (1080 * aspectRatio).round();
-    }
-    processedImage = img.copyResize(image, width: newWidth, height: newHeight);
-  }
-
-  return img.encodeJpg(processedImage, quality: 85);
-}
-
-bool _isSafeCustomBackgroundSize(int width, int height) =>
-    width > 0 &&
-    height > 0 &&
-    width <= _maxCustomBackgroundSide &&
-    height <= _maxCustomBackgroundSide &&
-    width * height <= _maxCustomBackgroundPixels;
 
 class SettingsScreen extends StatefulWidget {
   final ListeningStatistics? statistics;

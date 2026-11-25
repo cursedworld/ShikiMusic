@@ -4,9 +4,20 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
+import 'package:shiki/background_photo.dart';
+import 'package:shiki/disposable_cache.dart';
 import 'package:shiki/player_shortcuts.dart';
 import 'package:shiki/screens/home_screen.dart';
 import 'package:shiki/widgets/playlist_name_dialog.dart';
+
+class _PhotoPlaylistState extends MainAppScreenState {
+  bool failSave = false;
+
+  @override
+  Future<bool> savePlaylists() =>
+      failSave ? Future.value(false) : super.savePlaylists();
+}
 
 void main() {
   test(
@@ -78,6 +89,78 @@ void main() {
         await state.updatePlaylistDetails(42, {'id': 99, 'tracks': []}),
         isFalse,
       );
+    },
+  );
+
+  test(
+    'playlist photo persists, survives cache cleanup and rolls back a failed edit',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'shiki_playlist_photo_',
+      );
+      final state = _PhotoPlaylistState()
+        ..localPath = directory.path
+        ..myPlaylists = [
+          {
+            'id': 1,
+            'name': 'First',
+            'image': 'playlist_artwork_1.png',
+            'tracks': [3, 2],
+          },
+          {
+            'id': 2,
+            'name': 'Second',
+            'image': '',
+            'tracks': [4],
+          },
+        ];
+      addTearDown(() async {
+        state.searchInput.dispose();
+        state.searchFocusNode.dispose();
+        state.currentPositionNotifier.dispose();
+        state.fullDurationNotifier.dispose();
+        await directory.delete(recursive: true);
+      });
+      final photo = await File(
+        '${directory.path}/source.png',
+      ).writeAsBytes(img.encodePng(img.Image(width: 24, height: 16)));
+      expect(await state.setPlaylistBackgroundPhoto(1, photo.path), isTrue);
+      final saved = state.myPlaylists.first['background'] as String;
+      expect(isPlaylistBackgroundName(saved), isTrue);
+      expect(state.myPlaylists.first['image'], 'playlist_artwork_1.png');
+      expect(state.myPlaylists.last['background'], isNull);
+      await state.readPlaylists();
+      expect(state.myPlaylists.first['background'], saved);
+      expect(state.myPlaylists.first['tracks'], [3, 2]);
+      final copy = File('${directory.path}/$saved');
+      await clearDisposableArtwork(
+        directory,
+        protectedTrackIds: {},
+        protectedArtistIds: {},
+      );
+      expect(await copy.exists(), isTrue);
+
+      state.failSave = true;
+      expect(await state.setPlaylistBackgroundPhoto(1, photo.path), isFalse);
+      expect(state.myPlaylists.first['background'], saved);
+      expect(
+        await directory
+            .list()
+            .where(
+              (file) => isPlaylistBackgroundName(file.uri.pathSegments.last),
+            )
+            .length,
+        1,
+      );
+      state.failSave = false;
+      expect(
+        await state.updatePlaylistDetails(1, {'background': null}),
+        isTrue,
+      );
+      expect(await copy.exists(), isFalse);
+      expect(await photo.exists(), isTrue);
+      await state.readPlaylists();
+      expect(state.myPlaylists.first['background'], isNull);
     },
   );
 

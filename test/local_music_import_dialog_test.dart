@@ -177,20 +177,17 @@ void main() {
       width: 320,
     );
     final pick = find.byKey(const ValueKey('pick_local_music'));
+    final pickError = find.text(tr('local_import_pick_failed'));
+    final saveError = find.text(tr('local_import_save_failed'));
     await tester.tap(pick);
     await tester.pumpAndSettle();
-    expect(
-      find.textContaining('Не удалось получить выбранные файлы'),
-      findsOneWidget,
-    );
+    expect(pickError, findsOneWidget);
+    expect(saveError, findsNothing);
     expect(imports, 0);
     await tester.tap(pick);
     await tester.pumpAndSettle();
-    expect(find.textContaining('Не удалось сохранить копии'), findsOneWidget);
-    expect(
-      find.textContaining('Не удалось получить выбранные файлы'),
-      findsNothing,
-    );
+    expect(saveError, findsOneWidget);
+    expect(pickError, findsNothing);
     expect(imports, 1);
     expect(tester.takeException(), isNull);
   });

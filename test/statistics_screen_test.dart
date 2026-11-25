@@ -246,7 +246,7 @@ void main() {
     testWidgets('statistics layout fits width $width', (tester) async {
       await show(tester, width: width);
       expect(find.text('Моя музыка'), findsOneWidget);
-      expect(find.text('Чаще всего слушал'), findsOneWidget);
+      expect(find.text(tr('stats_favorite_artist')), findsOneWidget);
       expect(find.text('Без ответа'), findsOneWidget);
       expect(find.text('2 ч 5 мин'), findsOneWidget);
       expect(tester.takeException(), isNull);

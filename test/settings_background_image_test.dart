@@ -4,7 +4,11 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:shiki/background_photo.dart';
 import 'package:shiki/screens/settings_screen.dart';
+
+import 'fixtures/animated_background.dart';
+import 'fixtures/playlist_photos.dart';
 
 void main() {
   late Directory tempDirectory;
@@ -62,6 +66,61 @@ void main() {
 
     expect(processCustomBackgroundImage(sourceFile.path), isNull);
   });
+
+  test('playlist photos fit a portrait frame without changing the source', () {
+    final bytes = img.encodePng(
+      img.Image(width: 1200, height: 1600)..clear(img.ColorRgb8(60, 90, 120)),
+    );
+    final source = File('${tempDirectory.path}/phone.png')
+      ..writeAsBytesSync(bytes);
+    final jpeg = processPlaylistBackgroundPhoto(source.path);
+    final decoded = img.decodeJpg(jpeg!)!;
+    expect(decoded.width, 1080);
+    expect(decoded.height, 1440);
+    expect(source.readAsBytesSync(), bytes);
+  });
+
+  for (final lossless in [true, false]) {
+    test('accepts a still WebP photo (lossless: $lossless)', () {
+      final source = File('${tempDirectory.path}/chosen.webp')
+        ..writeAsBytesSync(stillWebP(lossless: lossless));
+      final prepared = processPlaylistBackgroundPhoto(source.path);
+      expect(prepared, isNotNull);
+      final decoded = img.decodeJpg(prepared!);
+      expect(decoded?.width, 12);
+      expect(decoded?.height, 8);
+    });
+  }
+
+  test('a picker copy does not have to end in an image extension', () {
+    final source = File('${tempDirectory.path}/picker-cache')
+      ..writeAsBytesSync(img.encodeJpg(img.Image(width: 12, height: 8)));
+    expect(processPlaylistBackgroundPhoto(source.path), isNotNull);
+  });
+
+  test('animated WebP is not imported as a playlist photo', () {
+    final bytes = animatedWebP();
+    expect(img.WebPDecoder().startDecode(bytes)?.hasAnimation, isTrue);
+    final source = File('${tempDirectory.path}/moving.webp')
+      ..writeAsBytesSync(bytes);
+    expect(processPlaylistBackgroundPhoto(source.path), isNull);
+  });
+
+  test(
+    'playlist backgrounds refuse animation and videos even through a wrong name',
+    () {
+      final gif = File('${tempDirectory.path}/chosen.gif')
+        ..writeAsBytesSync(testGif());
+      final renamed = File('${tempDirectory.path}/chosen.png')
+        ..writeAsBytesSync(testGif());
+      final video = File('${tempDirectory.path}/chosen.mp4')
+        ..writeAsStringSync('video');
+      expect(processPlaylistBackgroundPhoto(gif.path), isNull);
+      expect(processPlaylistBackgroundPhoto(renamed.path), isNull);
+      expect(processPlaylistBackgroundPhoto(video.path), isNull);
+      expect(processCustomBackgroundImage(gif.path), isNotNull);
+    },
+  );
 
   test('settings persistence includes async setup in FIFO order', () async {
     final queue = SettingsPersistenceQueue();

@@ -23,6 +23,7 @@ import '../app_paths.dart';
 import '../android_playback_focus.dart';
 import '../async_task_limiter.dart';
 import '../atomic_file_store.dart';
+import '../background_photo.dart';
 import '../cover_processing.dart';
 import '../catalog_sync.dart';
 import '../disposable_cache.dart';
@@ -506,6 +507,7 @@ class MainAppScreenState extends State<MainAppScreen>
   set playingIndex(int value) => _playbackOrder.jumpToBase(value);
   int? playingPlaylistId;
   Future<void> _playlistReorderTail = Future<void>.value();
+  bool _pickingPlaylistBackground = false;
   int? discordStart;
   LoopMode loopMode = LoopMode.off;
   int navId = 0;
@@ -2709,6 +2711,10 @@ class MainAppScreenState extends State<MainAppScreen>
           (changes['name'] as String).trim().isNotEmpty)
         'name': (changes['name'] as String).trim(),
       if (changes['image'] is String) 'image': changes['image'],
+      if (changes.containsKey('background') &&
+          (changes['background'] == null ||
+              isPlaylistBackgroundName(changes['background'])))
+        'background': changes['background'],
     };
     if (allowed.isEmpty) return false;
     void apply() => myPlaylists[index] = {...previous, ...allowed};
@@ -2717,7 +2723,13 @@ class MainAppScreenState extends State<MainAppScreen>
     } else {
       apply();
     }
-    if (await savePlaylists()) return true;
+    if (await savePlaylists()) {
+      if (allowed.containsKey('background') &&
+          previous['background'] != allowed['background']) {
+        await _removeUnusedPlaylistBackground(previous['background']);
+      }
+      return true;
+    }
     final current = myPlaylists.indexWhere((p) => p['id'] == playlistId);
     if (current >= 0) {
       void restore() {
@@ -2735,6 +2747,44 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     }
     return false;
+  }
+
+  Future<bool> setPlaylistBackgroundPhoto(int playlistId, String path) async {
+    if (localPath.isEmpty ||
+        _stateDisposing ||
+        !myPlaylists.any((p) => p['id'] == playlistId)) {
+      return false;
+    }
+    final directory = localPath;
+    final photo = await compute(processPlaylistBackgroundPhoto, path);
+    if (photo == null) throw const FormatException('Invalid playlist photo');
+    if (_stateDisposing || directory != localPath) return false;
+
+    final name = newPlaylistBackgroundName();
+    await atomicFileStore.writeBytes(File('$directory/$name'), photo);
+    if (_stateDisposing ||
+        !await updatePlaylistDetails(playlistId, {'background': name})) {
+      await _removeUnusedPlaylistBackground(name);
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _removeUnusedPlaylistBackground(Object? name) async {
+    if (localPath.isEmpty ||
+        !isPlaylistBackgroundName(name) ||
+        myPlaylists.any((p) => p['background'] == name)) {
+      return;
+    }
+    final file = File('$localPath/$name');
+    try {
+      if (await FileSystemEntity.type(file.path, followLinks: false) ==
+          FileSystemEntityType.file) {
+        await file.delete();
+      }
+    } on FileSystemException {
+      // The playlist is already saved; an old copy may be in use on Windows.
+    }
   }
 
   Future<bool> createPlaylist(
@@ -6132,6 +6182,50 @@ class MainAppScreenState extends State<MainAppScreen>
     final overlay =
         Navigator.of(context).overlay!.context.findRenderObject() as RenderBox;
     final point = overlay.globalToLocal(position);
+    final touchMenu = MediaQuery.sizeOf(context).width < 800;
+    final hasBackground = isPlaylistBackgroundName(
+      myPlaylists[index]['background'],
+    );
+    PopupMenuItem<String> action(
+      String value,
+      IconData icon,
+      String label, {
+      bool destructive = false,
+      bool enabled = true,
+    }) => PopupMenuItem(
+      value: value,
+      enabled: enabled,
+      height: touchMenu ? 48 : (destructive ? 36 : 40),
+      child: Row(
+        children: [
+          Icon(
+            icon,
+            color: !enabled
+                ? Colors.white38
+                : destructive
+                ? Colors.redAccent
+                : Colors.white70,
+            size: destructive ? 16 : 18,
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Text(
+              tr(label),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: !enabled
+                    ? Colors.white38
+                    : destructive
+                    ? Colors.redAccent
+                    : Colors.white,
+                fontSize: destructive ? 13 : 14,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
     final value = await showMenu<String>(
       context: context,
       position: RelativeRect.fromRect(
@@ -6144,52 +6238,28 @@ class MainAppScreenState extends State<MainAppScreen>
         side: const BorderSide(color: Colors.white10),
       ),
       items: [
-        PopupMenuItem(
-          value: 'rename',
-          height: 40,
-          child: Row(
-            children: [
-              const Icon(Icons.edit_outlined, color: Colors.white70, size: 18),
-              const SizedBox(width: 10),
-              Text(
-                tr('playlist_rename'),
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-              ),
-            ],
-          ),
+        action('rename', Icons.edit_outlined, 'playlist_rename'),
+        action('artwork', Icons.image_outlined, 'playlist_change_artwork'),
+        action(
+          'background',
+          Icons.wallpaper,
+          hasBackground
+              ? 'playlist_change_background'
+              : 'playlist_add_background',
+          enabled: !_pickingPlaylistBackground,
         ),
-        PopupMenuItem(
-          value: 'artwork',
-          height: 40,
-          child: Row(
-            children: [
-              const Icon(Icons.image_outlined, color: Colors.white70, size: 18),
-              const SizedBox(width: 10),
-              Text(
-                tr('playlist_change_artwork'),
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-              ),
-            ],
+        if (hasBackground)
+          action(
+            'reset_background',
+            Icons.restore,
+            'playlist_reset_background',
           ),
-        ),
         const PopupMenuDivider(height: 8),
-        PopupMenuItem(
-          value: 'delete',
-          height: 36,
-          child: Row(
-            children: [
-              const Icon(
-                Icons.delete_outline,
-                color: Colors.redAccent,
-                size: 16,
-              ),
-              const SizedBox(width: 10),
-              Text(
-                tr('playlist_delete'),
-                style: const TextStyle(color: Colors.redAccent, fontSize: 13),
-              ),
-            ],
-          ),
+        action(
+          'delete',
+          Icons.delete_outline,
+          'playlist_delete',
+          destructive: true,
         ),
       ],
     );
@@ -6208,7 +6278,12 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     } else if (value == 'artwork') {
       await changePlaylistArtwork(playlistId);
+    } else if (value == 'background') {
+      await _choosePlaylistBackgroundPhoto(playlistId);
+    } else if (value == 'reset_background') {
+      await updatePlaylistDetails(playlistId, {'background': null});
     } else if (value == 'delete') {
+      final background = myPlaylists[currentIndex]['background'];
       setState(() {
         if (navId == currentIndex + 3) {
           navId = 0;
@@ -6218,12 +6293,44 @@ class MainAppScreenState extends State<MainAppScreen>
         }
         myPlaylists.removeAt(currentIndex);
       });
-      await savePlaylists();
+      if (!await savePlaylists()) return;
+      await _removeUnusedPlaylistBackground(background);
       if (mounted && context.mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(tr('playlist_deleted'))));
       }
+    }
+  }
+
+  Future<void> _choosePlaylistBackgroundPhoto(int playlistId) async {
+    if (_pickingPlaylistBackground) return;
+    _pickingPlaylistBackground = true;
+    void showStatus(String key) {
+      if (!mounted || _stateDisposing) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(tr(key))));
+    }
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: playlistPhotoExtensions,
+        dialogTitle: tr('playlist_select_background_photo'),
+      );
+      if (!mounted || _stateDisposing || result == null) return;
+      final path = result.files.single.path;
+      if (path == null) throw const FormatException('Missing photo path');
+      if (await setPlaylistBackgroundPhoto(playlistId, path)) {
+        showStatus('playlist_background_saved');
+      }
+    } on FormatException {
+      showStatus('playlist_background_invalid');
+    } catch (_) {
+      showStatus('playlist_background_failed');
+    } finally {
+      _pickingPlaylistBackground = false;
     }
   }
 
@@ -7505,9 +7612,11 @@ class MainAppScreenState extends State<MainAppScreen>
         : requestedDownloads
               .where((track) => downloadTrackId(track) != null)
               .toList();
-    final playlistId = navId >= 3 && navId - 3 < myPlaylists.length
-        ? myPlaylists[navId - 3]['id'] as int
+    final visiblePlaylist = navId >= 3 && navId - 3 < myPlaylists.length
+        ? myPlaylists[navId - 3]
         : null;
+    final playlistId = visiblePlaylist?['id'] as int?;
+    final playlistPhoto = visiblePlaylist?['background'];
     final trackMenuPlaylists = playlistId == null
         ? {for (final p in myPlaylists) p['id'] as int: p['name'].toString()}
         : const <int, String>{};
@@ -8079,6 +8188,9 @@ class MainAppScreenState extends State<MainAppScreen>
           builder: (context, customBg, child) => PlayerBackdrop(
             directory: globalLocalPath,
             name: customBg,
+            playlistPhoto: isPlaylistBackgroundName(playlistPhoto)
+                ? playlistPhoto as String
+                : null,
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,

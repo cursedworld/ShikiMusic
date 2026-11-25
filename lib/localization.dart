@@ -26,11 +26,11 @@ String tr(String key) {
 const Map<String, Map<String, String>> _translations = {
   'download_recovery_failed': {
     'ru':
-        'Не удалось восстановить незавершённое удаление. Файлы сохранены. Перезапустите плеер; скачивание и перенос временно недоступны.',
+        'Не удалось восстановить скачанное после сбоя при удалении. Файлы на месте, но скачивание и перенос пока недоступны. Попробуй перезапустить плеер.',
     'en':
-        'Could not recover an interrupted removal. Files are preserved. Restart the player; downloads and transfer are temporarily unavailable.',
+        'The player could not restore a download after an interrupted removal. The files are still there, but downloads and transfers are on hold. Try restarting the player.',
     'ja':
-        '中断された削除を復元できませんでした。ファイルは保持されています。プレーヤーを再起動してください。ダウンロードと転送は一時的に利用できません。',
+        '削除が途中で止まり、ダウンロード済みの曲を復元できませんでした。ファイルは残っていますが、今はダウンロードと移行ができません。プレーヤーを再起動してください。',
   },
   'download_removal_deferred': {
     'ru': 'Удалим загрузку после переключения трека. Музыка не прервётся.',
@@ -39,15 +39,18 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '曲を切り替えた後にダウンロードを削除します。再生は続行します。',
   },
   'download_removal_failed': {
-    'ru': 'Не удалось удалить загрузку. Файлы сохранены; попробуйте снова.',
-    'en': 'Could not remove download. Files are preserved; please retry.',
-    'ja': 'ダウンロードを削除できませんでした。ファイルは保持されています。再試行してください。',
+    'ru':
+        'Не удалось удалить скачанную копию. Файлы на месте. Попробуй ещё раз.',
+    'en':
+        'Could not remove the download. Your files are still there. Try again.',
+    'ja': 'ダウンロード済みのコピーを削除できませんでした。ファイルは残っています。もう一度お試しください。',
   },
   'download_removal_cleanup_pending': {
     'ru':
-        'Загрузка убрана. Очистка занятых файлов завершится при следующем запуске.',
-    'en': 'Download removed. Busy files will be cleaned up at next startup.',
-    'ja': 'ダウンロードを削除しました。使用中のファイルは次回起動時に消去します。',
+        'Трек убран из загрузок. Плеер удалит оставшиеся файлы при следующем запуске.',
+    'en':
+        'Download removed from the list. The player will delete the remaining files next time it starts.',
+    'ja': '曲をダウンロード一覧から外しました。残りのファイルは次回起動時に削除します。',
   },
   'catalog_refresh': {
     'ru': 'Обновить каталог',
@@ -122,9 +125,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '復元したコピー: {count} 件。',
   },
   'local_import_cancelled': {
-    'ru': 'Импорт остановлен. Готовые треки остались в библиотеке.',
-    'en': 'Import stopped. Completed tracks stayed in your library.',
-    'ja': '取り込みを停止しました。完了した曲はライブラリに残ります。',
+    'ru': 'Импорт остановлен. Уже добавленные треки остались в библиотеке.',
+    'en': 'Import stopped. Tracks you already added stay in your library.',
+    'ja': '取り込みを停止しました。追加済みの曲はライブラリに残ります。',
   },
   'local_import_problem_count': {
     'ru': 'Не добавлено: {count}',
@@ -157,8 +160,8 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '同名のMP3も選択してください',
   },
   'local_import_pick_failed': {
-    'ru': 'Не удалось получить выбранные файлы. Попробуй выбрать их снова.',
-    'en': 'Could not open the file selection. Try selecting the files again.',
+    'ru': 'Не удалось открыть выбранные файлы. Попробуй выбрать их ещё раз.',
+    'en': 'Could not open the selected files. Try selecting them again.',
     'ja': '選択したファイルにアクセスできませんでした。もう一度選択してください。',
   },
   'local_import_save_failed': {
@@ -292,12 +295,12 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '次に再生へ追加: {count} 曲',
   },
   'play_next_unavailable': {
-    'ru': 'Трек недоступен, пропущен: {title}',
+    'ru': 'Пропущен недоступный трек: {title}',
     'en': 'Skipped unavailable track: {title}',
     'ja': '利用できない曲をスキップしました: {title}',
   },
   'track_actions': {
-    'ru': 'Действия трека',
+    'ru': 'Действия с треком',
     'en': 'Track actions',
     'ja': '曲の操作',
   },
@@ -321,10 +324,10 @@ const Map<String, Map<String, String>> _translations = {
   },
   'video_retry_delayed': {
     'ru':
-        'Повторный поиск клипа временно отложен. Можно повторить скачивание вручную.',
+        'Плеер пока не будет снова искать клип. Скачивание можно повторить вручную.',
     'en':
-        'Video search temporarily postponed. You can retry the download manually.',
-    'ja': '動画の再検索を一時的に延期しました。手動でダウンロードを再試行できます。',
+        'Automatic video search is on hold. You can still retry the download manually.',
+    'ja': '動画の自動検索を一時停止しています。手動でダウンロードをやり直せます。',
   },
   'listening_music': {
     'ru': 'Слушает музыку',
@@ -403,7 +406,7 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'お気に入りを保存できませんでした。変更を元に戻しました。',
   },
   'playlist_reorder_touch': {
-    'ru': 'Удерживайте обложку и перетащите трек',
+    'ru': 'Удерживай обложку и перетащи трек',
     'en': 'Hold the artwork and drag to reorder',
     'ja': 'ジャケットを長押ししてドラッグで並べ替え',
   },
@@ -417,6 +420,43 @@ const Map<String, Map<String, String>> _translations = {
     'ru': 'Сменить обложку',
     'en': 'Change artwork',
     'ja': '画像を変更',
+  },
+  'playlist_add_background': {
+    'ru': 'Поставить фон',
+    'en': 'Set background',
+    'ja': '背景を設定',
+  },
+  'playlist_change_background': {
+    'ru': 'Сменить фон',
+    'en': 'Change background',
+    'ja': '背景を変更',
+  },
+  'playlist_reset_background': {
+    'ru': 'Вернуть общий фон',
+    'en': 'Use app background',
+    'ja': 'アプリの背景に戻す',
+  },
+  'playlist_select_background_photo': {
+    'ru': 'Выбрать фото для фона',
+    'en': 'Choose a background photo',
+    'ja': '背景の写真を選ぶ',
+  },
+  'playlist_background_saved': {
+    'ru': 'Фон плейлиста сохранён',
+    'en': 'Playlist background saved',
+    'ja': 'プレイリストの背景を保存しました',
+  },
+  'playlist_background_invalid': {
+    'ru':
+        'Не удалось открыть фото. Попробуй другой файл: JPG, PNG или WebP без анимации.',
+    'en': 'Could not open the photo. Try a still JPG, PNG or WebP.',
+    'ja': '写真を開けませんでした。JPG、PNG、WebPの静止画を選んでください。',
+  },
+  'playlist_background_failed': {
+    'ru': 'Не удалось сохранить фон плейлиста. Прежний фон не изменился.',
+    'en':
+        'Could not save the playlist background. The previous background is unchanged.',
+    'ja': 'プレイリストの背景を保存できませんでした。元の背景はそのままです。',
   },
   'playlist_delete': {
     'ru': 'Удалить плейлист',
@@ -436,9 +476,9 @@ const Map<String, Map<String, String>> _translations = {
   'playlist_save': {'ru': 'Сохранить', 'en': 'Save', 'ja': '保存'},
   'playlist_save_failed': {
     'ru':
-        'Не удалось сохранить плейлист. Проверьте доступ к папке данных и свободное место.',
+        'Не удалось сохранить плейлист. Проверь свободное место и доступ к папке данных.',
     'en':
-        'Could not save the playlist. Check data folder access and free space.',
+        'Could not save the playlist. Check for free space and make sure the player can write to its data folder.',
     'ja': 'プレイリストを保存できませんでした。空き容量とフォルダへのアクセスを確認してください。',
   },
   'transfer_title': {
@@ -447,9 +487,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'データの移行とバックアップ',
   },
   'transfer_cancel': {
-    'ru': 'Отменить ожидающий импорт',
-    'en': 'Cancel pending import',
-    'ja': '保留中のインポートをキャンセル',
+    'ru': 'Отменить импорт',
+    'en': 'Cancel import',
+    'ja': 'インポートをキャンセル',
   },
   'transfer_cancelled': {
     'ru': 'Импорт отменён. Библиотека не изменена.',
@@ -458,11 +498,11 @@ const Map<String, Map<String, String>> _translations = {
   },
   'transfer_hint': {
     'ru':
-        'В ZIP попадут плейлисты, обложки, избранное, каталог, настройки и статистика. В архиве есть личные данные. Делись им только с теми, кому доверяешь.',
+        'В ZIP сохранятся каталог, обложки, избранное, настройки, статистика и плейлисты с фонами. Делись архивом только с теми, кому доверяешь: в нём личные данные.',
     'en':
-        'The ZIP contains your playlists, artwork, favorites, catalog, settings and statistics. It holds private data, so share it only with people you trust.',
+        'The ZIP includes your catalog, artwork, favorites, settings, stats and playlists with their backgrounds. It contains private data, so share it only with people you trust.',
     'ja':
-        'ZIPにプレイリスト、画像、お気に入り、カタログ、設定、統計を保存します。個人データが含まれるので、信頼できる相手とだけ共有してください。',
+        'ZIPにカタログ、画像、お気に入り、設定、統計、プレイリストとその背景を保存します。個人データが入っているので、信頼できる相手とだけ共有してください。',
   },
   'transfer_media': {
     'ru': 'Включить скачанную музыку и видео',
@@ -486,9 +526,9 @@ const Map<String, Map<String, String>> _translations = {
   },
   'transfer_import_hint': {
     'ru':
-        'Импорт объединяет данные при следующем запуске. Существующая музыка не заменяется. При конфликте разных библиотек импорт остановится. Адрес сервера на другом устройстве может потребовать изменения.',
+        'После перезапуска плеер объединит архив с библиотекой, не заменяя скачанную музыку. Если данные двух библиотек конфликтуют, импорт остановится. На другом устройстве может понадобиться новый адрес сервера.',
     'en':
-        'Import merges data at next launch. Existing music is not replaced. Conflicting libraries stop the import. You may need to change the server address on the other device.',
+        'Restart the player to merge the archive with your library. It keeps your existing music files and stops the import if the libraries conflict. You may need to change the server address on the other device.',
     'ja':
         '次回起動時にデータを統合します。既存の音楽は置き換えません。ライブラリが競合する場合はインポートを中止します。移行先でサーバーアドレスの変更が必要な場合があります。',
   },
@@ -508,16 +548,16 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'データの移行を完了できませんでした：',
   },
   'transfer_working': {
-    'ru': 'Обработка архива. Не закрывайте плеер.',
-    'en': 'Processing archive. Keep the player open.',
-    'ja': 'アーカイブを処理中です。プレーヤーを閉じないでください。',
+    'ru': 'Не закрывай плеер, пока он работает с архивом.',
+    'en': 'Keep the player open while it processes the archive.',
+    'ja': 'アーカイブの処理が終わるまで、プレーヤーを閉じないでください。',
   },
   'transfer_applied': {
     'ru':
-        'Перенос завершён. Исходные настройки и списки сохранены в резервной папке transfer_restore внутри данных плеера.',
+        'Перенос завершён. Копии прежних настроек и списков ищи в папке transfer_restore… внутри папки данных плеера.',
     'en':
-        'Transfer complete. Original settings and lists are backed up in a transfer_restore folder inside player data.',
-    'ja': '移行が完了しました。元の設定とリストはプレーヤーのデータフォルダー内のtransfer_restoreに保存されています。',
+        'Transfer complete. Look for copies of your old settings and lists in the transfer_restore… folder inside the player’s data folder.',
+    'ja': '移行が完了しました。元の設定とリストのコピーは、プレーヤーのデータフォルダー内のtransfer_restore…にあります。',
   },
   'stats_title': {
     'ru': 'Моя статистика',
@@ -526,9 +566,9 @@ const Map<String, Map<String, String>> _translations = {
   },
   'stats_music': {'ru': 'Моя музыка', 'en': 'My music', 'ja': 'マイミュージック'},
   'stats_favorite_artist': {
-    'ru': 'Чаще всего слушал',
-    'en': 'Most listened artist',
-    'ja': '最も聴いたアーティスト',
+    'ru': 'Больше всего слушал',
+    'en': 'Top artist',
+    'ja': 'いちばん聴いたアーティスト',
   },
   'stats_favorite_tracks': {
     'ru': 'Любимые треки',
@@ -559,9 +599,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '再生時間',
   },
   'stats_app_time': {
-    'ru': 'В активном окне',
-    'en': 'Active app time',
-    'ja': 'アプリの使用時間',
+    'ru': 'Время в приложении',
+    'en': 'Time in the app',
+    'ja': 'アプリを開いていた時間',
   },
   'stats_plays': {'ru': 'Прослушиваний', 'en': 'Plays', 'ja': '再生回数'},
   'stats_plays_short': {'ru': 'прослуш.', 'en': 'plays', 'ja': '回'},
@@ -600,11 +640,11 @@ const Map<String, Map<String, String>> _translations = {
   },
   'stats_counting_hint': {
     'ru':
-        'Минуты считаются только во время воспроизведения, включая фон. Паузы и перемотка не учитываются. Прослушивание засчитывается после 30 секунд или половины короткого трека. Совместные треки учитываются у каждого исполнителя; общее время не удваивается.',
+        'Плеер считает время, пока играет музыка, даже в фоне. Паузы и перемотка не в счёт. Трек засчитывается после 30 секунд. Если он короче минуты, достаточно половины. Время совместного трека идёт каждому исполнителю, но в общий итог попадает один раз.',
     'en':
-        'Listening time includes background playback, excluding pauses and seeks. A play is counted after 30 seconds or half of a short track. Collaborations count for each artist; total listening time is counted once.',
+        'The player tracks time while music plays, even in the background. Pauses and seeks do not count. A play counts after 30 seconds of listening, or half the track if it’s under a minute. A collaboration adds time to each artist but only once to your total.',
     'ja':
-        'バックグラウンド再生も時間に含まれます。一時停止とシークは含まれません。30秒、または短い曲の半分を再生すると1回と数えます。共作曲は各アーティストに加算されますが、合計再生時間は重複しません。',
+        '曲が流れている時間を記録します。バックグラウンド再生も含みますが、一時停止や再生位置の移動は含みません。30秒聴くと1回になり、1分未満の曲は半分で1回になります。共作曲の時間は各アーティストに加わりますが、合計には一度だけ入ります。',
   },
   'stats_backup_hint': {
     'ru':
@@ -640,9 +680,10 @@ const Map<String, Map<String, String>> _translations = {
   },
   'stats_import_error': {
     'ru':
-        'Не удалось импортировать файл. Нужна резервная копия статистики Shiki.',
-    'en': 'Could not import this file. Select a Shiki statistics backup.',
-    'ja': 'ファイルをインポートできません。Shikiの統計バックアップを選択してください。',
+        'Не удалось импортировать файл. Выбери копию, которую сохранил через «Экспорт» в статистике.',
+    'en':
+        'Could not import this file. Choose a copy saved with Export in the statistics screen.',
+    'ja': 'ファイルを取り込めませんでした。統計画面の「エクスポート」で保存したファイルを選んでください。',
   },
   'stats_export_error': {
     'ru': 'Не удалось сохранить файл статистики',
@@ -669,10 +710,10 @@ const Map<String, Map<String, String>> _translations = {
   },
   'track_updates_hint': {
     'ru':
-        'Старые файлы остаются. Новый MP3 и текст применятся при следующем запуске трека.',
+        'Плеер оставит старые файлы. При следующем воспроизведении трека он возьмёт новый MP3 и текст.',
     'en':
-        'Original files are kept. Updated audio and lyrics apply next time you start the track.',
-    'ja': '元のファイルは保持されます。更新は次回の再生時に適用されます。',
+        'The player keeps the old files and uses the new MP3 and lyrics next time you play the track.',
+    'ja': '元のファイルは残ります。次に曲を再生するときに、新しいMP3と歌詞を使います。',
   },
   'review_updates': {'ru': 'Посмотреть', 'en': 'Review', 'ja': '確認'},
   'update_track': {'ru': 'Обновить', 'en': 'Update', 'ja': '更新'},
@@ -799,7 +840,11 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Accent color',
     'ja': 'アクセントカラー',
   },
-  'settings_background': {'ru': 'Фон', 'en': 'Background', 'ja': '背景'},
+  'settings_background': {
+    'ru': 'Общий фон',
+    'en': 'App background',
+    'ja': 'アプリの背景',
+  },
   'settings_background_default': {
     'ru': 'Стандартный',
     'en': 'Default',
@@ -832,17 +877,18 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'ファイルを確認中…',
   },
   'settings_background_limit': {
-    'ru': 'Для фона: до 1080p, GIF до 24 МиБ, MP4 до 64 МиБ и 30 секунд.',
+    'ru':
+        'GIF до 24 МиБ или MP4 до 64 МиБ и 30 секунд. Разрешение до 1080p для обоих.',
     'en':
-        'Background limit: up to 1080p, GIF up to 24 MiB, MP4 up to 64 MiB and 30 seconds.',
-    'ja': '背景は1080pまで。GIFは24 MiBまで、MP4は64 MiBかつ30秒までです。',
+        'GIF up to 24 MiB or MP4 up to 64 MiB and 30 seconds. Both up to 1080p.',
+    'ja': 'GIFは24 MiBまで、MP4は64 MiB・30秒まで。解像度はどちらも1080pまでです。',
   },
   'settings_background_invalid': {
     'ru':
-        'Не удалось открыть фон. Попробуй другой файл. Для видео подойдёт MP4 с кодеком H.264.',
+        'Не удалось открыть файл. Попробуй другой. Для видео выбери MP4 с H.264.',
     'en':
-        'Could not open this background. Try another file; for video, use an H.264 MP4.',
-    'ja': '背景を開けませんでした。別のファイルを試してください。動画にはH.264のMP4が使えます。',
+        'Could not open the file. Try another one. For video, choose an H.264 MP4.',
+    'ja': 'ファイルを開けませんでした。別のファイルを選んでください。動画はH.264のMP4をお試しください。',
   },
   'settings_background_save_failed': {
     'ru':
@@ -963,7 +1009,7 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'ダウンロード済み',
   },
   'confirm_track_metadata': {
-    'ru': 'Проверьте данные трека',
+    'ru': 'Проверь данные трека',
     'en': 'Check track information',
     'ja': '曲情報を確認',
   },
@@ -1048,9 +1094,10 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'サーバーに接続できません',
   },
   'server_invalid': {
-    'ru': 'Нужен адрес HTTP или HTTPS без пароля',
-    'en': 'Enter HTTP or HTTPS URL without credentials',
-    'ja': '認証情報のないHTTP/HTTPSアドレスを入力',
+    'ru': 'Укажи адрес с http:// или https://, без логина и пароля.',
+    'en':
+        'Use an address that starts with http:// or https://, without a username or password.',
+    'ja': 'http://またはhttps://で始まるアドレスを入力してください。ユーザー名とパスワードは入れないでください。',
   },
   'invalid_album_link': {
     'ru': 'Нужна ссылка на альбом или плейлист YouTube',
@@ -1109,7 +1156,7 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'アドレスを保存',
   },
   'server_saved': {
-    'ru': 'Сохранено. Адрес применится после перезапуска плеера.',
+    'ru': 'Адрес сохранён. Перезапусти плеер, чтобы подключиться по нему.',
     'en': 'Saved. Restart the player to use this address.',
     'ja': '保存しました。再起動後に適用されます。',
   },

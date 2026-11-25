@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
+import '../background_photo.dart';
 import '../background_video.dart';
 import '../custom_background.dart';
 
@@ -17,11 +18,13 @@ class PlayerBackdrop extends StatelessWidget {
     required this.gradient,
     required this.allowMotion,
     required this.child,
+    this.playlistPhoto,
     this.openVideo = openBackgroundVideo,
   });
 
   final String directory;
   final String? name;
+  final String? playlistPhoto;
   final Gradient gradient;
   final bool allowMotion;
   final Widget child;
@@ -31,41 +34,59 @@ class PlayerBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final kind = directory.isEmpty ? null : savedBackgroundKind(name);
-    final path = '$directory/$name';
-    final motion = kind == BackgroundKind.gif || kind == BackgroundKind.video;
+    final photo = playlistPhoto;
+    final usePlaylistPhoto =
+        directory.isNotEmpty && isPlaylistBackgroundName(photo);
     return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: gradient,
-        image: kind == BackgroundKind.image
-            ? DecorationImage(
-                image: FileImage(File(path)),
-                fit: BoxFit.cover,
-                colorFilter: const ColorFilter.mode(_shade, BlendMode.srcOver),
-                onError: (_, _) {},
-              )
-            : null,
-      ),
+      decoration: BoxDecoration(gradient: gradient),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          if (motion)
-            RepaintBoundary(
-              child: IgnorePointer(
-                child: ExcludeSemantics(
-                  child: _MotionBackdrop(
-                    path: path,
-                    kind: kind!,
-                    allowMotion: allowMotion,
-                    openVideo: openVideo,
-                  ),
-                ),
-              ),
-            ),
+          IgnorePointer(
+            child: usePlaylistPhoto
+                ? Image.file(
+                    File('$directory/$photo'),
+                    fit: BoxFit.cover,
+                    color: _shade,
+                    colorBlendMode: BlendMode.srcOver,
+                    excludeFromSemantics: true,
+                    gaplessPlayback: true,
+                    errorBuilder: (_, _, _) => _globalMedia(),
+                  )
+                : _globalMedia(),
+          ),
           child,
         ],
       ),
     );
+  }
+
+  Widget _globalMedia() {
+    final kind = directory.isEmpty ? null : savedBackgroundKind(name);
+    final path = '$directory/$name';
+    return switch (kind) {
+      BackgroundKind.image => DecoratedBox(
+        decoration: BoxDecoration(
+          image: DecorationImage(
+            image: FileImage(File(path)),
+            fit: BoxFit.cover,
+            colorFilter: const ColorFilter.mode(_shade, BlendMode.srcOver),
+            onError: (_, _) {},
+          ),
+        ),
+      ),
+      BackgroundKind.gif || BackgroundKind.video => RepaintBoundary(
+        child: ExcludeSemantics(
+          child: _MotionBackdrop(
+            path: path,
+            kind: kind!,
+            allowMotion: allowMotion,
+            openVideo: openVideo,
+          ),
+        ),
+      ),
+      null => const SizedBox.shrink(),
+    };
   }
 }
 
