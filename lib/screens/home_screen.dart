@@ -234,10 +234,7 @@ class MainAppScreenState extends State<MainAppScreen>
         },
         onVolume: (value) {
           if (!mounted || _stateDisposing) return;
-          setState(() {
-            volume = value;
-            _isMuted = value == 0;
-          });
+          setState(() => volume = value);
           unawaited(_setPlaybackVolume(value));
           _syncLinuxMediaSession();
           unawaited(_saveState());
@@ -513,9 +510,10 @@ class MainAppScreenState extends State<MainAppScreen>
   int navId = 0;
   final trackSelection = TrackSelection();
   Future<void> _favoritesTail = Future<void>.value();
-  double volume = 0.5;
-  double _savedVolume = 0.5; // for mute toggle
-  bool _isMuted = false;
+  static const _defaultVolume = 0.5;
+  double volume = _defaultVolume;
+  double _volumeBeforeMute = _defaultVolume;
+  bool get _isMuted => volume == 0;
 
   // Shuffle
   bool get isShuffled => _playbackOrder.shuffled;
@@ -2540,6 +2538,7 @@ class MainAppScreenState extends State<MainAppScreen>
       final f = File('$localPath/app_state.json');
       final data = {
         'volume': volume,
+        'volumeBeforeMute': _volumeBeforeMute,
         'loopMode': loopMode.index,
         'playingPlaylistId': playingPlaylistId,
         'position': currentPositionNotifier.value.inMilliseconds,
@@ -2561,8 +2560,15 @@ class MainAppScreenState extends State<MainAppScreen>
         if (decoded is! Map) return;
         final data = Map<String, dynamic>.from(decoded);
 
-        if (data['volume'] != null) {
-          volume = (data['volume'] as num).toDouble();
+        final savedBeforeMute = data['volumeBeforeMute'];
+        if (savedBeforeMute is num &&
+            savedBeforeMute > 0 &&
+            savedBeforeMute <= 1) {
+          _volumeBeforeMute = savedBeforeMute.toDouble();
+        }
+        final savedVolume = data['volume'];
+        if (savedVolume is num && savedVolume >= 0 && savedVolume <= 1) {
+          volume = savedVolume.toDouble();
           await _setPlaybackVolume(volume);
         }
         final savedLoopMode = data['loopMode'];
@@ -7351,11 +7357,9 @@ class MainAppScreenState extends State<MainAppScreen>
                       onTap: () {
                         setState(() {
                           if (_isMuted) {
-                            _isMuted = false;
-                            volume = _savedVolume > 0 ? _savedVolume : 0.5;
+                            volume = _volumeBeforeMute;
                           } else {
-                            _savedVolume = volume;
-                            _isMuted = true;
+                            _volumeBeforeMute = volume;
                             volume = 0;
                           }
                         });
@@ -7364,7 +7368,7 @@ class MainAppScreenState extends State<MainAppScreen>
                         _saveState();
                       },
                       child: Icon(
-                        _isMuted || volume == 0
+                        _isMuted
                             ? Icons.volume_off
                             : volume < 0.5
                             ? Icons.volume_down
@@ -7381,10 +7385,7 @@ class MainAppScreenState extends State<MainAppScreen>
                         activeColor: Colors.white54,
                         thumbColor: Colors.white,
                         onChanged: (v) {
-                          setState(() {
-                            volume = v;
-                            _isMuted = v == 0;
-                          });
+                          setState(() => volume = v);
                           unawaited(_setPlaybackVolume(v));
                           _syncLinuxMediaSession();
                         },
