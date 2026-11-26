@@ -1027,9 +1027,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'ファイルサイズを確認できませんでした。',
   },
   'storage_size_units': {
-    'ru': 'Б/КиБ/МиБ/ГиБ/ТиБ',
-    'en': 'B/KiB/MiB/GiB/TiB',
-    'ja': 'B/KiB/MiB/GiB/TiB',
+    'ru': 'Б/КБ/МБ/ГБ/ТБ',
+    'en': 'B/kB/MB/GB/TB',
+    'ja': 'B/kB/MB/GB/TB',
   },
   'storage_estimated': {
     'ru': 'Можно освободить примерно {size}.',

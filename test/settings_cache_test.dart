@@ -11,8 +11,8 @@ import 'package:shiki/screens/settings_screen.dart';
 import 'package:shiki/screens/storage_screen.dart';
 
 const _usage = StorageUsage(
-  audioBytes: 2048,
-  clipBytes: 3 * 1024 * 1024,
+  audioBytes: 1000,
+  clipBytes: 1500000,
   artworkBytes: 620,
   reclaimableBytes: 400,
   hasReclaimableArtwork: true,
@@ -109,8 +109,8 @@ void main() {
     initial.complete(_usage);
     await tester.pumpAndSettle();
 
-    expect(find.text('2 КиБ'), findsOneWidget);
-    expect(find.text('3 МиБ'), findsOneWidget);
+    expect(find.text('1 КБ'), findsOneWidget);
+    expect(find.text('1,5 МБ'), findsOneWidget);
     expect(find.text('620 Б'), findsOneWidget);
     expect(find.text('400 Б'), findsOneWidget);
     await confirmClear(tester);
@@ -284,6 +284,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text(tr('storage_artwork')), findsOneWidget);
+      expect(find.text(language == 'ru' ? '1,5 МБ' : '1.5 MB'), findsOneWidget);
       await confirmClear(tester);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pumpAndSettle();

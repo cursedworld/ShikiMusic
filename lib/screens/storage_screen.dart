@@ -223,11 +223,12 @@ String _withSize(String key, int bytes) =>
     tr(key).replaceAll('{size}', _formatSize(bytes));
 
 String _formatSize(int bytes) {
+  const unitStep = 1000;
   final units = tr('storage_size_units').split('/');
   var value = bytes.toDouble();
   var unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
+  while (value >= unitStep && unit < units.length - 1) {
+    value /= unitStep;
     unit++;
   }
   var number = unit == 0
