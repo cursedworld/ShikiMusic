@@ -21,6 +21,7 @@ import 'statistics_screen.dart';
 import 'library_transfer_screen.dart';
 import '../server_config.dart';
 import '../track_transition_mode.dart';
+import '../widgets/lyrics_text_size_dialog.dart';
 import '../widgets/server_address_setting.dart';
 
 /// Available accent color themes (key → localization key + color).
@@ -376,14 +377,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ? _chooseTrackListDensity
                               : null,
                         ),
-                      _row(
-                        key: const ValueKey('lyrics_text_size_setting'),
-                        title: tr('lyrics_text_size'),
-                        value: tr(
-                          'lyrics_text_size_${lyricsTextSizeNotifier.value.name}',
+                      if (supportsVinylRotation)
+                        _toggle(
+                          key: const ValueKey('vinyl_rotation_switch'),
+                          title: tr('vinyl_rotation'),
+                          hint: tr('vinyl_rotation_hint'),
+                          value: _vinylRotation,
+                          onChanged: (value) {
+                            setState(() => _vinylRotation = value);
+                            vinylRotationNotifier.value = value;
+                            _saveSettings();
+                          },
                         ),
-                        onTap: _settingsReady ? _chooseLyricsTextSize : null,
-                      ),
                       _row(
                         key: const ValueKey('settings_language'),
                         title: tr('language'),
@@ -412,18 +417,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           _saveSettings();
                         },
                       ),
-                      if (supportsVinylRotation)
-                        _toggle(
-                          key: const ValueKey('vinyl_rotation_switch'),
-                          title: tr('vinyl_rotation'),
-                          hint: tr('vinyl_rotation_hint'),
-                          value: _vinylRotation,
-                          onChanged: (value) {
-                            setState(() => _vinylRotation = value);
-                            vinylRotationNotifier.value = value;
-                            _saveSettings();
-                          },
-                        ),
                       if (supportsVideoClips)
                         _toggle(
                           key: const ValueKey('video_clip_switch'),
@@ -436,6 +429,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             _saveSettings();
                           },
                         ),
+                      _row(
+                        key: const ValueKey('lyrics_text_size_setting'),
+                        title: tr('lyrics_text_size'),
+                        value: tr(
+                          'lyrics_text_size_${lyricsTextSizeNotifier.value.name}',
+                        ),
+                        onTap: _settingsReady ? _chooseLyricsTextSize : null,
+                      ),
                       _section(tr('discord_settings')),
                       if (isDesktop)
                         _toggle(
@@ -461,6 +462,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         },
                       ),
                       _section(tr('settings_data')),
+                      if (widget.storageBuilder != null)
+                        _row(
+                          title: tr('storage'),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: widget.storageBuilder!),
+                          ),
+                        ),
                       _row(
                         key: const ValueKey('library_transfer'),
                         title: tr('transfer_title'),
@@ -508,14 +517,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         value: _serverBaseUrl,
                         onTap: _settingsReady ? _editServer : null,
                       ),
-                      if (widget.storageBuilder != null)
-                        _row(
-                          title: tr('storage'),
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: widget.storageBuilder!),
-                          ),
-                        ),
                       _section(tr('about')),
                       _row(
                         title: 'ShikiMusic',
@@ -820,68 +821,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _chooseLyricsTextSize() async {
     final current = lyricsTextSizeNotifier.value;
-    var draft = current;
     final selected = await showDialog<LyricsTextSize>(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDraft) => AlertDialog(
-          backgroundColor: _surface,
-          insetPadding: const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 20,
-          ),
-          scrollable: true,
-          title: Text(tr('lyrics_text_size')),
-          content: SizedBox(
-            width: 360,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                RadioGroup<LyricsTextSize>(
-                  groupValue: draft,
-                  onChanged: (value) {
-                    if (value != null) setDraft(() => draft = value);
-                  },
-                  child: Column(
-                    children: [
-                      for (final size in LyricsTextSize.values)
-                        RadioListTile<LyricsTextSize>(
-                          key: ValueKey('lyrics_text_size_option_${size.name}'),
-                          value: size,
-                          autofocus: size == current,
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(tr('lyrics_text_size_${size.name}')),
-                        ),
-                    ],
-                  ),
-                ),
-                const Divider(height: 24),
-                Text(
-                  key: const ValueKey('lyrics_text_size_preview'),
-                  tr('lyrics_text_size_sample'),
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: _text,
-                    fontSize: draft.activeFontSize,
-                    fontWeight: FontWeight.bold,
-                    height: 1.3,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(tr('cancel')),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, draft),
-              child: Text(tr('lyrics_text_size_apply')),
-            ),
-          ],
-        ),
+      builder: (context) => LyricsTextSizeDialog(
+        initialSize: current,
+        backgroundColor: _surface,
+        previewColor: _text,
       ),
     );
     if (!mounted || selected == null || selected == current) return;

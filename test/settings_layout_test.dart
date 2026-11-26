@@ -148,11 +148,13 @@ void main() {
   Future<void> show(
     WidgetTester tester, {
     double width = 1024,
+    double height = 1000,
     double scale = 1,
     Future<Directory> Function()? provider,
+    WidgetBuilder? storageBuilder,
   }) async {
     tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = Size(width, 1000);
+    tester.view.physicalSize = Size(width, height);
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetPhysicalSize);
     await tester.pumpWidget(
@@ -175,6 +177,7 @@ void main() {
           ),
           home: SettingsScreen(
             dataDirectoryProvider: provider ?? () async => directory,
+            storageBuilder: storageBuilder,
           ),
         ),
       ),
@@ -466,6 +469,42 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('mouse selection moves lyrics size focus for arrow navigation', (
+    tester,
+  ) async {
+    final focusManager = tester.binding.focusManager;
+    final oldStrategy = focusManager.highlightStrategy;
+    focusManager.highlightStrategy = FocusHighlightStrategy.alwaysTraditional;
+    addTearDown(() => focusManager.highlightStrategy = oldStrategy);
+    final oldSize = lyricsTextSizeNotifier.value;
+    lyricsTextSizeNotifier.value = LyricsTextSize.normal;
+    addTearDown(() => lyricsTextSizeNotifier.value = oldSize);
+
+    await show(tester);
+    await drive(tester, () => editable(tester));
+    final row = find.byKey(const ValueKey('lyrics_text_size_setting'));
+    await tester.scrollUntilVisible(
+      row,
+      160,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(row, kind: ui.PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    final normal = find.byKey(const ValueKey('lyrics_text_size_option_normal'));
+    final large = find.byKey(const ValueKey('lyrics_text_size_option_large'));
+    Matcher checkedAndFocused(bool value) =>
+        isSemantics(isChecked: value, isFocused: value);
+    expect(tester.getSemantics(normal), checkedAndFocused(true));
+
+    await tester.tap(large, kind: ui.PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    expect(tester.getSemantics(normal), checkedAndFocused(false));
+    expect(tester.getSemantics(large), checkedAndFocused(true));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pumpAndSettle();
+    expect(tester.getSemantics(normal), checkedAndFocused(true));
+  });
+
   testWidgets('background dimming previews, saves once, and can be reset', (
     tester,
   ) async {
@@ -729,6 +768,42 @@ void main() {
     await tester.tap(find.text('Повторить'));
     await drive(tester, () => editable(tester));
     expect(selected(tester, 'purple'), isTrue);
+  });
+
+  testWidgets('settings keep visual, playback, and data options together', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      await show(tester, height: 1600, storageBuilder: (_) => const SizedBox());
+      await drive(tester, () => editable(tester));
+      Finder setting(String key) => find.byKey(ValueKey(key));
+      final rows = [
+        find.text('Внешний вид'),
+        setting('settings_background_dimming'),
+        setting('track_list_density'),
+        setting('vinyl_rotation_switch'),
+        find.text('Воспроизведение'),
+        setting('track_transition_setting'),
+        setting('video_clip_switch'),
+        setting('lyrics_text_size_setting'),
+        find.text('Discord'),
+        find.text('Данные'),
+        find.text('Хранилище'),
+        setting('library_transfer'),
+        setting('settings_server'),
+        find.text('О приложении'),
+      ];
+      for (var i = 1; i < rows.length; i++) {
+        expect(
+          tester.getCenter(rows[i]).dy,
+          greaterThan(tester.getCenter(rows[i - 1]).dy),
+          reason: '${rows[i]} follows ${rows[i - 1]}',
+        );
+      }
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   for (final width in [320.0, 375.0, 768.0, 1440.0]) {
