@@ -15,6 +15,7 @@ import 'package:shiki/lrc_parser.dart';
 import 'package:shiki/lyric_text_edits.dart';
 import 'package:shiki/lyric_timing.dart';
 import 'package:shiki/lyric_timing_proposals.dart';
+import 'package:shiki/lyrics_text_size.dart';
 import 'package:shiki/screens/lyrics_screen.dart';
 import 'package:shiki/widgets/lyric_line_edit_dialog.dart';
 import 'package:shiki/widgets/lyric_timing_controls.dart';
@@ -233,6 +234,9 @@ void main() {
     testWidgets('edits the captured cue without a server at $width', (
       tester,
     ) async {
+      final oldSize = lyricsTextSizeNotifier.value;
+      lyricsTextSizeNotifier.value = LyricsTextSize.large;
+      addTearDown(() => lyricsTextSizeNotifier.value = oldSize);
       final store = _RecordedLineEdits();
       await show(
         tester,

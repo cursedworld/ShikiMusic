@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../globals.dart' show LyricLine;
+import '../lyrics_text_size.dart';
 import '../mobile_motion.dart';
 
 /// Reserves each cue's highlighted height so text never clips as it grows.
@@ -13,11 +14,13 @@ class SyncedLyricsView extends StatefulWidget {
     required this.lines,
     required this.activeIndex,
     required this.onSeek,
+    this.textSize = LyricsTextSize.normal,
   });
 
   final List<LyricLine> lines;
   final int activeIndex;
   final ValueChanged<Duration> onSeek;
+  final LyricsTextSize textSize;
 
   @override
   State<SyncedLyricsView> createState() => _SyncedLyricsViewState();
@@ -123,10 +126,15 @@ class _SyncedLyricsViewState extends State<SyncedLyricsView> {
     builder: (context, constraints) {
       const horizontal = 20.0;
       final highlighted = Theme.of(context).textTheme.bodyMedium!.copyWith(
-        fontSize: 32,
+        fontSize: widget.textSize.activeFontSize,
         height: 1.3,
         fontWeight: FontWeight.w700,
         color: Colors.white,
+      );
+      final inactive = highlighted.copyWith(
+        fontSize: widget.textSize.inactiveFontSize,
+        fontWeight: FontWeight.normal,
+        color: Colors.white38,
       );
       _measure(math.max(1, constraints.maxWidth - horizontal * 2), highlighted);
       final reducedMotion = MediaQuery.disableAnimationsOf(context);
@@ -150,17 +158,14 @@ class _SyncedLyricsViewState extends State<SyncedLyricsView> {
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Center(
                 child: AnimatedDefaultTextStyle(
+                  // A new size uses its new geometry immediately, not the old tween.
+                  // https://api.flutter.dev/flutter/widgets/Widget/canUpdate.html
+                  key: ValueKey(widget.textSize),
                   duration: reducedMotion
                       ? Duration.zero
                       : mobileLyricsTransition,
                   curve: Curves.easeOutCubic,
-                  style: active
-                      ? highlighted
-                      : highlighted.copyWith(
-                          fontSize: 20,
-                          fontWeight: FontWeight.normal,
-                          color: Colors.white38,
-                        ),
+                  style: active ? highlighted : inactive,
                   textAlign: TextAlign.center,
                   child: Text(
                     widget.lines[index].txt,

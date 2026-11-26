@@ -9,6 +9,7 @@ import '../globals.dart';
 import '../localization.dart';
 import '../lyric_timing.dart';
 import '../lyric_timing_proposals.dart';
+import '../lyrics_text_size.dart';
 import '../music_import.dart';
 import '../player_shortcuts.dart';
 import '../widgets/lyric_line_edit_dialog.dart';
@@ -432,42 +433,50 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
                       ),
 
                     // ── Lyrics body ──
-                    Expanded(
-                      child: lrcLoading
-                          ? const Center(
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                              ),
-                            )
-                          : globalLyrics.isNotEmpty
-                          ? SyncedLyricsView(
-                              lines: _lastLyrics!,
-                              activeIndex: localSyncIndex,
-                              onSeek: widget.onSeekRequested,
-                            )
-                          : SingleChildScrollView(
-                              physics: const BouncingScrollPhysics(),
-                              padding: const EdgeInsets.all(40.0),
-                              child: Align(
-                                alignment: Alignment.center,
-                                child: Text(
-                                  noLrcData.isNotEmpty
-                                      ? noLrcData
-                                      : tr('no_lyrics'),
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 24,
-                                    height: 1.5,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                            ),
-                    ),
+                    Expanded(child: _buildLyricsBody()),
                   ],
                 ),
               ),
             ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildLyricsBody() {
+    if (lrcLoading) {
+      return const Center(
+        child: CircularProgressIndicator(color: Colors.white),
+      );
+    }
+    return ValueListenableBuilder<LyricsTextSize>(
+      valueListenable: lyricsTextSizeNotifier,
+      builder: (context, size, _) {
+        final lines = _lastLyrics!;
+        if (lines.isNotEmpty) {
+          return SyncedLyricsView(
+            lines: lines,
+            activeIndex: localSyncIndex,
+            onSeek: widget.onSeekRequested,
+            textSize: size,
+          );
+        }
+        final hasLyrics = noLrcData.isNotEmpty;
+        return SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          padding: const EdgeInsets.all(40.0),
+          child: Align(
+            alignment: Alignment.center,
+            child: Text(
+              hasLyrics ? noLrcData : tr('no_lyrics'),
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: hasLyrics ? size.plainFontSize : 24,
+                height: 1.5,
+              ),
+              textAlign: TextAlign.center,
+            ),
           ),
         );
       },

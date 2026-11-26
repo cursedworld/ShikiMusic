@@ -15,6 +15,7 @@ import '../custom_background.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../listening_statistics.dart';
+import '../lyrics_text_size.dart';
 import '../platform_capabilities.dart';
 import 'statistics_screen.dart';
 import 'library_transfer_screen.dart';
@@ -189,6 +190,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         customBackgroundNotifier.value = availableBackground;
         backgroundDimmingNotifier.value = _backgroundDimming;
         compactTrackListNotifier.value = data['compactTrackList'] == true;
+        lyricsTextSizeNotifier.value = LyricsTextSize.fromSettings(
+          data['lyricsTextSize'],
+        );
 
         if (_selectedColorKey == 'custom' && data['accentColor'] != null) {
           accentColorNotifier.value = Color(data['accentColor'] as int);
@@ -226,6 +230,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'customBackground': customBackgroundNotifier.value,
       'backgroundDimming': backgroundDimming ?? _backgroundDimming,
       'compactTrackList': compactTrackListNotifier.value,
+      'lyricsTextSize': lyricsTextSizeNotifier.value.name,
       'accentColor': _selectedColorKey == 'custom'
           ? accentColorNotifier.value.toARGB32()
           : null,
@@ -371,6 +376,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ? _chooseTrackListDensity
                               : null,
                         ),
+                      _row(
+                        key: const ValueKey('lyrics_text_size_setting'),
+                        title: tr('lyrics_text_size'),
+                        value: tr(
+                          'lyrics_text_size_${lyricsTextSizeNotifier.value.name}',
+                        ),
+                        onTap: _settingsReady ? _chooseLyricsTextSize : null,
+                      ),
                       _row(
                         key: const ValueKey('settings_language'),
                         title: tr('language'),
@@ -801,6 +814,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!await _saveSettings() && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(tr('settings_track_list_save_failed'))),
+      );
+    }
+  }
+
+  Future<void> _chooseLyricsTextSize() async {
+    final current = lyricsTextSizeNotifier.value;
+    var draft = current;
+    final selected = await showDialog<LyricsTextSize>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDraft) => AlertDialog(
+          backgroundColor: _surface,
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 20,
+          ),
+          scrollable: true,
+          title: Text(tr('lyrics_text_size')),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                RadioGroup<LyricsTextSize>(
+                  groupValue: draft,
+                  onChanged: (value) {
+                    if (value != null) setDraft(() => draft = value);
+                  },
+                  child: Column(
+                    children: [
+                      for (final size in LyricsTextSize.values)
+                        RadioListTile<LyricsTextSize>(
+                          key: ValueKey('lyrics_text_size_option_${size.name}'),
+                          value: size,
+                          autofocus: size == current,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(tr('lyrics_text_size_${size.name}')),
+                        ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 24),
+                Text(
+                  key: const ValueKey('lyrics_text_size_preview'),
+                  tr('lyrics_text_size_sample'),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: _text,
+                    fontSize: draft.activeFontSize,
+                    fontWeight: FontWeight.bold,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(tr('cancel')),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, draft),
+              child: Text(tr('lyrics_text_size_apply')),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || selected == null || selected == current) return;
+    setState(() => lyricsTextSizeNotifier.value = selected);
+    if (!await _saveSettings() && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(tr('lyrics_text_size_save_failed'))),
       );
     }
   }

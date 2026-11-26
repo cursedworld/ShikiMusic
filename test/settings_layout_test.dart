@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/globals.dart';
 import 'package:shiki/localization.dart';
+import 'package:shiki/lyrics_text_size.dart';
 import 'package:shiki/screens/settings_screen.dart';
 import 'package:shiki/track_transition_mode.dart';
 
@@ -389,6 +390,82 @@ void main() {
     },
   );
 
+  testWidgets('lyrics size previews on a narrow screen and saves on apply', (
+    tester,
+  ) async {
+    final oldSize = lyricsTextSizeNotifier.value;
+    lyricsTextSizeNotifier.value = LyricsTextSize.normal;
+    addTearDown(() => lyricsTextSizeNotifier.value = oldSize);
+    final file = File('${directory.path}/shiki_settings.json')
+      ..writeAsStringSync(jsonEncode({'backgroundDimming': 38}));
+    final row = find.byKey(const ValueKey('lyrics_text_size_setting'));
+    final preview = find.byKey(const ValueKey('lyrics_text_size_preview'));
+    Finder option(String size) =>
+        find.byKey(ValueKey('lyrics_text_size_option_$size'));
+    double? previewSize() => tester.widget<Text>(preview).style?.fontSize;
+
+    Future<void> showSettings() async {
+      await show(tester, width: 320, scale: 2);
+      await drive(tester, () => editable(tester));
+      await tester.scrollUntilVisible(
+        row,
+        160,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openChooser() async {
+      final control = tester.widget<InkWell>(
+        find.descendant(of: row, matching: find.byType(InkWell)),
+      );
+      await tester.runAsync(() async {
+        control.onTap!();
+      });
+      await tester.pumpAndSettle();
+    }
+
+    await showSettings();
+    await openChooser();
+    expect(previewSize(), 32);
+    await tester.tap(option('large'));
+    await tester.pumpAndSettle();
+    expect(previewSize(), 40);
+    await tester.tap(option('small'));
+    await tester.pumpAndSettle();
+    expect(previewSize(), 28);
+    expect(lyricsTextSizeNotifier.value, LyricsTextSize.normal);
+    expect(jsonDecode(file.readAsStringSync())['lyricsTextSize'], isNull);
+    await tester.tap(find.text('Отмена'));
+    await tester.pumpAndSettle();
+    expect(lyricsTextSizeNotifier.value, LyricsTextSize.normal);
+
+    await openChooser();
+    await tester.tap(option('large'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Применить'));
+    await tester.pumpAndSettle();
+    await drive(tester, () {
+      try {
+        return jsonDecode(file.readAsStringSync())['lyricsTextSize'] == 'large';
+      } on FileSystemException catch (error) {
+        if (error.osError?.errorCode == 32) return false;
+        rethrow;
+      }
+    });
+    expect(jsonDecode(file.readAsStringSync())['backgroundDimming'], 38);
+    await tester.pumpWidget(const SizedBox());
+    lyricsTextSizeNotifier.value = LyricsTextSize.normal;
+    await showSettings();
+    expect(lyricsTextSizeNotifier.value, LyricsTextSize.large);
+    expect(
+      find.descendant(of: row, matching: find.text('Крупный')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('background dimming previews, saves once, and can be reset', (
     tester,
   ) async {
@@ -690,7 +767,11 @@ void main() {
   ) async {
     await show(tester, width: 320, scale: 2);
     await drive(tester, () => editable(tester));
-    await tester.ensureVisible(find.byKey(const ValueKey('settings_language')));
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('settings_language')),
+      160,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('settings_language')));
     await tester.pumpAndSettle();

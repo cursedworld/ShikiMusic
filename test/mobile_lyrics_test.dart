@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -7,8 +8,31 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/globals.dart';
+import 'package:shiki/lyrics_text_size.dart';
 import 'package:shiki/screens/lyrics_screen.dart';
 import 'package:shiki/widgets/synced_lyrics_view.dart';
+
+class _MeasuredLyrics extends ListBase<LyricLine> {
+  _MeasuredLyrics(this.cues);
+
+  final List<LyricLine> cues;
+  int passes = 0;
+
+  @override
+  int get length => cues.length;
+  @override
+  set length(int value) => throw UnsupportedError('Read-only cues');
+  @override
+  LyricLine operator [](int index) => cues[index];
+  @override
+  void operator []=(int index, LyricLine value) =>
+      throw UnsupportedError('Read-only cues');
+  @override
+  Iterator<LyricLine> get iterator {
+    passes++;
+    return cues.iterator;
+  }
+}
 
 void main() {
   final lines = [
@@ -40,6 +64,8 @@ void main() {
     bool reducedMotion = false,
     bool settle = true,
     ValueChanged<Duration>? onSeek,
+    List<LyricLine>? cues,
+    LyricsTextSize textSize = LyricsTextSize.normal,
   }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = Size(width, 812);
@@ -64,9 +90,10 @@ void main() {
           child: Scaffold(
             appBar: AppBar(title: const Text('Текст песни')),
             body: SyncedLyricsView(
-              lines: lines,
+              lines: cues ?? lines,
               activeIndex: active,
               onSeek: onSeek ?? (_) {},
+              textSize: textSize,
             ),
           ),
         ),
@@ -123,12 +150,14 @@ void main() {
   testWidgets('highlight scrolls smoothly to the real variable-height cue', (
     tester,
   ) async {
-    await show(tester, active: 3);
+    final cues = _MeasuredLyrics(lines);
+    await show(tester, active: 3, cues: cues);
+    expect(cues.passes, 1);
     final scroll = tester
         .state<ScrollableState>(find.byType(Scrollable))
         .position;
     final before = scroll.pixels;
-    await show(tester, active: 4, settle: false);
+    await show(tester, active: 4, settle: false, cues: cues);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 80));
     expect(scroll.pixels, greaterThan(before));
@@ -138,6 +167,11 @@ void main() {
       find.byKey(const ValueKey('mobile_synced_lyrics')),
     );
     expect((row.center.dy - viewport.center.dy).abs(), lessThan(1));
+    expect(
+      cues.passes,
+      1,
+      reason: 'Changing the active cue must not remeasure',
+    );
     expect(tester.binding.hasScheduledFrame, isFalse);
   });
 
@@ -162,6 +196,46 @@ void main() {
     expect(tester.binding.hasScheduledFrame, isFalse);
   });
 
+  testWidgets('resize remeasures once and keeps the same active cue and seek', (
+    tester,
+  ) async {
+    final cues = _MeasuredLyrics(lines);
+    final text = find.text(cues[4].txt);
+    final cue = find.byKey(const ValueKey('lyric_cue_4'));
+    final viewport = find.byKey(const ValueKey('mobile_synced_lyrics'));
+    Duration? sought;
+    final heights = <double>[];
+    for (final (size, fontSize) in [
+      (LyricsTextSize.normal, 32.0),
+      (LyricsTextSize.large, 40.0),
+      (LyricsTextSize.small, 28.0),
+    ]) {
+      await show(
+        tester,
+        width: 320,
+        scale: 2,
+        cues: cues,
+        textSize: size,
+        onSeek: (value) => sought = value,
+      );
+      final paragraph = tester.renderObject<RenderParagraph>(text);
+      final row = tester.getRect(cue);
+      final body = tester.getRect(text);
+      expect(paragraph.text.style?.fontSize, fontSize);
+      expect(paragraph.didExceedMaxLines, isFalse);
+      expect(body.top, greaterThanOrEqualTo(row.top + 11));
+      expect(body.bottom, lessThanOrEqualTo(row.bottom - 11));
+      expect(row.center.dy, closeTo(tester.getCenter(viewport).dy, 1));
+      heights.add(row.height);
+      expect(cues.passes, heights.length);
+      await tester.tap(cue);
+      expect(sought, cues[4].time);
+    }
+    expect(heights[1], greaterThan(heights[0]));
+    expect(heights[2], lessThan(heights[0]));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('phone and desktop overlays use complete responsive lyrics', (
     tester,
   ) async {
@@ -169,23 +243,57 @@ void main() {
         oldLine = currentLine,
         oldTrack = activeTrackNotifier.value;
     final oldLoading = lrcLoading;
+    final oldPlainLyrics = noLrcData;
+    final oldSize = lyricsTextSizeNotifier.value;
     addTearDown(() {
       globalLyrics = oldLines;
       currentLine = oldLine;
       activeTrackNotifier.value = oldTrack;
       lrcLoading = oldLoading;
+      noLrcData = oldPlainLyrics;
+      lyricsTextSizeNotifier.value = oldSize;
       debugDefaultTargetPlatformOverride = null;
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
     });
-    globalLyrics = lines;
+    globalLyrics = List.of(lines);
     currentLine = 4;
     lrcLoading = false;
     activeTrackNotifier.value = {'id': 1, 'title': 'Track', 'artists': []};
+    const plain = 'Слова песни без меток времени';
+    final syncedView = find.byType(SyncedLyricsView);
+    double? fontSize(String text) => tester
+        .renderObject<RenderParagraph>(find.text(text))
+        .text
+        .style
+        ?.fontSize;
+
+    Future<void> checkPlainLyrics() async {
+      globalLyrics = [];
+      noLrcData = plain;
+      uiSignal.value++;
+      await tester.pumpAndSettle();
+      expect(syncedView, findsNothing);
+      expect(fontSize(plain), 30);
+      lyricsTextSizeNotifier.value = LyricsTextSize.small;
+      await tester.pumpAndSettle();
+      expect(fontSize(plain), 21);
+      expect(fontSize('Track'), 24);
+      expect(tester.takeException(), isNull);
+    }
+
+    lyricsTextSizeNotifier.value = LyricsTextSize.large;
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(320, 812);
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     await tester.pumpWidget(
       MaterialApp(home: PresentationOverlay(onSeekRequested: (_) {})),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(SyncedLyricsView), findsOneWidget);
+    expect(
+      tester.widget<SyncedLyricsView>(syncedView).textSize,
+      LyricsTextSize.large,
+    );
     final replacement = [
       for (var i = 0; i < 15; i++)
         LyricLine(
@@ -202,15 +310,19 @@ void main() {
     uiSignal.value++;
     await tester.pumpAndSettle();
     expect(find.text(replacement[4].txt), findsOneWidget);
-    expect(tester.takeException(), isNull);
+    expect(fontSize(replacement[4].txt), 40);
+    await checkPlainLyrics();
     await tester.pumpWidget(const SizedBox());
+    globalLyrics = replacement;
+    lyricsTextSizeNotifier.value = LyricsTextSize.large;
+    tester.view.physicalSize = const Size(1200, 812);
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     await tester.pumpWidget(
       MaterialApp(home: PresentationOverlay(onSeekRequested: (_) {})),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(SyncedLyricsView), findsOneWidget);
-    expect(tester.takeException(), isNull);
+    expect(fontSize(replacement[4].txt), 40);
+    await checkPlainLyrics();
     await tester.pumpWidget(const SizedBox());
     debugDefaultTargetPlatformOverride = null;
   });

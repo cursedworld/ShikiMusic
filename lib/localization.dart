@@ -804,6 +804,25 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Could not save track list spacing.',
     'ja': '曲一覧の間隔を保存できませんでした。',
   },
+  'lyrics_text_size': {
+    'ru': 'Размер текста песен',
+    'en': 'Lyrics text size',
+    'ja': '歌詞の文字サイズ',
+  },
+  'lyrics_text_size_small': {'ru': 'Мелкий', 'en': 'Small', 'ja': '小'},
+  'lyrics_text_size_normal': {'ru': 'Обычный', 'en': 'Standard', 'ja': '標準'},
+  'lyrics_text_size_large': {'ru': 'Крупный', 'en': 'Large', 'ja': '大'},
+  'lyrics_text_size_sample': {
+    'ru': 'Ночью огни города отражаются в реке.',
+    'en': 'At night, the city lights ripple on the river.',
+    'ja': '夜の川面に街の明かりが揺れる。',
+  },
+  'lyrics_text_size_apply': {'ru': 'Применить', 'en': 'Apply', 'ja': '適用'},
+  'lyrics_text_size_save_failed': {
+    'ru': 'Не удалось сохранить размер текста песен.',
+    'en': 'Could not save the lyrics text size.',
+    'ja': '歌詞の文字サイズを保存できませんでした。',
+  },
   'settings_playback': {'ru': 'Воспроизведение', 'en': 'Playback', 'ja': '再生'},
   'replay_gain': {
     'ru': 'Выравнивать громкость',

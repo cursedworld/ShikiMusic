@@ -10,6 +10,7 @@ import 'background_photo.dart';
 import 'custom_background.dart';
 import 'local_music_catalog.dart';
 import 'local_music_transfer.dart';
+import 'lyrics_text_size.dart';
 import 'mp3_metadata.dart';
 import 'playlist_artwork.dart';
 import 'server_config.dart';
@@ -398,6 +399,8 @@ void _validateJson(
               TrackTransitionMode.values.any(
                 (mode) => mode.name == value['trackTransitionMode'],
               )) &&
+          (value['lyricsTextSize'] == null ||
+              LyricsTextSize.tryParse(value['lyricsTextSize']) != null) &&
           (value['accentColor'] == null || value['accentColor'] is int) &&
           (value['themeColor'] == null || value['themeColor'] is String) &&
           (value['language'] == null || value['language'] is String);

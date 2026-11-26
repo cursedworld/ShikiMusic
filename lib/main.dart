@@ -9,6 +9,7 @@ import 'app_build_info.dart';
 import 'atomic_file_store.dart';
 import 'custom_background.dart';
 import 'globals.dart';
+import 'lyrics_text_size.dart';
 import 'perf/frame_metrics.dart';
 import 'screens/home_screen.dart';
 import 'screens/settings_screen.dart';
@@ -106,6 +107,9 @@ Future<void> _loadSavedSettings() async {
         data['backgroundDimming'],
       );
       compactTrackListNotifier.value = data['compactTrackList'] == true;
+      lyricsTextSizeNotifier.value = LyricsTextSize.fromSettings(
+        data['lyricsTextSize'],
+      );
 
       // Restore language
       languageNotifier.value = data['language'] ?? 'ru';
