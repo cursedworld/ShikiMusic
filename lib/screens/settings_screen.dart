@@ -188,6 +188,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
         customBackgroundNotifier.value = availableBackground;
         backgroundDimmingNotifier.value = _backgroundDimming;
+        compactTrackListNotifier.value = data['compactTrackList'] == true;
 
         if (_selectedColorKey == 'custom' && data['accentColor'] != null) {
           accentColorNotifier.value = Color(data['accentColor'] as int);
@@ -224,6 +225,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'serverBaseUrl': _serverBaseUrl,
       'customBackground': customBackgroundNotifier.value,
       'backgroundDimming': backgroundDimming ?? _backgroundDimming,
+      'compactTrackList': compactTrackListNotifier.value,
       'accentColor': _selectedColorKey == 'custom'
           ? accentColorNotifier.value.toARGB32()
           : null,
@@ -358,6 +360,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ? _editBackgroundDimming
                             : null,
                       ),
+                      if (supportsCompactTrackList)
+                        _row(
+                          key: const ValueKey('track_list_density'),
+                          title: tr('settings_track_list_density'),
+                          value: _trackListDensityLabel(
+                            compactTrackListNotifier.value,
+                          ),
+                          onTap: _settingsReady
+                              ? _chooseTrackListDensity
+                              : null,
+                        ),
                       _row(
                         key: const ValueKey('settings_language'),
                         title: tr('language'),
@@ -741,6 +754,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _selectedLang = selected);
     languageNotifier.value = selected;
     await _saveSettings();
+  }
+
+  String _trackListDensityLabel(bool compact) => tr(
+    compact ? 'settings_track_list_compact' : 'settings_track_list_normal',
+  );
+
+  Future<void> _chooseTrackListDensity() async {
+    final current = compactTrackListNotifier.value;
+    final selected = await showDialog<bool>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        backgroundColor: _surface,
+        title: Text(
+          tr('settings_track_list_density'),
+          style: const TextStyle(color: _text),
+        ),
+        children: [
+          for (final compact in [false, true])
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, compact),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Semantics(
+                  selected: compact == current,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _trackListDensityLabel(compact),
+                          style: const TextStyle(color: _text),
+                        ),
+                      ),
+                      if (compact == current)
+                        Icon(Icons.check, color: accentColorNotifier.value),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (!mounted || selected == null || selected == current) return;
+    setState(() => compactTrackListNotifier.value = selected);
+    if (!await _saveSettings() && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(tr('settings_track_list_save_failed'))),
+      );
+    }
   }
 
   String _transitionHint(TrackTransitionMode mode) => switch (mode) {

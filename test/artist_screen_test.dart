@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -147,6 +149,49 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
   }
+
+  testWidgets('desktop density changes artist tracks but not album cards', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    final oldDensity = compactTrackListNotifier.value;
+    compactTrackListNotifier.value = false;
+    largeViewport(tester);
+    final client = MockClient((_) async => http.Response('{}', 404));
+    addTearDown(client.close);
+    final tracks = [track(1001, 'First'), track(1002, 'Second')];
+    final widget = screen(
+      client: client,
+      getTracks: () => tracks,
+      initialArtistData: {'id': 7, 'name': 'Artist', 'bio': ''},
+    );
+    try {
+      await tester.pumpWidget(widget);
+      await tester.pumpAndSettle();
+      final album = find.text('Album').first;
+      final row = find.byKey(const ValueKey('artist_track_1001'));
+      final like = find.byKey(const ValueKey('artist_favorite_1001'));
+      final regularHeight = tester.getSize(row).height;
+      final albumRect = tester.getRect(album);
+      final likeSize = tester.getSize(like);
+      compactTrackListNotifier.value = true;
+      libraryChanges.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(regularHeight - tester.getSize(row).height, closeTo(6, 0.1));
+      expect(tester.getSize(like), likeSize);
+      expect(tester.getRect(album), albumRect);
+      final compactHeight = tester.getSize(row).height;
+      await tester.tap(album);
+      await tester.pumpAndSettle();
+      expect(tester.getSize(row).height, compactHeight);
+      await settleImages(tester);
+      await tester.pumpWidget(const SizedBox());
+      expect(tester.takeException(), isNull);
+    } finally {
+      compactTrackListNotifier.value = oldDensity;
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
 
   for (final width in [375.0, 1440.0]) {
     testWidgets(

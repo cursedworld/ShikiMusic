@@ -7601,6 +7601,8 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   Widget build(BuildContext context) {
     bool isMobile = MediaQuery.of(context).size.width < 800;
+    final compactTracks =
+        supportsCompactTrackList && compactTrackListNotifier.value;
 
     List<dynamic> finalListToRender;
     String headText = "";
@@ -7976,7 +7978,9 @@ class MainAppScreenState extends State<MainAppScreen>
 
                         return Container(
                           key: ValueKey(trackId),
-                          margin: const EdgeInsets.only(bottom: 10),
+                          margin: EdgeInsets.only(
+                            bottom: compactTracks ? compactTrackRowGap : 10,
+                          ),
                           decoration: BoxDecoration(
                             color: isSelected
                                 ? Colors.black.withValues(alpha: 0.16)
@@ -7988,9 +7992,11 @@ class MainAppScreenState extends State<MainAppScreen>
                           child: ListTile(
                             selected: isSelected,
                             selectedTileColor: Colors.transparent,
-                            contentPadding: const EdgeInsets.symmetric(
+                            // Keep ListTile density and control bounds intact.
+                            // https://api.flutter.dev/flutter/material/ListTile/contentPadding.html
+                            contentPadding: EdgeInsets.symmetric(
                               horizontal: 10,
-                              vertical: 5,
+                              vertical: compactTracks ? 0 : 5,
                             ),
                             leading: playlistId != null
                                 ? PlaylistTrackDragHandle(

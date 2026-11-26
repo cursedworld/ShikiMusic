@@ -788,6 +788,22 @@ const Map<String, Map<String, String>> _translations = {
   // ── Settings ──
   'settings_title': {'ru': 'Настройки', 'en': 'Settings', 'ja': '設定'},
   'settings_appearance': {'ru': 'Внешний вид', 'en': 'Appearance', 'ja': '外観'},
+  'settings_track_list_density': {
+    'ru': 'Вид списка треков',
+    'en': 'Track list spacing',
+    'ja': '曲一覧の間隔',
+  },
+  'settings_track_list_normal': {'ru': 'Обычный', 'en': 'Standard', 'ja': '標準'},
+  'settings_track_list_compact': {
+    'ru': 'Компактный',
+    'en': 'Compact',
+    'ja': 'コンパクト',
+  },
+  'settings_track_list_save_failed': {
+    'ru': 'Не удалось сохранить вид списка треков.',
+    'en': 'Could not save track list spacing.',
+    'ja': '曲一覧の間隔を保存できませんでした。',
+  },
   'settings_playback': {'ru': 'Воспроизведение', 'en': 'Playback', 'ja': '再生'},
   'replay_gain': {
     'ru': 'Выравнивать громкость',

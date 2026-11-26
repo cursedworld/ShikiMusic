@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart'
+    show debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
@@ -324,6 +326,113 @@ void main() {
     );
     await tester.pumpAndSettle();
     return state;
+  }
+
+  testWidgets('compact playlist keeps controls, selection and drag', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    final oldDensity = compactTrackListNotifier.value;
+    compactTrackListNotifier.value = false;
+    try {
+      final state = await selectionScreen(tester, 1440, nav: 3, active: true);
+      final handle = find.byKey(const ValueKey('playlist_drag_1'));
+      final like = find.byKey(const ValueKey('track_favorite_2'));
+      final menu = find.byKey(const ValueKey('track_play_next_2'));
+      final controls = [handle, like, menu];
+      final regularSizes = controls.map(tester.getSize).toList();
+      double stride() =>
+          tester.getTopLeft(find.byKey(const ValueKey(2))).dy -
+          tester.getTopLeft(find.byKey(const ValueKey(1))).dy;
+      final regularStride = stride();
+      compactTrackListNotifier.value = true;
+      state.rebuild!();
+      await tester.pumpAndSettle();
+      expect(regularStride - stride(), closeTo(18, 0.1));
+      expect(controls.map(tester.getSize), regularSizes);
+
+      await tester.tap(menu);
+      await tester.pumpAndSettle();
+      expect(find.text('Сыграть следующим'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      try {
+        await tester.tap(find.text('Track 2'));
+        await tester.tap(find.text('Track 3'));
+      } finally {
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      }
+      await tester.pumpAndSettle();
+      expect(state.trackSelection.ids, {2, 3});
+      await tester.tap(like);
+      await tester.pumpAndSettle();
+      expect(state.favs, containsAll([2, 3]));
+      state.clearTrackSelection();
+      await tester.pumpAndSettle();
+
+      final start = tester.getCenter(handle);
+      final drag = await tester.startGesture(start);
+      await drag.moveBy(const Offset(0, 20));
+      await tester.pump();
+      await drag.moveTo(
+        Offset(
+          start.dx,
+          tester.getBottomLeft(find.byType(ReorderableListView)).dy - 30,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+      await drag.moveBy(const Offset(0, 1));
+      await tester.pump();
+      await drag.up();
+      await tester.pumpAndSettle();
+      expect(state.myPlaylists.first['tracks'], [2, 3, 4, 1]);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    } finally {
+      compactTrackListNotifier.value = oldDensity;
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  for (final desktop in [true, false]) {
+    testWidgets(
+      'track spacing with large text on ${desktop ? 'PC' : 'Android'}',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = desktop
+            ? TargetPlatform.windows
+            : TargetPlatform.android;
+        final oldDensity = compactTrackListNotifier.value;
+        compactTrackListNotifier.value = false;
+        try {
+          final state = await selectionScreen(tester, desktop ? 1440 : 375);
+          const title =
+              'A track with a very long name that should stay readable';
+          state.cachedTracks[0] = {...tracks.first, 'title': title};
+          tester.platformDispatcher.textScaleFactorTestValue = 2;
+          state.rebuild!();
+          await tester.pumpAndSettle();
+          final titleFinder = find.text(title);
+          final regularText = tester.getSize(titleFinder);
+          final firstRow = find.byKey(const ValueKey(1));
+          final regularRow = tester.getSize(firstRow);
+          compactTrackListNotifier.value = true;
+          state.rebuild!();
+          await tester.pumpAndSettle();
+          expect(tester.getSize(titleFinder), regularText);
+          expect(
+            tester.getSize(firstRow).height,
+            desktop ? lessThan(regularRow.height) : regularRow.height,
+          );
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+        } finally {
+          tester.platformDispatcher.clearTextScaleFactorTestValue();
+          compactTrackListNotifier.value = oldDensity;
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
   }
 
   for (final width in [375.0, 1440.0]) {

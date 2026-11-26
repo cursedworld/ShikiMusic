@@ -21,3 +21,7 @@ bool get supportsVinylRotation =>
     vinylRotationSupportedOn(defaultTargetPlatform);
 
 bool get isMobilePlatform => !supportsVideoClips;
+
+bool get supportsCompactTrackList =>
+    defaultTargetPlatform == TargetPlatform.windows ||
+    defaultTargetPlatform == TargetPlatform.linux;

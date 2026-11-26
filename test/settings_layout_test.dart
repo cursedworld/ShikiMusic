@@ -272,6 +272,10 @@ void main() {
           platform == TargetPlatform.android ? findsNothing : findsOneWidget,
         );
         expect(playVideoClipNotifier.value, isTrue);
+        expect(
+          find.byKey(const ValueKey('track_list_density')),
+          platform == TargetPlatform.android ? findsNothing : findsOneWidget,
+        );
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
       } finally {
@@ -326,6 +330,64 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'desktop track density defaults to normal and survives reopening',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      final oldDensity = compactTrackListNotifier.value;
+      compactTrackListNotifier.value = false;
+      addTearDown(() => compactTrackListNotifier.value = oldDensity);
+      try {
+        final file = File('${directory.path}/shiki_settings.json')
+          ..writeAsStringSync(jsonEncode({'backgroundDimming': 38}));
+        final row = find.byKey(const ValueKey('track_list_density'));
+
+        Future<void> open() async {
+          await show(tester);
+          await drive(tester, () => editable(tester));
+          await tester.ensureVisible(row);
+          await tester.pumpAndSettle();
+        }
+
+        await open();
+        expect(
+          find.descendant(of: row, matching: find.text('Обычный')),
+          findsOneWidget,
+        );
+        final control = tester.widget<InkWell>(
+          find.descendant(of: row, matching: find.byType(InkWell)),
+        );
+        await tester.runAsync(() async {
+          control.onTap!();
+        });
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Компактный'));
+        await tester.pumpAndSettle();
+        await drive(tester, () {
+          try {
+            return jsonDecode(file.readAsStringSync())['compactTrackList'] ==
+                true;
+          } on FileSystemException catch (error) {
+            if (error.osError?.errorCode == 32) return false;
+            rethrow;
+          }
+        });
+        expect(jsonDecode(file.readAsStringSync())['backgroundDimming'], 38);
+        await tester.pumpWidget(const SizedBox());
+        compactTrackListNotifier.value = false;
+        await open();
+        expect(
+          find.descendant(of: row, matching: find.text('Компактный')),
+          findsOneWidget,
+        );
+        expect(compactTrackListNotifier.value, isTrue);
+        await tester.pumpWidget(const SizedBox());
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    },
+  );
 
   testWidgets('background dimming previews, saves once, and can be reset', (
     tester,

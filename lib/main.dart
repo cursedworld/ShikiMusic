@@ -105,6 +105,7 @@ Future<void> _loadSavedSettings() async {
       backgroundDimmingNotifier.value = backgroundDimmingFromSettings(
         data['backgroundDimming'],
       );
+      compactTrackListNotifier.value = data['compactTrackList'] == true;
 
       // Restore language
       languageNotifier.value = data['language'] ?? 'ru';

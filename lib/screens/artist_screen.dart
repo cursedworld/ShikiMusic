@@ -12,6 +12,7 @@ import '../cover_processing.dart';
 import '../local_music_catalog.dart';
 import '../localization.dart';
 import '../music_import.dart';
+import '../platform_capabilities.dart';
 import '../server_config.dart';
 import '../track_selection.dart';
 import '../widgets/track_selection_bar.dart';
@@ -374,6 +375,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
   @override
   Widget build(BuildContext context) {
     final accent = accentColorNotifier.value;
+    final compactTracks =
+        supportsCompactTrackList && compactTrackListNotifier.value;
     final activeTrackId = activeTrackNotifier.value?['id'];
     final canPlayNext =
         widget.canPlayNext?.call() == true && widget.onPlayNext != null;
@@ -827,7 +830,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
 
                         return Container(
                           key: ValueKey('artist_track_$trackId'),
-                          margin: const EdgeInsets.only(bottom: 8),
+                          margin: EdgeInsets.only(
+                            bottom: compactTracks ? compactTrackRowGap : 8,
+                          ),
                           decoration: BoxDecoration(
                             color: isSelected
                                 ? Colors.black.withValues(alpha: 0.16)
