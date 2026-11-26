@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
@@ -19,6 +20,7 @@ class PlayerBackdrop extends StatelessWidget {
     required this.allowMotion,
     required this.child,
     this.playlistPhoto,
+    this.dimming = const AlwaysStoppedAnimation(defaultBackgroundDimming),
     this.openVideo = openBackgroundVideo,
   });
 
@@ -28,9 +30,8 @@ class PlayerBackdrop extends StatelessWidget {
   final Gradient gradient;
   final bool allowMotion;
   final Widget child;
+  final ValueListenable<int> dimming;
   final BackgroundVideoOpener openVideo;
-
-  static const _shade = Color(0xA6000000);
 
   @override
   Widget build(BuildContext context) {
@@ -43,17 +44,28 @@ class PlayerBackdrop extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           IgnorePointer(
-            child: usePlaylistPhoto
-                ? Image.file(
-                    File('$directory/$photo'),
-                    fit: BoxFit.cover,
-                    color: _shade,
-                    colorBlendMode: BlendMode.srcOver,
-                    excludeFromSemantics: true,
-                    gaplessPlayback: true,
-                    errorBuilder: (_, _, _) => _globalMedia(),
-                  )
-                : _globalMedia(),
+            child: ValueListenableBuilder<int>(
+              valueListenable: dimming,
+              builder: (context, percent, _) {
+                final shade = Color.fromARGB(
+                  (percent * 255 / 100).round(),
+                  0,
+                  0,
+                  0,
+                );
+                return usePlaylistPhoto
+                    ? Image.file(
+                        File('$directory/$photo'),
+                        fit: BoxFit.cover,
+                        color: shade,
+                        colorBlendMode: BlendMode.srcOver,
+                        excludeFromSemantics: true,
+                        gaplessPlayback: true,
+                        errorBuilder: (_, _, _) => _globalMedia(shade),
+                      )
+                    : _globalMedia(shade);
+              },
+            ),
           ),
           child,
         ],
@@ -61,7 +73,7 @@ class PlayerBackdrop extends StatelessWidget {
     );
   }
 
-  Widget _globalMedia() {
+  Widget _globalMedia(Color shade) {
     final kind = directory.isEmpty ? null : savedBackgroundKind(name);
     final path = '$directory/$name';
     return switch (kind) {
@@ -70,7 +82,7 @@ class PlayerBackdrop extends StatelessWidget {
           image: DecorationImage(
             image: FileImage(File(path)),
             fit: BoxFit.cover,
-            colorFilter: const ColorFilter.mode(_shade, BlendMode.srcOver),
+            colorFilter: ColorFilter.mode(shade, BlendMode.srcOver),
             onError: (_, _) {},
           ),
         ),
@@ -82,6 +94,7 @@ class PlayerBackdrop extends StatelessWidget {
             kind: kind!,
             allowMotion: allowMotion,
             openVideo: openVideo,
+            shade: shade,
           ),
         ),
       ),
@@ -103,12 +116,14 @@ class _MotionBackdrop extends StatelessWidget {
     required this.kind,
     required this.allowMotion,
     required this.openVideo,
+    required this.shade,
   });
 
   final String path;
   final BackgroundKind kind;
   final bool allowMotion;
   final BackgroundVideoOpener openVideo;
+  final Color shade;
 
   @override
   Widget build(BuildContext context) {
@@ -117,17 +132,23 @@ class _MotionBackdrop extends StatelessWidget {
         TickerMode.valuesOf(context).enabled &&
         !MediaQuery.disableAnimationsOf(context);
     if (kind == BackgroundKind.video) {
-      return _VideoBackdrop(path: path, active: active, openVideo: openVideo);
+      return _VideoBackdrop(
+        path: path,
+        active: active,
+        openVideo: openVideo,
+        shade: shade,
+      );
     }
     if (!active) return const SizedBox.shrink();
-    return _GifBackdrop(key: ValueKey(path), path: path);
+    return _GifBackdrop(key: ValueKey(path), path: path, shade: shade);
   }
 }
 
 class _GifBackdrop extends StatefulWidget {
-  const _GifBackdrop({super.key, required this.path});
+  const _GifBackdrop({super.key, required this.path, required this.shade});
 
   final String path;
+  final Color shade;
 
   @override
   State<_GifBackdrop> createState() => _GifBackdropState();
@@ -167,7 +188,7 @@ class _GifBackdropState extends State<_GifBackdrop>
       : Image(
           image: _image,
           fit: BoxFit.cover,
-          color: PlayerBackdrop._shade,
+          color: widget.shade,
           colorBlendMode: BlendMode.srcOver,
           excludeFromSemantics: true,
           errorBuilder: (_, _, _) => const SizedBox.shrink(),
@@ -179,11 +200,13 @@ class _VideoBackdrop extends StatefulWidget {
     required this.path,
     required this.active,
     required this.openVideo,
+    required this.shade,
   });
 
   final String path;
   final bool active;
   final BackgroundVideoOpener openVideo;
+  final Color shade;
 
   @override
   State<_VideoBackdrop> createState() => _VideoBackdropState();
@@ -291,7 +314,7 @@ class _VideoBackdropState extends State<_VideoBackdrop>
             child: VideoPlayer(controller),
           ),
         ),
-        const ColoredBox(color: PlayerBackdrop._shade),
+        ColoredBox(color: widget.shade),
       ],
     );
   }

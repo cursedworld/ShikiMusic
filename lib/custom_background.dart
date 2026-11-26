@@ -22,6 +22,13 @@ const backgroundPickerExtensions = [
 const backgroundGifMaxBytes = 24 * 1024 * 1024;
 const backgroundVideoMaxBytes = 64 * 1024 * 1024;
 const backgroundVideoMaxDuration = Duration(seconds: 30);
+const defaultBackgroundDimming = 65;
+
+bool isValidBackgroundDimming(Object? value) =>
+    value is int && value >= 0 && value <= 100;
+
+int backgroundDimmingFromSettings(Object? value) =>
+    isValidBackgroundDimming(value) ? value as int : defaultBackgroundDimming;
 
 final _savedBackgroundName = RegExp(
   r'^custom_bg_[0-9]+\.(jpg|jpeg|png|webp|gif|mp4)$',

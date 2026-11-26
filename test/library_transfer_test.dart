@@ -59,6 +59,7 @@ void main() {
       'smoothTrackTransitions': true,
       'trackTransitionMode': 'crossfade',
       'replayGainEnabled': true,
+      'backgroundDimming': 38,
     });
     await File('${source.path}/playlist_artwork_5.png').writeAsBytes([1, 2, 3]);
     await File('${source.path}/track_1.mp3').writeAsBytes([4, 5, 6]);
@@ -93,6 +94,7 @@ void main() {
       expect(settings['smoothTrackTransitions'], isTrue);
       expect(settings['trackTransitionMode'], 'crossfade');
       expect(settings['replayGainEnabled'], isTrue);
+      expect(settings['backgroundDimming'], 38);
       expect(await applyPendingLibraryImport(target), isFalse);
     },
   );

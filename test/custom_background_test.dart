@@ -35,6 +35,15 @@ void main() {
   tearDown(() async => temp.delete(recursive: true));
   File file(String name) => File('${temp.path}/$name');
 
+  test('dimming accepts integer percentages and keeps the legacy default', () {
+    for (final value in [null, -1, 101, '42', 42.5, false]) {
+      expect(backgroundDimmingFromSettings(value), 65);
+    }
+    for (final value in [0, 42, 100]) {
+      expect(backgroundDimmingFromSettings(value), value);
+    }
+  });
+
   test(
     'copies every GIF frame without changing any bytes or dimensions',
     () async {

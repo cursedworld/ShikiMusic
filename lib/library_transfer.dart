@@ -380,6 +380,8 @@ void _validateJson(
               _isVideoBackground(value['customBackground']) ||
               (value['customBackground'] is String &&
                   _imageName.hasMatch(value['customBackground']))) &&
+          (value['backgroundDimming'] == null ||
+              isValidBackgroundDimming(value['backgroundDimming'])) &&
           (value['serverBaseUrl'] == null ||
               (value['serverBaseUrl'] is String &&
                   isValidServerBaseUrl(value['serverBaseUrl']))) &&

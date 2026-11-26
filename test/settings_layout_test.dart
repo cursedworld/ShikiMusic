@@ -54,6 +54,7 @@ void main() {
   late Color oldAccent;
   late String oldLanguage;
   late String? oldBackground;
+  late int oldDimming;
   late bool oldVinyl, oldVideo, oldGitHub, oldLyrics, oldReplayGain;
   late TrackTransitionMode oldMode;
   const capture = bool.fromEnvironment('SHIKI_SETTINGS_SCREENSHOT');
@@ -81,6 +82,7 @@ void main() {
     oldAccent = accentColorNotifier.value;
     oldLanguage = languageNotifier.value;
     oldBackground = customBackgroundNotifier.value;
+    oldDimming = backgroundDimmingNotifier.value;
     oldVinyl = vinylRotationNotifier.value;
     oldVideo = playVideoClipNotifier.value;
     oldGitHub = discordShowGitHubButtonNotifier.value;
@@ -90,6 +92,7 @@ void main() {
     accentColorNotifier.value = themeColors['color_purple']!;
     languageNotifier.value = 'ru';
     customBackgroundNotifier.value = null;
+    backgroundDimmingNotifier.value = 65;
     vinylRotationNotifier.value = false;
     playVideoClipNotifier.value = true;
     discordShowGitHubButtonNotifier.value = false;
@@ -101,6 +104,7 @@ void main() {
     accentColorNotifier.value = oldAccent;
     languageNotifier.value = oldLanguage;
     customBackgroundNotifier.value = oldBackground;
+    backgroundDimmingNotifier.value = oldDimming;
     vinylRotationNotifier.value = oldVinyl;
     playVideoClipNotifier.value = oldVideo;
     discordShowGitHubButtonNotifier.value = oldGitHub;
@@ -324,6 +328,89 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('background dimming previews, saves once, and can be reset', (
+    tester,
+  ) async {
+    final file = File('${directory.path}/shiki_settings.json');
+    file.writeAsStringSync(jsonEncode({'trackTransitionMode': 'crossfade'}));
+    final setting = find.byKey(const ValueKey('settings_background_dimming'));
+    final slider = find.byKey(const ValueKey('background_dimming_slider'));
+    final save = find.byKey(const ValueKey('background_dimming_save'));
+    final reset = find.byKey(const ValueKey('background_dimming_reset'));
+    final cancel = find.byKey(const ValueKey('background_dimming_cancel'));
+
+    Map readSettings() {
+      try {
+        return jsonDecode(file.readAsStringSync()) as Map;
+      } on FileSystemException catch (error) {
+        if (error.osError?.errorCode == 32) return {};
+        rethrow;
+      }
+    }
+
+    bool saved(int percent) =>
+        readSettings()['backgroundDimming'] == percent &&
+        find
+            .descendant(of: setting, matching: find.text('$percent%'))
+            .evaluate()
+            .isNotEmpty;
+
+    Future<void> showSetting() async {
+      await show(tester, width: 320, scale: 2);
+      await drive(tester, () => editable(tester));
+      await tester.scrollUntilVisible(
+        setting,
+        100,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(setting);
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openEditor() async {
+      // Run the dialog's save continuation outside the fake clock, like the
+      // other writers that share SettingsPersistenceQueue across tests.
+      final row = tester.widget<InkWell>(
+        find.descendant(of: setting, matching: find.byType(InkWell)),
+      );
+      await tester.runAsync(() async {
+        row.onTap!();
+      });
+      await tester.pumpAndSettle();
+    }
+
+    await showSetting();
+    await openEditor();
+    expect(tester.widget<Slider>(slider).value, 65);
+    tester.widget<Slider>(slider).onChanged!(26);
+    await tester.pump();
+    expect(tester.widget<Slider>(slider).value, 26);
+    expect(backgroundDimmingNotifier.value, 26);
+    expect(readSettings().containsKey('backgroundDimming'), isFalse);
+    await tester.runAsync(() => tester.tap(cancel));
+    await tester.pumpAndSettle();
+    await drive(tester, () => backgroundDimmingNotifier.value == 65);
+    await openEditor();
+    expect(tester.widget<Slider>(slider).value, 65);
+    tester.widget<Slider>(slider).onChanged!(79);
+    await tester.pump();
+    await tester.runAsync(() => tester.tap(save));
+    await drive(tester, () => saved(79));
+    expect(readSettings()['trackTransitionMode'], 'crossfade');
+
+    await tester.pumpWidget(const SizedBox());
+    await showSetting();
+    await openEditor();
+    expect(tester.widget<Slider>(slider).value, 79);
+    await tester.tap(reset);
+    await tester.pump();
+    expect(tester.widget<Slider>(slider).value, 65);
+    await tester.runAsync(() => tester.tap(save));
+    await drive(tester, () => saved(65));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('legacy fade migrates; crossfade and off save and reload', (
     tester,
   ) async {
@@ -450,6 +537,7 @@ void main() {
           'trackTransitionMode': 'crossfade',
           'discordShowGitHubButton': false,
           'discordLyricsStatus': true,
+          'backgroundDimming': 42,
           'serverBaseUrl': 'http://localhost:8000',
         }),
       );
@@ -477,6 +565,7 @@ void main() {
       expect(saved['vinylRotation'], isFalse);
       expect(saved['discordShowGitHubButton'], isFalse);
       expect(saved['discordLyricsStatus'], isTrue);
+      expect(saved['backgroundDimming'], 42);
       expect(selected(tester, 'blue'), isTrue);
       expect(accentColorNotifier.value, themeColors['color_blue']);
     },
@@ -541,6 +630,7 @@ void main() {
     await show(tester, width: 320, scale: 2);
     await drive(tester, () => editable(tester));
     await tester.ensureVisible(find.byKey(const ValueKey('settings_language')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('settings_language')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('English'));

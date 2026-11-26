@@ -102,6 +102,9 @@ Future<void> _loadSavedSettings() async {
         appDir,
         data['customBackground'],
       );
+      backgroundDimmingNotifier.value = backgroundDimmingFromSettings(
+        data['backgroundDimming'],
+      );
 
       // Restore language
       languageNotifier.value = data['language'] ?? 'ru';

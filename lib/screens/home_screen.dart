@@ -7081,7 +7081,7 @@ class MainAppScreenState extends State<MainAppScreen>
     Tooltip.dismissAllToolTips();
     Navigator.push(
       context,
-      MaterialPageRoute(
+      SettingsRoute(
         builder: (context) => SettingsScreen(
           onClearCache: clearAllCache,
           statistics: _statistics,
@@ -8201,6 +8201,7 @@ class MainAppScreenState extends State<MainAppScreen>
           builder: (context, customBg, child) => PlayerBackdrop(
             directory: globalLocalPath,
             name: customBg,
+            dimming: backgroundDimmingNotifier,
             playlistPhoto: isPlaylistBackgroundName(playlistPhoto)
                 ? playlistPhoto as String
                 : null,

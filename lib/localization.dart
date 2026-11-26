@@ -850,6 +850,31 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Default',
     'ja': 'デフォルト',
   },
+  'settings_background_dimming': {
+    'ru': 'Затемнение фона',
+    'en': 'Background dimming',
+    'ja': '背景の暗さ',
+  },
+  'settings_background_dimming_hint': {
+    'ru': 'Для своего фона и фото плейлистов.',
+    'en': 'Applies to custom backgrounds and playlist photos.',
+    'ja': 'カスタム背景とプレイリストの写真に適用されます。',
+  },
+  'settings_background_dimming_reset': {
+    'ru': 'По умолчанию',
+    'en': 'Reset to default',
+    'ja': '初期値に戻す',
+  },
+  'settings_background_dimming_save': {
+    'ru': 'Сохранить',
+    'en': 'Save',
+    'ja': '保存',
+  },
+  'settings_background_dimming_save_failed': {
+    'ru': 'Не удалось сохранить затемнение. Вернулось прежнее значение.',
+    'en': 'Could not save dimming. The previous value was restored.',
+    'ja': '暗さを保存できませんでした。以前の設定に戻しました。',
+  },
   'settings_background_custom': {
     'ru': 'Моя картинка',
     'en': 'Custom image',

@@ -58,6 +58,27 @@ class SettingsPersistenceQueue {
   }
 }
 
+class SettingsRoute extends MaterialPageRoute<void> {
+  SettingsRoute({required super.builder});
+
+  bool _previewBackground = false;
+
+  @override
+  bool get opaque => !_previewBackground;
+
+  void setBackgroundPreview(bool visible) {
+    _previewBackground = visible;
+    // The settings page normally occludes the player. Reveal its existing
+    // backdrop only while the preview is open.
+    // https://api.flutter.dev/flutter/widgets/OverlayEntry/opaque.html
+    if (isActive &&
+        animation?.isCompleted == true &&
+        overlayEntries.isNotEmpty) {
+      overlayEntries.first.opaque = opaque;
+    }
+  }
+}
+
 class SettingsScreen extends StatefulWidget {
   final ListeningStatistics? statistics;
   final List<dynamic> statisticsTracks, statisticsArtists;
@@ -87,6 +108,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _replayGainEnabled = replayGainEnabledNotifier.value;
   bool _discordShowGitHubButton = discordShowGitHubButtonNotifier.value;
   bool _discordLyricsStatus = discordLyricsStatusNotifier.value;
+  int _backgroundDimming = backgroundDimmingNotifier.value;
+  bool _editingBackgroundDimming = false;
   late final Future<Directory> Function() _getDataDirectory;
   static final SettingsPersistenceQueue _settingsPersistence =
       SettingsPersistenceQueue();
@@ -155,6 +178,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _replayGainEnabled = data['replayGainEnabled'] == true;
           _discordShowGitHubButton = data['discordShowGitHubButton'] ?? true;
           _discordLyricsStatus = data['discordLyricsStatus'] == true;
+          _backgroundDimming = backgroundDimmingFromSettings(
+            data['backgroundDimming'],
+          );
           final server = data['serverBaseUrl'];
           if (server is String && isValidServerBaseUrl(server)) {
             _serverBaseUrl = normalizeServerBaseUrl(server);
@@ -162,6 +188,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         });
 
         customBackgroundNotifier.value = availableBackground;
+        backgroundDimmingNotifier.value = _backgroundDimming;
 
         if (_selectedColorKey == 'custom' && data['accentColor'] != null) {
           accentColorNotifier.value = Color(data['accentColor'] as int);
@@ -183,7 +210,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<bool> _saveSettings() {
+  Future<bool> _saveSettings({int? backgroundDimming}) {
     final contents = jsonEncode({
       'themeColor': _selectedColorKey,
       'language': _selectedLang,
@@ -197,6 +224,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'discordLyricsStatus': _discordLyricsStatus,
       'serverBaseUrl': _serverBaseUrl,
       'customBackground': customBackgroundNotifier.value,
+      'backgroundDimming': backgroundDimming ?? _backgroundDimming,
       'accentColor': _selectedColorKey == 'custom'
           ? accentColorNotifier.value.toARGB32()
           : null,
@@ -220,7 +248,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const _muted = Color(0xFFB9B0B5);
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => Visibility(
+    visible:
+        !_editingBackgroundDimming || ModalRoute.of(context) is! SettingsRoute,
+    maintainState: true,
+    child: _buildSettings(context),
+  );
+
+  Widget _buildSettings(BuildContext context) {
     return Scaffold(
       backgroundColor: _background,
       appBar: AppBar(
@@ -315,6 +350,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   color: _muted,
                                 ),
                               ),
+                      ),
+                      _row(
+                        key: const ValueKey('settings_background_dimming'),
+                        title: tr('settings_background_dimming'),
+                        value: '$_backgroundDimming%',
+                        onTap: _settingsReady && !_isImportingBackground
+                            ? _editBackgroundDimming
+                            : null,
                       ),
                       _row(
                         key: const ValueKey('settings_language'),
@@ -757,6 +800,103 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _trackTransitionMode = selected);
     trackTransitionModeNotifier.value = selected;
     await _saveSettings();
+  }
+
+  Future<void> _editBackgroundDimming() async {
+    if (!_settingsReady || _editingBackgroundDimming) return;
+    final route = ModalRoute.of(context);
+    final previewRoute = route is SettingsRoute ? route : null;
+    final original = _backgroundDimming;
+    var draft = original;
+    var persisted = original;
+    setState(() => _editingBackgroundDimming = true);
+    previewRoute?.setBackgroundPreview(true);
+    try {
+      final selected = await showDialog<int>(
+        context: context,
+        useRootNavigator: false,
+        barrierColor: previewRoute == null ? null : Colors.transparent,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, updateDialog) {
+            void preview(int value) {
+              updateDialog(() => draft = value);
+              backgroundDimmingNotifier.value = value;
+            }
+
+            return AlertDialog(
+              alignment: Alignment.bottomCenter,
+              insetPadding: const EdgeInsets.all(16),
+              scrollable: true,
+              backgroundColor: _surface,
+              surfaceTintColor: Colors.transparent,
+              title: Text(
+                tr('settings_background_dimming'),
+                style: const TextStyle(color: _text),
+              ),
+              content: SizedBox(
+                width: 360,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      tr('settings_background_dimming_hint'),
+                      style: const TextStyle(color: _muted),
+                    ),
+                    const SizedBox(height: 12),
+                    Text('$draft%', style: const TextStyle(color: _text)),
+                    Slider(
+                      key: const ValueKey('background_dimming_slider'),
+                      max: 100,
+                      divisions: 100,
+                      value: draft.toDouble(),
+                      activeColor: accentColorNotifier.value,
+                      onChanged: (value) => preview(value.round()),
+                      semanticFormatterCallback: (value) =>
+                          '${tr('settings_background_dimming')}: ${value.round()}%',
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  key: const ValueKey('background_dimming_reset'),
+                  onPressed: draft == defaultBackgroundDimming
+                      ? null
+                      : () => preview(defaultBackgroundDimming),
+                  child: Text(tr('settings_background_dimming_reset')),
+                ),
+                TextButton(
+                  key: const ValueKey('background_dimming_cancel'),
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: Text(tr('cancel')),
+                ),
+                TextButton(
+                  key: const ValueKey('background_dimming_save'),
+                  onPressed: () => Navigator.pop(dialogContext, draft),
+                  child: Text(tr('settings_background_dimming_save')),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+      if (selected != null && selected != original && mounted) {
+        if (await _saveSettings(backgroundDimming: selected)) {
+          persisted = selected;
+        } else {
+          _showBackgroundError('settings_background_dimming_save_failed');
+        }
+      }
+    } finally {
+      backgroundDimmingNotifier.value = persisted;
+      previewRoute?.setBackgroundPreview(false);
+      if (mounted) {
+        setState(() {
+          _backgroundDimming = persisted;
+          _editingBackgroundDimming = false;
+        });
+      }
+    }
   }
 
   Future<void> _editServer() => showDialog<void>(

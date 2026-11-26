@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'audio_handler.dart';
+import 'custom_background.dart';
 import 'local_music_catalog.dart';
 import 'track_transition_mode.dart';
 
@@ -41,6 +42,7 @@ ValueNotifier<Color> accentColorNotifier = ValueNotifier(
 ValueNotifier<String> languageNotifier = ValueNotifier('ru');
 ValueNotifier<bool> vinylRotationNotifier = ValueNotifier(true);
 ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
+final backgroundDimmingNotifier = ValueNotifier(defaultBackgroundDimming);
 ValueNotifier<bool> playVideoClipNotifier = ValueNotifier(false);
 final trackTransitionModeNotifier = ValueNotifier(TrackTransitionMode.off);
 final replayGainEnabledNotifier = ValueNotifier(false);
