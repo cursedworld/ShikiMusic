@@ -83,6 +83,7 @@ import '../widgets/artist_library_view.dart';
 import 'artist_screen.dart';
 import 'lyrics_screen.dart';
 import 'settings_screen.dart';
+import 'storage_screen.dart';
 
 // ── Custom scroll behavior ─────────────────────────────────────────────────
 // Replaces the default Android "glow" overscroll with iOS-style bouncing for
@@ -596,6 +597,8 @@ class MainAppScreenState extends State<MainAppScreen>
   );
 
   String localPath = "";
+  bool _loadingStorageProfile = false;
+  bool _clearingArtwork = false;
   Set<int> downloadQueue = {};
   final Map<int, Future<TrackDownloadResult>> _mediaDownloadTasks = {};
   final Map<int, dynamic> _pendingDownloadRemovals = {};
@@ -2528,10 +2531,13 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> _startDataSafely() async {
+    _loadingStorageProfile = true;
     try {
       await startData();
     } catch (error, stackTrace) {
       debugPrint('Startup data load failed: $error\n$stackTrace');
+    } finally {
+      _loadingStorageProfile = false;
     }
   }
 
@@ -4605,27 +4611,28 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
-  Future<bool> clearAllCache() async {
-    if (downloadQueue.isNotEmpty || _coverDownloads.isNotEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(tr('wait_for_downloads'))));
-      }
-      return false;
-    }
-    if (localPath.isEmpty) return false;
+  bool get _storageBusy =>
+      _stateDisposing ||
+      _loadingStorageProfile ||
+      downloadQueue.isNotEmpty ||
+      _coverDownloads.isNotEmpty;
+
+  Future<({Set<int> tracks, Set<int> artists})>
+  _storageArtworkProtection() async {
     final protectedTracks = <int>{};
     final protectedArtists = <int>{};
-    final retained = _playbackOrder.retainedTracks.toList();
+    final retained = [
+      ..._playbackOrder.retainedTracks,
+      if (activeTrackNotifier.value != null) activeTrackNotifier.value!,
+    ];
     final retainedIds = {for (final track in retained) track['id']};
     for (final track in [...cachedTracks, ...retained]) {
       if (track is! Map || track['id'] is! int || isLocalMusic(track)) continue;
       final id = track['id'] as int;
       final localLyrics =
           _trackUpdates?.lyricsFile(id) ?? File('$localPath/track_$id.lrc');
-      if (isTrackDownloadComplete(track) ||
-          retainedIds.contains(id) ||
+      if (retainedIds.contains(id) ||
+          (await _localAudioFile(id).stat()).size > 0 ||
           await (_trackUpdates?.videoFile(id) ??
                   File('$localPath/video_$id.mp4'))
               .exists() ||
@@ -4645,18 +4652,47 @@ class MainAppScreenState extends State<MainAppScreen>
         protectedArtists.add(artist['id'] as int);
       }
     }
-    await clearDisposableArtwork(
-      Directory(localPath),
-      protectedTrackIds: protectedTracks,
-      protectedArtistIds: protectedArtists,
-    );
-    clearCoverCache();
-    PaintingBinding.instance.imageCache.clear();
-    if (mounted) {
-      setState(() {});
-      _notifyArtistLibraryChanged();
+    return (tracks: protectedTracks, artists: protectedArtists);
+  }
+
+  Future<StorageUsage> loadStorageUsage() async {
+    if (localPath.isEmpty || _loadingStorageProfile) {
+      throw StateError('Library not ready');
     }
-    return true;
+    final protection = await _storageArtworkProtection();
+    return readStorageUsage(
+      Directory(localPath),
+      protectedTrackIds: protection.tracks,
+      protectedArtistIds: protection.artists,
+    );
+  }
+
+  Future<ArtworkCleanupResult> clearAllCache() async {
+    if (_storageBusy || _clearingArtwork) {
+      return const ArtworkCleanupResult(busy: true);
+    }
+    if (localPath.isEmpty) return const ArtworkCleanupResult(failed: true);
+    _clearingArtwork = true;
+    try {
+      final protection = await _storageArtworkProtection();
+      final result = await clearDisposableArtwork(
+        Directory(localPath),
+        protectedTrackIds: protection.tracks,
+        protectedArtistIds: protection.artists,
+        isBusy: () => _storageBusy,
+      );
+      if (result.removedFiles != 0 && !_stateDisposing) {
+        clearCoverCache();
+        PaintingBinding.instance.imageCache.clear();
+        if (mounted) {
+          setState(() {});
+          _notifyArtistLibraryChanged();
+        }
+      }
+      return result;
+    } finally {
+      _clearingArtwork = false;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -7083,7 +7119,10 @@ class MainAppScreenState extends State<MainAppScreen>
       context,
       SettingsRoute(
         builder: (context) => SettingsScreen(
-          onClearCache: clearAllCache,
+          storageBuilder: (_) => StorageScreen(
+            loadUsage: loadStorageUsage,
+            clearCache: clearAllCache,
+          ),
           statistics: _statistics,
           statisticsTracks: cachedTracks,
           statisticsArtists: cachedArtists,

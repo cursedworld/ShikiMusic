@@ -416,7 +416,6 @@ void main() {
       MaterialApp(
         theme: ThemeData.dark(),
         home: SettingsScreen(
-          onClearCache: () => true,
           dataDirectoryProvider: () async => directory,
           statistics: statistics,
         ),

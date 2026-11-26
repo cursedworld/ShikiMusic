@@ -263,7 +263,6 @@ void main() {
                   onPressed: () => Navigator.of(context).push(
                     SettingsRoute(
                       builder: (_) => SettingsScreen(
-                        onClearCache: () => true,
                         dataDirectoryProvider: () async => directory,
                       ),
                     ),

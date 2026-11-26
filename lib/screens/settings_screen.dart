@@ -82,12 +82,12 @@ class SettingsRoute extends MaterialPageRoute<void> {
 class SettingsScreen extends StatefulWidget {
   final ListeningStatistics? statistics;
   final List<dynamic> statisticsTracks, statisticsArtists;
-  final FutureOr<bool?> Function() onClearCache;
+  final WidgetBuilder? storageBuilder;
   final Future<Directory> Function() dataDirectoryProvider;
   final Future<void> Function()? beforeLibraryExport;
   const SettingsScreen({
     super.key,
-    required this.onClearCache,
+    this.storageBuilder,
     this.dataDirectoryProvider = getShikiDataDirectory,
     this.statistics,
     this.statisticsTracks = const [],
@@ -115,7 +115,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       SettingsPersistenceQueue();
   static Future<void> _backgroundMutation = Future<void>.value();
   bool _isDisposed = false;
-  bool _isClearingCache = false;
   bool _isImportingBackground = false;
   String _serverBaseUrl = configuredServerBaseUrl;
   bool _settingsReady = false;
@@ -483,11 +482,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         value: _serverBaseUrl,
                         onTap: _settingsReady ? _editServer : null,
                       ),
-                      _row(
-                        title: tr('clear_cache'),
-                        hint: tr('clear_cache_desc'),
-                        onTap: _isClearingCache ? null : _confirmClearCache,
-                      ),
+                      if (widget.storageBuilder != null)
+                        _row(
+                          title: tr('storage'),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: widget.storageBuilder!),
+                          ),
+                        ),
                       _section(tr('about')),
                       _row(
                         title: 'ShikiMusic',
@@ -923,54 +925,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: Text(tr('close')),
-        ),
-      ],
-    ),
-  );
-
-  Future<void> _confirmClearCache() => showDialog<void>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      backgroundColor: _surface,
-      title: Text(
-        tr('clear_cache_confirm'),
-        style: const TextStyle(color: _text),
-      ),
-      content: Text(
-        tr('clear_cache_body'),
-        style: const TextStyle(color: _muted),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx),
-          child: Text(tr('cancel')),
-        ),
-        TextButton(
-          onPressed: () async {
-            final messenger = ScaffoldMessenger.of(context);
-            Navigator.pop(ctx);
-            setState(() => _isClearingCache = true);
-            try {
-              final cleared = await widget.onClearCache();
-              if (!mounted || cleared != true) return;
-              messenger.showSnackBar(
-                SnackBar(content: Text(tr('cache_cleared'))),
-              );
-            } catch (error) {
-              debugPrint('Cache clear failed: $error');
-              if (mounted) {
-                messenger.showSnackBar(
-                  SnackBar(content: Text(tr('cache_clear_failed'))),
-                );
-              }
-            } finally {
-              if (mounted) setState(() => _isClearingCache = false);
-            }
-          },
-          child: Text(
-            tr('clear'),
-            style: TextStyle(color: accentColorNotifier.value),
-          ),
         ),
       ],
     ),

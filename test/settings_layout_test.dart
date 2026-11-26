@@ -173,7 +173,6 @@ void main() {
             child: child!,
           ),
           home: SettingsScreen(
-            onClearCache: () => true,
             dataDirectoryProvider: provider ?? () async => directory,
           ),
         ),

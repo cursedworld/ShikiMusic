@@ -1,9 +1,19 @@
-import 'dart:io';
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/disposable_cache.dart';
 import 'package:shiki/atomic_file_store.dart';
+
+class _DeniedDelete implements File {
+  @override
+  Future<FileSystemEntity> delete({bool recursive = false}) async =>
+      throw const FileSystemException('Test: access denied');
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
 
 void main() {
   late Directory directory;
@@ -18,6 +28,202 @@ void main() {
     }
     await directory.delete(recursive: true);
   });
+
+  test('counts finished media and previews only eligible artwork', () async {
+    final digest = List.filled(64, 'a').join();
+    final now = DateTime(2026, 10, 4, 12);
+    final entries = {
+      'track_1.mp3': 10,
+      'track_2_$digest.mp3': 20,
+      'local_audio_$digest.mp3': 30,
+      'video_1.mp4': 40,
+      'video_2_$digest.mp4': 50,
+      'local_video_$digest.mp4': 60,
+      'cover_1.jpg': 3,
+      'cover_2_v2.webp': 4,
+      'artist_7.jpg': 5,
+      'artist_8.png': 6,
+      'local_cover_$digest.jpg': 7,
+      'playlist_artwork_42.gif': 8,
+      'cover_1.jpg.tmp.1.2.3': 9,
+      'cover_2.jpg.tmp.1.2.3': 11,
+      'track_2_$digest.mp3.part.resume': 100,
+      'track_1.lrc': 200,
+      'custom_bg_1.mp4': 300,
+      'playlist_bg_${List.filled(32, 'b').join()}.jpg': 400,
+      'listening_statistics.sqlite': 500,
+    };
+    for (final entry in entries.entries) {
+      await File(
+        '${directory.path}/${entry.key}',
+      ).writeAsBytes(List.filled(entry.value, 1));
+    }
+    await File(
+      '${directory.path}/cover_1.jpg.tmp.1.2.3',
+    ).setLastModified(now.subtract(const Duration(days: 2)));
+    await File('${directory.path}/cover_2.jpg.tmp.1.2.3').setLastModified(now);
+    final legacy = await Directory('${directory.path}/local_music').create();
+    final legacyDigest = List.filled(64, 'c').join();
+    await File(
+      '${legacy.path}/local_audio_$legacyDigest.mp3',
+    ).writeAsBytes(List.filled(70, 1));
+    await File(
+      '${legacy.path}/local_cover_$legacyDigest.jpg',
+    ).writeAsBytes(List.filled(12, 1));
+    final elsewhere = await Directory('${directory.path}/unmanaged').create();
+    await File('${elsewhere.path}/track_999.mp3').writeAsString('unmanaged');
+
+    final usage = await readStorageUsage(
+      directory,
+      protectedTrackIds: {1},
+      protectedArtistIds: {7},
+      now: now,
+    );
+    expect(usage.audioBytes, 130);
+    expect(usage.clipBytes, 150);
+    expect(usage.artworkBytes, 65);
+    expect(usage.reclaimableBytes, 19);
+    expect(usage.hasReclaimableArtwork, isTrue);
+    expect(await File('${directory.path}/cover_2_v2.webp').exists(), isTrue);
+  });
+
+  test('reports an empty profile and fails to read an invalid root', () async {
+    final usage = await readStorageUsage(
+      directory,
+      protectedTrackIds: {},
+      protectedArtistIds: {},
+    );
+    expect([usage.audioBytes, usage.clipBytes, usage.artworkBytes], [0, 0, 0]);
+    expect(usage.hasReclaimableArtwork, isFalse);
+    final file = await File('${directory.path}/not_a_directory').create();
+    await expectLater(
+      readStorageUsage(
+        Directory(file.path),
+        protectedTrackIds: {},
+        protectedArtistIds: {},
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+  });
+
+  test('rechecks protected covers and old temporaries after preview', () async {
+    final now = DateTime(2026, 10, 4, 12);
+    final cover = await File(
+      '${directory.path}/cover_1.jpg',
+    ).writeAsString('one');
+    final old = await File(
+      '${directory.path}/cover_2.jpg.tmp.1.2.3',
+    ).writeAsString('two');
+    await old.setLastModified(now.subtract(const Duration(days: 2)));
+    final orphan = await File(
+      '${directory.path}/artist_9.jpg',
+    ).writeAsString('three');
+    final preview = await readStorageUsage(
+      directory,
+      protectedTrackIds: {},
+      protectedArtistIds: {},
+      now: now,
+    );
+    expect(preview.reclaimableBytes, 11);
+
+    await old.setLastModified(now);
+    final result = await clearDisposableArtwork(
+      directory,
+      protectedTrackIds: {1},
+      protectedArtistIds: {},
+      now: now,
+    );
+    expect(result.removedBytes, 5);
+    expect(result.removedFiles, 1);
+    expect(result.failed, isFalse);
+    expect(await cover.readAsString(), 'one');
+    expect(await old.readAsString(), 'two');
+    expect(await orphan.exists(), isFalse);
+  });
+
+  test('reports actual bytes if a download interrupts cleanup', () async {
+    final files = [
+      await File('${directory.path}/cover_1.jpg').writeAsString('abcd'),
+      await File('${directory.path}/cover_2.jpg').writeAsString('abcd'),
+    ];
+    final result = await clearDisposableArtwork(
+      directory,
+      protectedTrackIds: {},
+      protectedArtistIds: {},
+      isBusy: () => files.any((file) => !file.existsSync()),
+    );
+    expect(result.busy, isTrue);
+    expect(result.removedBytes, 4);
+    expect(result.removedFiles, 1);
+    expect(files.where((file) => file.existsSync()), hasLength(1));
+  });
+
+  test(
+    'continues after a deletion error and does not count that file',
+    () async {
+      final removed = await File(
+        '${directory.path}/cover_1.jpg',
+      ).writeAsString('123');
+      final locked = await File(
+        '${directory.path}/cover_2.jpg',
+      ).writeAsString('12345');
+      final filesystem = Zone.current;
+      final result = await IOOverrides.runZoned(
+        () => clearDisposableArtwork(
+          directory,
+          protectedTrackIds: {},
+          protectedArtistIds: {},
+        ),
+        createFile: (path) {
+          final file = filesystem.run(() => File(path));
+          return file.uri.pathSegments.last == 'cover_2.jpg'
+              ? _DeniedDelete()
+              : file;
+        },
+        fseGetType: (path, followLinks) => filesystem.run(
+          () => FileSystemEntity.type(path, followLinks: followLinks),
+        ),
+      );
+      expect(result.failed, isTrue);
+      expect(result.removedBytes, 3);
+      expect(result.removedFiles, 1);
+      expect(await removed.exists(), isFalse);
+      expect(await locked.readAsString(), '12345');
+    },
+  );
+
+  test(
+    'does not follow a linked legacy folder or remove artwork links',
+    () async {
+      final unrelated = await Directory('${directory.path}/unrelated').create();
+      final digest = List.filled(64, 'a').join();
+      final track = await File(
+        '${unrelated.path}/local_audio_$digest.mp3',
+      ).writeAsString('protected');
+      final legacy = await Link(
+        '${directory.path}/local_music',
+      ).create(unrelated.path);
+      final cover = await Link(
+        '${directory.path}/cover_1.jpg',
+      ).create(unrelated.path);
+      final usage = await readStorageUsage(
+        directory,
+        protectedTrackIds: {},
+        protectedArtistIds: {},
+      );
+      expect(usage.audioBytes, 0);
+      expect(usage.artworkBytes, 0);
+      expect(usage.hasReclaimableArtwork, isFalse);
+      await clearDisposableArtwork(
+        directory,
+        protectedTrackIds: {},
+        protectedArtistIds: {},
+      );
+      expect(await legacy.exists(), isTrue);
+      expect(await cover.exists(), isTrue);
+      expect(await track.readAsString(), 'protected');
+    },
+  );
 
   test(
     'clears orphan artwork only, retaining all library and user files',

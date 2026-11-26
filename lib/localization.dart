@@ -977,26 +977,69 @@ const Map<String, Map<String, String>> _translations = {
   },
   'storage': {'ru': 'Хранилище', 'en': 'Storage', 'ja': 'ストレージ'},
   'clear_cache': {'ru': 'Очистить кэш', 'en': 'Clear Cache', 'ja': 'キャッシュを消去'},
-  'clear_cache_desc': {
-    'ru': 'Удаляет кэш обложек. Музыка и видео останутся.',
-    'en': 'Clears cached artwork. Music and videos stay.',
-    'ja': 'ジャケットのキャッシュを消去します。音楽と動画はそのままです。',
+  'storage_music': {
+    'ru': 'Музыка на устройстве',
+    'en': 'Music on this device',
+    'ja': '端末内の曲',
   },
-  'clear_cache_confirm': {
-    'ru': 'Подтвердить очистку',
-    'en': 'Confirm clearing',
-    'ja': '消去を確認',
+  'storage_clips': {'ru': 'Клипы', 'en': 'Videos', 'ja': 'ミュージックビデオ'},
+  'storage_artwork': {'ru': 'Обложки', 'en': 'Artwork', 'ja': 'カバー画像'},
+  'storage_reclaimable': {
+    'ru': 'Можно освободить',
+    'en': 'Space you can free',
+    'ja': '解放できる容量',
+  },
+  'storage_cache_hint': {
+    'ru':
+        'Можно удалить только неиспользуемые обложки и их старые временные файлы.',
+    'en': 'Only unused artwork and its old temporary files can be cleared.',
+    'ja': '使われていないカバー画像と古い一時ファイルだけを消去できます。',
+  },
+  'storage_calculating': {
+    'ru': 'Считаем размер файлов…',
+    'en': 'Checking file sizes…',
+    'ja': 'ファイルサイズを確認中…',
+  },
+  'storage_cleaning': {
+    'ru': 'Удаляем лишние обложки…',
+    'en': 'Clearing unused artwork…',
+    'ja': '使われていないカバー画像を消去中…',
+  },
+  'storage_read_error': {
+    'ru': 'Не удалось посчитать размер файлов.',
+    'en': 'Could not check file sizes.',
+    'ja': 'ファイルサイズを確認できませんでした。',
+  },
+  'storage_size_units': {
+    'ru': 'Б/КиБ/МиБ/ГиБ/ТиБ',
+    'en': 'B/KiB/MiB/GiB/TiB',
+    'ja': 'B/KiB/MiB/GiB/TiB',
+  },
+  'storage_estimated': {
+    'ru': 'Можно освободить примерно {size}.',
+    'en': 'This can free about {size}.',
+    'ja': '約{size}の容量を解放できます。',
   },
   'clear_cache_body': {
-    'ru': 'Удалить кэш обложек? Треки, видео, тексты и плейлисты останутся.',
+    'ru': 'Треки, клипы, тексты, фоны, плейлисты и статистика останутся.',
     'en':
-        'Clear cached artwork? Tracks, videos, lyrics and playlists will remain.',
-    'ja': '画像キャッシュを消去しますか？曲、動画、歌詞、プレイリストは保持されます。',
+        'Music, videos, lyrics, backgrounds, playlists, and listening history will stay.',
+    'ja': '曲、動画、歌詞、背景、プレイリスト、再生履歴はそのままです。',
   },
   'cache_clear_failed': {
-    'ru': 'Кэш очищен не полностью. Файлы музыки сохранены.',
-    'en': 'Cache clearing incomplete. Music files preserved.',
-    'ja': 'キャッシュの消去は未完了。音楽は保持されています。',
+    'ru': 'Не удалось очистить кэш полностью.',
+    'en': 'Some cached files could not be cleared.',
+    'ja': '一部のキャッシュを消去できませんでした。',
+  },
+  'storage_freed': {
+    'ru': 'Освобождено {size}.',
+    'en': 'Freed {size}.',
+    'ja': '{size}の容量を解放しました。',
+  },
+  'storage_no_files_to_clear': {
+    'ru': 'К удалению ничего не осталось.',
+    'en': 'There’s nothing left to clear.',
+    'ja': '消去できるファイルはありません。',
   },
   'download_started': {
     'ru': 'Загрузка началась',
@@ -1192,11 +1235,6 @@ const Map<String, Map<String, String>> _translations = {
   },
   'cancel': {'ru': 'Отмена', 'en': 'Cancel', 'ja': 'キャンセル'},
   'clear': {'ru': 'Очистить', 'en': 'Clear', 'ja': '消去'},
-  'cache_cleared': {
-    'ru': 'Кэш очищен',
-    'en': 'Cache cleared',
-    'ja': 'キャッシュを消去しました',
-  },
   'about': {'ru': 'О приложении', 'en': 'About', 'ja': 'アプリについて'},
   'version': {'ru': 'Версия', 'en': 'Version', 'ja': 'バージョン'},
   'personal_player': {

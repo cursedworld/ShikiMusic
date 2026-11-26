@@ -245,7 +245,37 @@ void main() {
       );
       expect(state.favs, contains(song.id));
       expect(state.myPlaylists.last['tracks'], [song.id, 1]);
-      expect(await state.clearAllCache(), isTrue);
+      final downloaded = await File(
+        '${root.path}/track_1.mp3',
+      ).writeAsString('download');
+      final protectedCover = await File(
+        '${root.path}/cover_1.jpg',
+      ).writeAsString('download artwork');
+      final orphan = await File(
+        '${root.path}/cover_9999.jpg',
+      ).writeAsString('orphan');
+      final usage = await state.loadStorageUsage();
+      expect(
+        usage.audioBytes,
+        await resolveLocalMusicAsset(
+              root,
+              localAudioName(song.digest),
+            ).length() +
+            await downloaded.length(),
+      );
+      expect(usage.reclaimableBytes, 6);
+      state.downloadQueue.add(1);
+      final busy = await state.clearAllCache();
+      expect(busy.busy, isTrue);
+      expect(await orphan.exists(), isTrue);
+      state.downloadQueue.clear();
+      final cleanup = await state.clearAllCache();
+      expect(cleanup.failed, isFalse);
+      expect(cleanup.removedBytes, 6);
+      expect(await orphan.exists(), isFalse);
+      expect(await protectedCover.readAsString(), 'download artwork');
+      expect(await downloaded.readAsString(), 'download');
+      expect((await state.loadStorageUsage()).reclaimableBytes, 0);
       expect(state.isTrackLocal(song.id), isTrue);
       expect((await readLocalMusicCatalog(root)).single.digest, song.digest);
     },
