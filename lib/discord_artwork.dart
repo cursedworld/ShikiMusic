@@ -38,6 +38,7 @@ class DiscordAnimatedArtwork {
 
   bool _loaded = false;
   bool _disposed = false;
+  int _cancelRevision = 0;
   String? _currentKey;
   String? _activeKey;
   _AlbumIdentity? _pending;
@@ -71,11 +72,23 @@ class DiscordAnimatedArtwork {
     return cached?.url;
   }
 
+  /// Drops work for a hidden activity without losing existing matches.
+  void cancelPending() {
+    _cancelRevision++;
+    _pending = null;
+    _currentKey = null;
+    _activeKey = null;
+    final client = _activeClient;
+    _activeClient = null;
+    client?.close();
+  }
+
   void dispose() {
     _disposed = true;
-    _pending = null;
-    _activeClient?.close();
+    cancelPending();
   }
+
+  bool _isActive(http.Client client) => identical(_activeClient, client);
 
   void _startWorker() {
     if (_worker != null || _disposed) return;
@@ -100,13 +113,13 @@ class DiscordAnimatedArtwork {
       _activeKey = album.key;
       final client = _clientFactory();
       _activeClient = client;
+      final revision = _cancelRevision;
       String? url;
       var ttl = const Duration(days: 14);
       try {
         url = await _lookup(client, album).timeout(
           lookupTimeout,
           onTimeout: () {
-            client.close();
             throw TimeoutException('Animated artwork lookup timed out');
           },
         );
@@ -116,18 +129,23 @@ class DiscordAnimatedArtwork {
         ttl = const Duration(minutes: 10);
         url = cached?.url;
       } finally {
-        client.close();
-        _activeClient = null;
-        _activeKey = null;
+        if (_isActive(client)) {
+          _activeClient = null;
+          _activeKey = null;
+          client.close();
+        }
       }
       if (_disposed) return;
+      if (revision != _cancelRevision) continue;
       _cache.remove(album.key);
       _cache[album.key] = _ArtworkCacheEntry(url, _now().add(ttl));
       while (_cache.length > _maxEntries) {
         _cache.remove(_cache.keys.first);
       }
       await _save();
-      if (!_disposed && url != null && _currentKey == album.key) {
+      if (revision == _cancelRevision &&
+          url != null &&
+          _currentKey == album.key) {
         onAvailable(album.key);
       }
     }
@@ -139,7 +157,7 @@ class DiscordAnimatedArtwork {
       final wait = searchInterval - _now().difference(lastSearch);
       if (wait > Duration.zero) await Future<void>.delayed(wait);
     }
-    if (_disposed) return null;
+    if (!_isActive(client)) return null;
     _lastSearch = _now();
     String quoted(String value) =>
         value.replaceAllMapped(RegExp(r'[\\"]'), (match) => '\\${match[0]}');
@@ -199,8 +217,13 @@ class DiscordAnimatedArtwork {
     required int maxBytes,
     bool allowMissing = false,
   }) async {
+    if (!_isActive(client)) return null;
     final request = http.Request('GET', uri)..headers.addAll(_headers);
     final response = await client.send(request);
+    if (!_isActive(client)) {
+      await response.stream.listen(null).cancel();
+      return null;
+    }
     if (allowMissing && response.statusCode == 404) {
       await response.stream.listen(null).cancel();
       return null;
@@ -215,7 +238,7 @@ class DiscordAnimatedArtwork {
     }
     final bytes = BytesBuilder(copy: false);
     await for (final chunk in response.stream) {
-      if (_disposed) return null;
+      if (!_isActive(client)) return null;
       if (bytes.length + chunk.length > maxBytes) return null;
       bytes.add(chunk);
     }

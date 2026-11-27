@@ -50,6 +50,7 @@ class DiscordCoverLookup {
   Future<void>? _worker;
   DateTime? _lastItunes;
   bool _disposed = false;
+  int _cancelRevision = 0;
   static const _fallbackTtl = Duration(minutes: 30);
   static const _lastFmKey = 'b25b959554ed76058ac220b7b2e0a026';
 
@@ -82,11 +83,23 @@ class DiscordCoverLookup {
     return cached?.result;
   }
 
+  /// Drops work for a hidden activity without losing existing matches.
+  void cancelPending() {
+    _cancelRevision++;
+    _pending = null;
+    _currentKey = null;
+    _activeKey = null;
+    final client = _client;
+    _client = null;
+    client?.close();
+  }
+
   void dispose() {
     _disposed = true;
-    _pending = null;
-    _client?.close();
+    cancelPending();
   }
+
+  bool _isActive(http.Client client) => identical(_client, client);
 
   Future<void> _run() async {
     while (!_disposed && _pending != null) {
@@ -95,6 +108,7 @@ class DiscordCoverLookup {
       _activeKey = identity.key;
       final client = _clientFactory();
       _client = client;
+      final revision = _cancelRevision;
       DiscordCoverResult? result;
       try {
         result = await _lookup(client, identity);
@@ -102,11 +116,14 @@ class DiscordCoverLookup {
         // A malformed provider response must not escape a background task.
         result = _cache[identity.key]?.result;
       } finally {
-        client.close();
-        _client = null;
-        _activeKey = null;
+        if (_isActive(client)) {
+          _client = null;
+          _activeKey = null;
+          client.close();
+        }
       }
       if (_disposed) return;
+      if (revision != _cancelRevision) continue;
       _cache.remove(identity.key);
       _cache[identity.key] = _CachedCover(
         result,
@@ -128,7 +145,7 @@ class DiscordCoverLookup {
       final wait = itunesInterval - _now().difference(last);
       if (wait > Duration.zero) await Future<void>.delayed(wait);
     }
-    if (_disposed) return null;
+    if (!_isActive(client)) return null;
     _lastItunes = _now();
     final itunes = await _json(
       client,
@@ -143,7 +160,7 @@ class DiscordCoverLookup {
       itunes?['results'],
       source: DiscordCoverSource.itunes,
     );
-    if (appleCover != null || _disposed) return appleCover;
+    if (appleCover != null || !_isActive(client)) return appleCover;
 
     final deezer = await _json(
       client,
@@ -156,7 +173,7 @@ class DiscordCoverLookup {
       deezer?['data'],
       source: DiscordCoverSource.deezer,
     );
-    if (deezerCover != null || _disposed) return deezerCover;
+    if (deezerCover != null || !_isActive(client)) return deezerCover;
 
     final info = await _json(
       client,
@@ -170,7 +187,7 @@ class DiscordCoverLookup {
       infoTrack is Map ? [infoTrack] : null,
       source: DiscordCoverSource.lastfm,
     );
-    if (lastFmCover != null || _disposed) return lastFmCover;
+    if (lastFmCover != null || !_isActive(client)) return lastFmCover;
 
     final search = await _json(
       client,
@@ -188,7 +205,7 @@ class DiscordCoverLookup {
       trackMatches is Map ? trackMatches['track'] : null,
       source: DiscordCoverSource.lastfm,
     );
-    if (searchCover != null || _disposed) return searchCover;
+    if (searchCover != null || !_isActive(client)) return searchCover;
 
     // No arbitrary album by this artist: only a verified artist portrait.
     final artistKey = _name(identity.primary);
@@ -217,7 +234,7 @@ class DiscordCoverLookup {
         }
       }
     }
-    if (photo == null && !_disposed) {
+    if (photo == null && _isActive(client)) {
       final artistInfo = await _json(
         client,
         _lastFm('artist.getInfo', {'artist': identity.primary}),
@@ -231,6 +248,7 @@ class DiscordCoverLookup {
         }
       }
     }
+    if (!_isActive(client)) return null;
     _artists.remove(artistKey);
     _artists[artistKey] = _CachedCover(photo, _now().add(_fallbackTtl));
     _trim(_artists, 256);
@@ -238,7 +256,7 @@ class DiscordCoverLookup {
   }
 
   Future<Map?> _json(http.Client client, Uri uri) async {
-    if (_disposed) return null;
+    if (!_isActive(client)) return null;
     final abort = Completer<void>();
     try {
       final request = http.AbortableRequest(
@@ -248,14 +266,15 @@ class DiscordCoverLookup {
       );
       final operation = () async {
         final response = await client.send(request);
-        if (response.statusCode != 200 ||
+        if (!_isActive(client) ||
+            response.statusCode != 200 ||
             (response.contentLength ?? 0) > 256 * 1024) {
           await response.stream.listen(null).cancel();
           return null;
         }
         final bytes = BytesBuilder(copy: false);
         await for (final chunk in response.stream) {
-          if (_disposed || bytes.length + chunk.length > 256 * 1024) {
+          if (!_isActive(client) || bytes.length + chunk.length > 256 * 1024) {
             return null;
           }
           bytes.add(chunk);

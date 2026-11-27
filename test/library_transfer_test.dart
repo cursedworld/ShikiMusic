@@ -63,6 +63,8 @@ void main() {
       'compactTrackList': true,
       'lyricsTextSize': 'large',
       'lyricsBackgroundBlur': 0,
+      'discordPresenceEnabled': false,
+      'discordHideOnPause': true,
     });
     await File('${source.path}/playlist_artwork_5.png').writeAsBytes([1, 2, 3]);
     await File('${source.path}/track_1.mp3').writeAsBytes([4, 5, 6]);
@@ -101,6 +103,8 @@ void main() {
       expect(settings['compactTrackList'], isTrue);
       expect(settings['lyricsTextSize'], 'large');
       expect(settings['lyricsBackgroundBlur'], 0);
+      expect(settings['discordPresenceEnabled'], isFalse);
+      expect(settings['discordHideOnPause'], isTrue);
       expect(await applyPendingLibraryImport(target), isFalse);
     },
   );

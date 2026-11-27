@@ -232,6 +232,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'smoothTrackTransitions': _trackTransitionMode != TrackTransitionMode.off,
       'discordShowGitHubButton': _discordShowGitHubButton,
       'discordLyricsStatus': _discordLyricsStatus,
+      'discordPresenceEnabled': discordPrivacyNotifier.value.enabled,
+      'discordHideOnPause': discordPrivacyNotifier.value.hideOnPause,
       'serverBaseUrl': _serverBaseUrl,
       'customBackground': customBackgroundNotifier.value,
       'backgroundDimming': backgroundDimming ?? _backgroundDimming,
@@ -452,6 +454,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             : null,
                       ),
                       _section(tr('discord_settings')),
+                      if (supportsDiscordPresence) ...[
+                        _toggle(
+                          key: const ValueKey('discord_presence_switch'),
+                          title: tr('discord_presence_enabled'),
+                          hint: tr('discord_presence_enabled_hint'),
+                          value: discordPrivacyNotifier.value.enabled,
+                          onChanged: (value) =>
+                              unawaited(_changeDiscordPrivacy(enabled: value)),
+                        ),
+                        _toggle(
+                          key: const ValueKey('discord_hide_on_pause_switch'),
+                          title: tr('discord_hide_on_pause'),
+                          hint: tr('discord_hide_on_pause_hint'),
+                          value: discordPrivacyNotifier.value.hideOnPause,
+                          onChanged: discordPrivacyNotifier.value.enabled
+                              ? (value) => unawaited(
+                                  _changeDiscordPrivacy(hideOnPause: value),
+                                )
+                              : null,
+                        ),
+                      ],
                       if (isDesktop)
                         _toggle(
                           key: const ValueKey('discord_lyrics_status_switch'),
@@ -652,7 +675,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String title,
     required String hint,
     required bool value,
-    required ValueChanged<bool> onChanged,
+    required ValueChanged<bool>? onChanged,
   }) => SwitchListTile(
     key: key,
     contentPadding: EdgeInsets.zero,
@@ -669,6 +692,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     activeTrackColor: accentColorNotifier.value.withValues(alpha: 0.3),
     onChanged: _settingsReady ? onChanged : null,
   );
+
+  Future<void> _changeDiscordPrivacy({bool? enabled, bool? hideOnPause}) async {
+    final current = discordPrivacyNotifier.value;
+    final selected = (
+      enabled: enabled ?? current.enabled,
+      hideOnPause: hideOnPause ?? current.hideOnPause,
+    );
+    setState(() => discordPrivacyNotifier.value = selected);
+    // Startup restores the privacy preference. Reopening settings must not
+    // overwrite a runtime opt-out with an older, unsuccessfully saved value.
+    if (!await _saveSettings() &&
+        mounted &&
+        discordPrivacyNotifier.value == selected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(tr('discord_privacy_save_failed'))),
+      );
+    }
+  }
 
   Widget _palette() => Align(
     alignment: Alignment.centerLeft,

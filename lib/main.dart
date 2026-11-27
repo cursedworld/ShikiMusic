@@ -8,6 +8,7 @@ import 'app_paths.dart';
 import 'app_build_info.dart';
 import 'atomic_file_store.dart';
 import 'custom_background.dart';
+import 'discord_status.dart';
 import 'globals.dart';
 import 'lyrics_background_blur.dart';
 import 'lyrics_text_size.dart';
@@ -86,6 +87,9 @@ Future<void> _loadSavedSettings() async {
 
     if (await file.exists()) {
       final data = jsonDecode(await file.readAsString());
+      if (data is Map) {
+        discordPrivacyNotifier.value = discordPrivacyFromSettings(data);
+      }
       // A benchmark must never pick up a real server from copied preferences.
       if (!PerformanceFrameMonitor.enabled && data is Map) {
         restoreSavedServerBaseUrl(data['serverBaseUrl'] as String?);

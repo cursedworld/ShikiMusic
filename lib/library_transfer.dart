@@ -395,6 +395,8 @@ void _validateJson(
             'compactTrackList',
             'discordShowGitHubButton',
             'discordLyricsStatus',
+            'discordPresenceEnabled',
+            'discordHideOnPause',
           ].every((key) => value[key] == null || value[key] is bool) &&
           (value['trackTransitionMode'] == null ||
               TrackTransitionMode.values.any(

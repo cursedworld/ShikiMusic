@@ -1488,6 +1488,32 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '曲に動画がある場合、ジャケットの代わりに再生します。',
   },
   'discord_settings': {'ru': 'Discord', 'en': 'Discord', 'ja': 'Discord'},
+  'discord_presence_enabled': {
+    'ru': 'Показывать, что я слушаю',
+    'en': 'Show what I’m listening to',
+    'ja': '聴いている曲を表示',
+  },
+  'discord_presence_enabled_hint': {
+    'ru': 'Показывает трек и исполнителя в активности «Слушает».',
+    'en': 'Show the track and artist in Discord’s Listening activity.',
+    'ja': 'Discordのアクティビティに曲名とアーティスト名を表示します。',
+  },
+  'discord_hide_on_pause': {
+    'ru': 'Скрывать трек на паузе',
+    'en': 'Hide track when paused',
+    'ja': '一時停止中は曲を非表示',
+  },
+  'discord_hide_on_pause_hint': {
+    'ru': 'Активность возвращается, когда музыка снова играет.',
+    'en': 'Show the activity again when playback resumes.',
+    'ja': '再生を再開するとアクティビティが再表示されます。',
+  },
+  'discord_privacy_save_failed': {
+    'ru':
+        'Не удалось сохранить настройки Discord. После перезапуска проверь их снова.',
+    'en': 'Could not save Discord settings. Check them again after restarting.',
+    'ja': 'Discordの設定を保存できませんでした。再起動後に設定を確認してください。',
+  },
   'discord_lyrics_status': {
     'ru': 'Текст песни в статусе Discord',
     'en': 'Lyrics in Discord status',
@@ -1495,11 +1521,10 @@ const Map<String, Map<String, String>> _translations = {
   },
   'discord_lyrics_status_hint': {
     'ru':
-        'Показывает текущую строку в коротком статусе. На паузе и без текста видны название и исполнитель. Карточка профиля не меняется.',
+        'Показывает текущую строку в коротком статусе, пока играет музыка. Карточка профиля не меняется.',
     'en':
-        'Show the current lyric in the short status. When paused or without lyrics, show the track and artist instead. The profile card stays the same.',
-    'ja':
-        '短いステータスに再生中の歌詞を表示します。一時停止中や歌詞がないときは曲名とアーティスト名を表示します。プロフィールカードは変わりません。',
+        'Show the current lyric in the short status during playback. The profile card stays the same.',
+    'ja': '短いステータスに再生中の歌詞を表示します。プロフィールカードは変わりません。',
   },
   'discord_github_button': {
     'ru': 'Кнопка GitHub в Discord',

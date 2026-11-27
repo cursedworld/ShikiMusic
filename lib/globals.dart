@@ -4,6 +4,7 @@ import 'dart:convert';
 
 import 'audio_handler.dart';
 import 'custom_background.dart';
+import 'discord_status.dart';
 import 'local_music_catalog.dart';
 import 'lyrics_background_blur.dart';
 import 'lyrics_text_size.dart';
@@ -54,6 +55,7 @@ final trackTransitionModeNotifier = ValueNotifier(TrackTransitionMode.off);
 final replayGainEnabledNotifier = ValueNotifier(false);
 ValueNotifier<bool> discordShowGitHubButtonNotifier = ValueNotifier(true);
 ValueNotifier<bool> discordLyricsStatusNotifier = ValueNotifier(false);
+final discordPrivacyNotifier = ValueNotifier(defaultDiscordPrivacy);
 
 // ── Track duration cache (populated as songs are played) ──────────────────
 

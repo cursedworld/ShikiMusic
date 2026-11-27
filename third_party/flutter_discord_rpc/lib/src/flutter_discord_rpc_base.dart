@@ -77,11 +77,16 @@ final class FlutterDiscordRPC {
     await api.discordReconnect();
   }
 
-  Future<void> setActivity({required RPCActivity activity}) async {
+  /// Set [activity]. Set [reconnectOnBrokenPipe] to false when the caller must
+  /// verify that this activity is still current before any retry.
+  Future<void> setActivity({
+    required RPCActivity activity,
+    bool reconnectOnBrokenPipe = true,
+  }) async {
     try {
       await api.discordSetActivity(activity: activity);
     } on AnyhowException catch (e) {
-      if (e.message.contains("BrokenPipe")) {
+      if (reconnectOnBrokenPipe && e.message.contains("BrokenPipe")) {
         await connect(autoRetry: true);
         await api.discordSetActivity(activity: activity);
       } else {

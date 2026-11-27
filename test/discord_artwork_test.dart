@@ -215,6 +215,39 @@ void main() {
     },
   );
 
+  test(
+    'privacy discards a late MusicBrainz result without querying CAA',
+    () async {
+      final started = Completer<void>();
+      final late = Completer<http.Response>();
+      final artwork = service(
+        handler: (request) {
+          if (!started.isCompleted) {
+            started.complete();
+            return late.future;
+          }
+          return http.Response('{}', 200);
+        },
+      );
+      artwork.imageFor(track());
+      await started.future;
+      artwork.imageFor(track(album: 'Pending'));
+      artwork.cancelPending();
+      late.complete(
+        http.Response(
+          jsonEncode({
+            'release-groups': [group()],
+          }),
+          200,
+        ),
+      );
+      await artwork.idle;
+      expect(requests, hasLength(1));
+      expect(notifications, isEmpty);
+      expect(await cacheFile.exists(), isFalse);
+    },
+  );
+
   test('album cache serves other tracks and survives restart', () async {
     final first = service();
     first.imageFor(track());

@@ -29,6 +29,7 @@ import '../catalog_sync.dart';
 import '../disposable_cache.dart';
 import '../discord_artwork.dart';
 import '../discord_cover.dart';
+import '../discord_presence.dart';
 import '../discord_status.dart';
 import '../download_batch.dart';
 import '../globals.dart';
@@ -521,10 +522,7 @@ class MainAppScreenState extends State<MainAppScreen>
   bool get isShuffled => _playbackOrder.shuffled;
 
   Timer? backgroundPollingTimer;
-  Timer? rpcThrottleTimer;
-  DateTime? lastRpcTime;
-  bool _discordConnected = false;
-  int _discordActivityRevision = 0;
+  DiscordPresencePublisher? _discordPresence;
   // ignore: unused_field
   int _syncTicks = 0;
 
@@ -638,8 +636,31 @@ class MainAppScreenState extends State<MainAppScreen>
 
     // React to vinyl rotation toggle changes from Settings
     vinylRotationNotifier.addListener(_onVinylRotationChanged);
-    discordShowGitHubButtonNotifier.addListener(_onDiscordSettingChanged);
-    discordLyricsStatusNotifier.addListener(_onDiscordSettingChanged);
+    if (isDesktop && !PerformanceFrameMonitor.enabled) {
+      _discordPresence = DiscordPresencePublisher(
+        canPublish: _canPublishDiscord,
+        buildActivity: _buildDiscordActivity,
+        cancelArtwork: () {
+          _discordCovers?.cancelPending();
+          _discordArtwork?.cancelPending();
+        },
+        connect: () => FlutterDiscordRPC.instance.connect(),
+        setActivity: (activity) => FlutterDiscordRPC.instance.setActivity(
+          activity: activity,
+          reconnectOnBrokenPipe: false,
+        ),
+        clearActivity: () async {
+          final rpc = FlutterDiscordRPC.instance;
+          await rpc.clearActivity();
+          return rpc.isConnected;
+        },
+        disconnect: () => FlutterDiscordRPC.instance.disconnect(),
+        onError: (error) => debugPrint('Discord RPC: ${error.runtimeType}'),
+      );
+      discordPrivacyNotifier.addListener(_onDiscordSettingChanged);
+      discordShowGitHubButtonNotifier.addListener(_onDiscordSettingChanged);
+      discordLyricsStatusNotifier.addListener(_onDiscordSettingChanged);
+    }
 
     // Synchronize video player actions
     activeTrackNotifier.addListener(_onActiveTrackChanged);
@@ -685,10 +706,6 @@ class MainAppScreenState extends State<MainAppScreen>
     _initMediaSession();
 
     HardwareKeyboard.instance.addHandler(_handleGlobalKeys);
-
-    if (isDesktop && !PerformanceFrameMonitor.enabled) {
-      unawaited(_connectDiscordRpc());
-    }
 
     if (isAudioServiceActive) {
       audioHandler.onNext = nextTrack;
@@ -789,13 +806,13 @@ class MainAppScreenState extends State<MainAppScreen>
     _lyricTiming.dispose();
     _playNextChanges.dispose();
     _lyricTimingProposals?.close();
-    _discordActivityRevision += 1;
     _videoOperation?.cancel();
     _videoOperation = null;
     _videoReleaseTimer?.cancel();
     _videoTrackSwitchTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     vinylRotationNotifier.removeListener(_onVinylRotationChanged);
+    discordPrivacyNotifier.removeListener(_onDiscordSettingChanged);
     discordShowGitHubButtonNotifier.removeListener(_onDiscordSettingChanged);
     discordLyricsStatusNotifier.removeListener(_onDiscordSettingChanged);
     activeTrackNotifier.removeListener(_onActiveTrackChanged);
@@ -834,7 +851,6 @@ class MainAppScreenState extends State<MainAppScreen>
     lyricsSearchIndex.dispose();
     searchFocusNode.dispose();
     backgroundPollingTimer?.cancel();
-    rpcThrottleTimer?.cancel();
     if (_mediaSessionActive) {
       _mediaSession?.deactivate();
     }
@@ -844,9 +860,9 @@ class MainAppScreenState extends State<MainAppScreen>
     _vinylController?.dispose();
     _artistLibraryChanges.dispose();
 
-    if (isDesktop) {
+    if (_discordPresence != null) {
       unawaited(_disposeDiscordRpc());
-    } else {
+    } else if (!isDesktop) {
       WakelockPlus.disable();
     }
 
@@ -933,46 +949,12 @@ class MainAppScreenState extends State<MainAppScreen>
     });
   }
 
-  Future<void> _connectDiscordRpc() async {
-    try {
-      await FlutterDiscordRPC.instance.connect();
-      _discordConnected = true;
-      if (mounted && playingQueue.isNotEmpty) {
-        updateRPC(force: true);
-      }
-    } catch (error) {
-      _discordConnected = false;
-      debugPrint('Discord RPC connect failed: $error');
-    }
-  }
-
   Future<void> _disposeDiscordRpc() async {
     try {
-      if (_discordConnected) {
-        await FlutterDiscordRPC.instance.disconnect();
-      }
-      _discordConnected = false;
+      await _discordPresence?.close();
       await FlutterDiscordRPC.instance.dispose();
     } catch (error) {
-      debugPrint('Discord RPC dispose failed: $error');
-    }
-  }
-
-  Future<void> _clearDiscordActivity() async {
-    if (!_discordConnected) return;
-    try {
-      await FlutterDiscordRPC.instance.clearActivity();
-    } catch (error) {
-      debugPrint('Discord RPC clear failed: $error');
-    }
-  }
-
-  Future<void> _setDiscordActivity(RPCActivity activity) async {
-    if (!_discordConnected) return;
-    try {
-      await FlutterDiscordRPC.instance.setActivity(activity: activity);
-    } catch (error) {
-      debugPrint('Discord RPC activity failed: $error');
+      debugPrint('Discord RPC dispose failed: ${error.runtimeType}');
     }
   }
 
@@ -1762,6 +1744,9 @@ class MainAppScreenState extends State<MainAppScreen>
     if (value) _linuxPlaybackStopped = false;
     if (mounted) setState(() => isPlaying = value);
     isPlayingNotifier.value = value;
+    if (!value && discordPrivacyNotifier.value.hideOnPause) {
+      updateRPC(force: true);
+    }
     _updateCatalogActivity();
     if (value &&
         !_vinylUserStopped &&
@@ -3265,10 +3250,7 @@ class MainAppScreenState extends State<MainAppScreen>
         lrcLoading = false;
         _notifyPlayNext();
         _syncMediaSessionPlayback();
-        _discordActivityRevision++;
-        if (isDesktop) {
-          unawaited(_clearDiscordActivity().catchError(_logAudioError));
-        }
+        updateRPC(force: true);
         unawaited(_saveState());
       }
     }
@@ -6054,156 +6036,94 @@ class MainAppScreenState extends State<MainAppScreen>
   DiscordAnimatedArtwork? _discordArtwork;
   DiscordCoverLookup? _discordCovers;
 
+  bool _canPublishDiscord() =>
+      !_stateDisposing &&
+      discordActivityAllowed(
+        discordPrivacyNotifier.value,
+        isPlaying: isPlaying,
+      ) &&
+      playingIndex >= 0 &&
+      playingIndex < playingQueue.length &&
+      activeTrackNotifier.value?['id'] == playingTrack['id'];
+
   void updateRPC({bool force = false}) {
-    if (PerformanceFrameMonitor.enabled ||
-        !isDesktop ||
-        _stateDisposing ||
-        playingQueue.isEmpty ||
-        playingIndex < 0 ||
-        playingIndex >= playingQueue.length) {
-      return;
+    _discordPresence?.refresh(force: force, clearBeforePublish: !isPlaying);
+  }
+
+  RPCActivity _buildDiscordActivity() {
+    final trackData = playingTrack;
+    final title = trackData['title'];
+    final artist = trackData['album']['artist']['name'];
+    final ownTrack = isLocalMusic(trackData);
+    final publicCover = ownTrack ? null : _discordCovers?.imageFor(trackData);
+    String? animatedCover;
+    // Animation is a fallback, never an override of iTunes/Deezer/Last.fm.
+    if (!ownTrack &&
+        _discordCovers?.isResolved(trackData) == true &&
+        publicCover?.isTrackCover != true) {
+      animatedCover = _discordArtwork?.imageFor(trackData);
     }
-    final activityRevision = ++_discordActivityRevision;
+    final largeImage =
+        selectDiscordCoverImage(
+          discovered: publicCover,
+          stored: trackData['album']?['cover']?.toString(),
+          animated: animatedCover,
+        ) ??
+        'https://cdn.discordapp.com/app-icons/1480246072042590219/36573ffd3ca304580ed8968517090b0e.png';
 
-    Future<void> sendToDiscord() async {
-      if (_stateDisposing ||
-          activityRevision != _discordActivityRevision ||
-          playingQueue.isEmpty ||
-          playingIndex < 0 ||
-          playingIndex >= playingQueue.length) {
-        return;
-      }
-      lastRpcTime = DateTime.now();
-      final trackData = playingTrack;
-      final title = trackData['title'];
-      final art = trackData['album']['artist']['name'];
-
-      final ownTrack = isLocalMusic(trackData);
-      final publicCover = ownTrack ? null : _discordCovers?.imageFor(trackData);
-      String? animatedCover;
-      // Animation is a fallback, never an override of iTunes/Deezer/Last.fm.
-      if (!ownTrack &&
-          _discordCovers?.isResolved(trackData) == true &&
-          publicCover?.isTrackCover != true) {
-        animatedCover = _discordArtwork?.imageFor(trackData);
-      }
-      final coverUrl = selectDiscordCoverImage(
-        discovered: publicCover,
-        stored: trackData['album']?['cover']?.toString(),
-        animated: animatedCover,
+    final duration = trackData['duration'];
+    final durationMs = duration is num && duration.toInt() > 0
+        ? duration.toInt() * 1000
+        : null;
+    final currentLyric = currentLine >= 0 && currentLine < globalLyrics.length
+        ? globalLyrics[currentLine].txt
+        : null;
+    final start = discordStart;
+    final String state;
+    if (isPlaying) {
+      state =
+          currentLyric ??
+          (currentLine == -1 && globalLyrics.isNotEmpty
+              ? tr('lyrics_intro')
+              : tr('listening_music'));
+    } else {
+      final liveDuration = fullDurationNotifier.value;
+      final total = liveDuration > Duration.zero
+          ? liveDuration
+          : Duration(milliseconds: durationMs ?? 0);
+      final position = formatDuration(currentPositionNotifier.value);
+      state = tr('paused_at').replaceAll(
+        '{position}',
+        total > Duration.zero
+            ? '$position / ${formatDuration(total)}'
+            : position,
       );
-
-      final dur = trackData['duration'];
-      int? durationMs;
-      if (dur != null && dur is num && dur.toInt() > 0) {
-        durationMs = dur.toInt() * 1000;
-      }
-
-      final largeImg =
-          coverUrl ??
-          'https://cdn.discordapp.com/app-icons/1480246072042590219/36573ffd3ca304580ed8968517090b0e.png';
-
-      if (_stateDisposing || activityRevision != _discordActivityRevision) {
-        return;
-      }
-
-      final currentLyric = currentLine >= 0 && currentLine < globalLyrics.length
-          ? globalLyrics[currentLine].txt
-          : null;
-      final statusDisplayType = resolveDiscordStatusDisplayType(
+    }
+    return RPCActivity(
+      details: '$title — $artist',
+      state: state,
+      activityType: ActivityType.listening,
+      statusDisplayType: resolveDiscordStatusDisplayType(
         showLyrics: discordLyricsStatusNotifier.value,
         isPlaying: isPlaying,
         currentLyric: currentLyric,
-      );
-
-      if (isPlaying) {
-        String p1 = '$title — $art';
-        String p2 = tr('listening_music');
-
-        if (globalLyrics.isNotEmpty) {
-          if (currentLine >= 0 && currentLine < globalLyrics.length) {
-            p2 = globalLyrics[currentLine].txt;
-          } else if (currentLine == -1) {
-            p2 = tr('lyrics_intro');
-          }
-        }
-
-        await _setDiscordActivity(
-          RPCActivity(
-            details: p1,
-            state: p2,
-            activityType: ActivityType.listening,
-            statusDisplayType: statusDisplayType,
-            assets: RPCAssets(largeImage: largeImg),
-            timestamps: discordStart != null
-                ? RPCTimestamps(
-                    start: discordStart!,
-                    end: durationMs != null
-                        ? (discordStart! + durationMs)
-                        : null,
-                  )
-                : null,
-            buttons: discordShowGitHubButtonNotifier.value
-                ? [
-                    const RPCButton(
-                      label: "GitHub",
-                      url: "https://github.com/cursedworld/ShikiMusic",
-                    ),
-                  ]
-                : null,
-          ),
-        );
-      } else {
-        await _clearDiscordActivity();
-        if (_stateDisposing || activityRevision != _discordActivityRevision) {
-          return;
-        }
-        final currentPos = currentPositionNotifier.value;
-        final totalDur = fullDurationNotifier.value > Duration.zero
-            ? fullDurationNotifier.value
-            : (durationMs != null ? Duration(milliseconds: durationMs) : null);
-        final posStr = formatDuration(currentPos);
-        final durStr = totalDur != null && totalDur > Duration.zero
-            ? ' / ${formatDuration(totalDur)}'
-            : '';
-
-        await _setDiscordActivity(
-          RPCActivity(
-            details: '$title — $art',
-            state: tr('paused_at').replaceAll('{position}', '$posStr$durStr'),
-            activityType: ActivityType.listening,
-            statusDisplayType: statusDisplayType,
-            assets: RPCAssets(largeImage: largeImg),
-            buttons: discordShowGitHubButtonNotifier.value
-                ? [
-                    const RPCButton(
-                      label: "GitHub",
-                      url: "https://github.com/cursedworld/ShikiMusic",
-                    ),
-                  ]
-                : null,
-          ),
-        );
-      }
-    }
-
-    if (force) {
-      rpcThrottleTimer?.cancel();
-      sendToDiscord();
-      return;
-    }
-
-    final now = DateTime.now();
-    if (lastRpcTime == null ||
-        now.difference(lastRpcTime!) >= const Duration(milliseconds: 1500)) {
-      rpcThrottleTimer?.cancel();
-      sendToDiscord();
-    } else {
-      rpcThrottleTimer?.cancel();
-      final wait =
-          const Duration(milliseconds: 1500) - now.difference(lastRpcTime!);
-      rpcThrottleTimer = Timer(wait, sendToDiscord);
-    }
+      ),
+      assets: RPCAssets(largeImage: largeImage),
+      timestamps: isPlaying && start != null
+          ? RPCTimestamps(
+              start: start,
+              end: durationMs == null ? null : start + durationMs,
+            )
+          : null,
+      buttons: discordShowGitHubButtonNotifier.value
+          ? const [
+              RPCButton(
+                label: 'GitHub',
+                url: 'https://github.com/cursedworld/ShikiMusic',
+              ),
+            ]
+          : null,
+    );
   }
 
   void showLyricsScreen() {

@@ -450,6 +450,50 @@ void main() {
     },
   );
 
+  test(
+    'privacy discards an old cover and the pending track but keeps the cache',
+    () async {
+      final late = Completer<http.Response>();
+      final started = Completer<void>();
+      final covers = lookup(
+        handler: (request) {
+          final term = request.url.queryParameters['term'] ?? '';
+          if (term.contains('Late')) {
+            if (!started.isCompleted) started.complete();
+            return late.future;
+          }
+          return http.Response(
+            jsonEncode({
+              'results': [apple()],
+            }),
+            200,
+          );
+        },
+      );
+      expect((await find(covers))?.source, DiscordCoverSource.itunes);
+      resolved.clear();
+      final hiddenTrack = track(title: 'Late');
+      covers.imageFor(hiddenTrack);
+      await started.future;
+      covers.imageFor(track(title: 'Pending'));
+      covers.cancelPending();
+      late.complete(
+        http.Response(
+          jsonEncode({
+            'results': [apple(title: 'Late')],
+          }),
+          200,
+        ),
+      );
+      await covers.idle;
+      expect(resolved, isEmpty);
+      expect(covers.isResolved(hiddenTrack), isFalse);
+      expect(requests, hasLength(2));
+      expect(covers.imageFor(track())?.source, DiscordCoverSource.itunes);
+      expect(requests, hasLength(2));
+    },
+  );
+
   test('dispose suppresses stale callbacks and future requests', () async {
     final gate = Completer<http.Response>();
     final started = Completer<void>();
