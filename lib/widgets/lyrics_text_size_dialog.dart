@@ -92,7 +92,7 @@ class _LyricsTextSizeDialogState extends State<LyricsTextSizeDialog> {
       ),
       TextButton(
         onPressed: () => Navigator.pop(context, _draft),
-        child: Text(tr('lyrics_text_size_apply')),
+        child: Text(tr('settings_apply')),
       ),
     ],
   );

@@ -469,6 +469,86 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('lyrics blur previews, resets, and persists only on apply', (
+    tester,
+  ) async {
+    final oldBlur = lyricsBackgroundBlurNotifier.value;
+    addTearDown(() => lyricsBackgroundBlurNotifier.value = oldBlur);
+    final file = File('${directory.path}/shiki_settings.json')
+      ..writeAsStringSync(jsonEncode({'backgroundDimming': 38}));
+    final row = find.byKey(const ValueKey('lyrics_background_blur_setting'));
+    final slider = find.byKey(const ValueKey('lyrics_background_blur_slider'));
+    final preview = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byType(ImageFiltered),
+    );
+
+    Future<void> showSettings() async {
+      await show(tester, width: 320, height: 812, scale: 2);
+      await drive(tester, () => editable(tester));
+      await tester.scrollUntilVisible(
+        row,
+        160,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openChooser() async {
+      final control = tester.widget<InkWell>(
+        find.descendant(of: row, matching: find.byType(InkWell)),
+      );
+      await tester.runAsync(() async {
+        control.onTap!();
+      });
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> turnBlurOff() async {
+      await tester.drag(slider, Offset(-tester.getSize(slider).width, 0));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Slider>(slider).value, 0);
+      expect(tester.widget<ImageFiltered>(preview).enabled, isFalse);
+    }
+
+    await showSettings();
+    await openChooser();
+    expect(tester.widget<Slider>(slider).value, 50);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pumpAndSettle();
+    expect(tester.widget<Slider>(slider).value, 55);
+    await turnBlurOff();
+    await tester.tap(find.text('Сбросить'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<Slider>(slider).value, 50);
+    await turnBlurOff();
+    await tester.tap(find.text('Отмена'));
+    await tester.pumpAndSettle();
+    expect(lyricsBackgroundBlurNotifier.value, 50);
+    expect(jsonDecode(file.readAsStringSync())['lyricsBackgroundBlur'], isNull);
+
+    await openChooser();
+    await turnBlurOff();
+    await tester.tap(find.text('Применить'));
+    await tester.pumpAndSettle();
+    await drive(tester, () {
+      try {
+        return jsonDecode(file.readAsStringSync())['lyricsBackgroundBlur'] == 0;
+      } on FileSystemException catch (error) {
+        if (error.osError?.errorCode == 32) return false;
+        rethrow;
+      }
+    });
+    expect(jsonDecode(file.readAsStringSync())['backgroundDimming'], 38);
+    await tester.pumpWidget(const SizedBox());
+    lyricsBackgroundBlurNotifier.value = 50;
+    await showSettings();
+    expect(lyricsBackgroundBlurNotifier.value, 0);
+    expect(find.descendant(of: row, matching: find.text('0%')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('mouse selection moves lyrics size focus for arrow navigation', (
     tester,
   ) async {
@@ -787,6 +867,7 @@ void main() {
         setting('track_transition_setting'),
         setting('video_clip_switch'),
         setting('lyrics_text_size_setting'),
+        setting('lyrics_background_blur_setting'),
         find.text('Discord'),
         find.text('Данные'),
         find.text('Хранилище'),

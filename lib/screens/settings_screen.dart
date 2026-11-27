@@ -15,12 +15,14 @@ import '../custom_background.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../listening_statistics.dart';
+import '../lyrics_background_blur.dart';
 import '../lyrics_text_size.dart';
 import '../platform_capabilities.dart';
 import 'statistics_screen.dart';
 import 'library_transfer_screen.dart';
 import '../server_config.dart';
 import '../track_transition_mode.dart';
+import '../widgets/lyrics_background_blur_dialog.dart';
 import '../widgets/lyrics_text_size_dialog.dart';
 import '../widgets/server_address_setting.dart';
 
@@ -194,6 +196,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         lyricsTextSizeNotifier.value = LyricsTextSize.fromSettings(
           data['lyricsTextSize'],
         );
+        lyricsBackgroundBlurNotifier.value = lyricsBackgroundBlurFromSettings(
+          data['lyricsBackgroundBlur'],
+        );
 
         if (_selectedColorKey == 'custom' && data['accentColor'] != null) {
           accentColorNotifier.value = Color(data['accentColor'] as int);
@@ -232,6 +237,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'backgroundDimming': backgroundDimming ?? _backgroundDimming,
       'compactTrackList': compactTrackListNotifier.value,
       'lyricsTextSize': lyricsTextSizeNotifier.value.name,
+      'lyricsBackgroundBlur': lyricsBackgroundBlurNotifier.value,
       'accentColor': _selectedColorKey == 'custom'
           ? accentColorNotifier.value.toARGB32()
           : null,
@@ -436,6 +442,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           'lyrics_text_size_${lyricsTextSizeNotifier.value.name}',
                         ),
                         onTap: _settingsReady ? _chooseLyricsTextSize : null,
+                      ),
+                      _row(
+                        key: const ValueKey('lyrics_background_blur_setting'),
+                        title: tr('lyrics_background_blur'),
+                        value: '${lyricsBackgroundBlurNotifier.value}%',
+                        onTap: _settingsReady
+                            ? _chooseLyricsBackgroundBlur
+                            : null,
                       ),
                       _section(tr('discord_settings')),
                       if (isDesktop)
@@ -834,6 +848,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!await _saveSettings() && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(tr('lyrics_text_size_save_failed'))),
+      );
+    }
+  }
+
+  Future<void> _chooseLyricsBackgroundBlur() async {
+    final current = lyricsBackgroundBlurNotifier.value;
+    final track = activeTrackNotifier.value;
+    final artwork = track == null ? null : getPictureProvider(track);
+    final selected = await showDialog<int>(
+      context: context,
+      builder: (_) => LyricsBackgroundBlurDialog(
+        initialBlur: current,
+        backgroundColor: _surface,
+        cover: artwork is FileImage ? artwork : null,
+      ),
+    );
+    if (!mounted || selected == null || selected == current) return;
+    setState(() => lyricsBackgroundBlurNotifier.value = selected);
+    if (!await _saveSettings() && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(tr('lyrics_background_blur_save_failed'))),
       );
     }
   }

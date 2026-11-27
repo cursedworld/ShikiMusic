@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'audio_handler.dart';
 import 'custom_background.dart';
 import 'local_music_catalog.dart';
+import 'lyrics_background_blur.dart';
 import 'lyrics_text_size.dart';
 import 'track_transition_mode.dart';
 
@@ -46,6 +47,7 @@ ValueNotifier<String?> customBackgroundNotifier = ValueNotifier(null);
 final backgroundDimmingNotifier = ValueNotifier(defaultBackgroundDimming);
 final compactTrackListNotifier = ValueNotifier(false);
 final lyricsTextSizeNotifier = ValueNotifier(LyricsTextSize.normal);
+final lyricsBackgroundBlurNotifier = ValueNotifier(defaultLyricsBackgroundBlur);
 const compactTrackRowGap = 2.0;
 ValueNotifier<bool> playVideoClipNotifier = ValueNotifier(false);
 final trackTransitionModeNotifier = ValueNotifier(TrackTransitionMode.off);

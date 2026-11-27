@@ -817,11 +817,31 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'At night, the city lights ripple on the river.',
     'ja': '夜の川面に街の明かりが揺れる。',
   },
-  'lyrics_text_size_apply': {'ru': 'Применить', 'en': 'Apply', 'ja': '適用'},
+  'settings_apply': {'ru': 'Применить', 'en': 'Apply', 'ja': '適用'},
   'lyrics_text_size_save_failed': {
     'ru': 'Не удалось сохранить размер текста песен.',
     'en': 'Could not save the lyrics text size.',
     'ja': '歌詞の文字サイズを保存できませんでした。',
+  },
+  'lyrics_background_blur': {
+    'ru': 'Размытие фона текста',
+    'en': 'Lyrics background blur',
+    'ja': '歌詞の背景ぼかし',
+  },
+  'lyrics_background_blur_sample': {
+    'ru': 'Город засыпает',
+    'en': 'The city sleeps',
+    'ja': '街が眠る',
+  },
+  'lyrics_background_blur_reset': {
+    'ru': 'Сбросить',
+    'en': 'Reset',
+    'ja': 'リセット',
+  },
+  'lyrics_background_blur_save_failed': {
+    'ru': 'Не удалось сохранить размытие фона текста.',
+    'en': 'Could not save the lyrics background blur.',
+    'ja': '歌詞の背景ぼかしを保存できませんでした。',
   },
   'settings_playback': {'ru': 'Воспроизведение', 'en': 'Playback', 'ja': '再生'},
   'replay_gain': {

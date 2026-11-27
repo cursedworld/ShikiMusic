@@ -9,6 +9,7 @@ import 'app_build_info.dart';
 import 'atomic_file_store.dart';
 import 'custom_background.dart';
 import 'globals.dart';
+import 'lyrics_background_blur.dart';
 import 'lyrics_text_size.dart';
 import 'perf/frame_metrics.dart';
 import 'screens/home_screen.dart';
@@ -109,6 +110,9 @@ Future<void> _loadSavedSettings() async {
       compactTrackListNotifier.value = data['compactTrackList'] == true;
       lyricsTextSizeNotifier.value = LyricsTextSize.fromSettings(
         data['lyricsTextSize'],
+      );
+      lyricsBackgroundBlurNotifier.value = lyricsBackgroundBlurFromSettings(
+        data['lyricsBackgroundBlur'],
       );
 
       // Restore language

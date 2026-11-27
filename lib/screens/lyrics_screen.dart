@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter/foundation.dart' show ValueListenable, listEquals;
 import 'package:flutter/material.dart';
@@ -14,6 +13,7 @@ import '../music_import.dart';
 import '../player_shortcuts.dart';
 import '../widgets/lyric_line_edit_dialog.dart';
 import '../widgets/lyric_timing_controls.dart';
+import '../widgets/lyrics_backdrop.dart';
 import '../widgets/synced_lyrics_view.dart';
 
 /// Full-screen lyrics overlay with synced scrolling and blurred background.
@@ -304,21 +304,14 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
           backgroundColor: Colors.black,
           body: Stack(
             children: [
-              // ── Blurred album art background (close and immersive) ──
-              Container(
-                decoration: BoxDecoration(
-                  image: DecorationImage(
-                    image: getPictureProvider(trackData),
-                    fit: BoxFit.cover,
-                    colorFilter: ColorFilter.mode(
-                      Colors.black.withValues(alpha: 0.4),
-                      BlendMode.darken,
-                    ),
+              Positioned.fill(
+                child: ValueListenableBuilder<int>(
+                  valueListenable: lyricsBackgroundBlurNotifier,
+                  child: LyricsBackdrop.coverImage(
+                    getPictureProvider(trackData),
                   ),
-                ),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
-                  child: Container(color: Colors.black.withValues(alpha: 0.25)),
+                  builder: (_, blur, artwork) =>
+                      LyricsBackdrop(blur: blur, artwork: artwork!),
                 ),
               ),
 

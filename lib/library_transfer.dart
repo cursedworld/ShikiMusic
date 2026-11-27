@@ -10,6 +10,7 @@ import 'background_photo.dart';
 import 'custom_background.dart';
 import 'local_music_catalog.dart';
 import 'local_music_transfer.dart';
+import 'lyrics_background_blur.dart';
 import 'lyrics_text_size.dart';
 import 'mp3_metadata.dart';
 import 'playlist_artwork.dart';
@@ -401,6 +402,8 @@ void _validateJson(
               )) &&
           (value['lyricsTextSize'] == null ||
               LyricsTextSize.tryParse(value['lyricsTextSize']) != null) &&
+          (value['lyricsBackgroundBlur'] == null ||
+              isValidLyricsBackgroundBlur(value['lyricsBackgroundBlur'])) &&
           (value['accentColor'] == null || value['accentColor'] is int) &&
           (value['themeColor'] == null || value['themeColor'] is String) &&
           (value['language'] == null || value['language'] is String);

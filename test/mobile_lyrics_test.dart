@@ -245,6 +245,7 @@ void main() {
     final oldLoading = lrcLoading;
     final oldPlainLyrics = noLrcData;
     final oldSize = lyricsTextSizeNotifier.value;
+    final oldBlur = lyricsBackgroundBlurNotifier.value;
     addTearDown(() {
       globalLyrics = oldLines;
       currentLine = oldLine;
@@ -252,6 +253,7 @@ void main() {
       lrcLoading = oldLoading;
       noLrcData = oldPlainLyrics;
       lyricsTextSizeNotifier.value = oldSize;
+      lyricsBackgroundBlurNotifier.value = oldBlur;
       debugDefaultTargetPlatformOverride = null;
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
@@ -283,6 +285,7 @@ void main() {
     }
 
     lyricsTextSizeNotifier.value = LyricsTextSize.large;
+    lyricsBackgroundBlurNotifier.value = 50;
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(320, 812);
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
@@ -294,6 +297,34 @@ void main() {
       tester.widget<SyncedLyricsView>(syncedView).textSize,
       LyricsTextSize.large,
     );
+    final originalLyrics = tester.widget<SyncedLyricsView>(syncedView);
+    final originalCue = tester.getRect(
+      find.byKey(const ValueKey('lyric_cue_4')),
+    );
+    expect(find.byType(BackdropFilter), findsNothing);
+    for (final (percent, sigma) in [(50, 25.0), (0, 0.0), (100, 50.0)]) {
+      lyricsBackgroundBlurNotifier.value = percent;
+      await tester.pumpAndSettle();
+      final filter = tester.widget<ImageFiltered>(find.byType(ImageFiltered));
+      expect(filter.enabled, percent != 0);
+      expect(
+        filter.imageFilter,
+        ui.ImageFilter.blur(
+          sigmaX: sigma,
+          sigmaY: sigma,
+          tileMode: ui.TileMode.clamp,
+        ),
+      );
+      expect(
+        tester.layers.whereType<ImageFilterLayer>(),
+        hasLength(percent == 0 ? 0 : 1),
+      );
+      expect(tester.widget<SyncedLyricsView>(syncedView), same(originalLyrics));
+      expect(
+        tester.getRect(find.byKey(const ValueKey('lyric_cue_4'))),
+        originalCue,
+      );
+    }
     final replacement = [
       for (var i = 0; i < 15; i++)
         LyricLine(
