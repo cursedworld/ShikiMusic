@@ -919,8 +919,12 @@ void main() {
     });
   }
 
-  for (final language in ['ru', 'en', 'ja']) {
-    testWidgets('only downloaded fits a narrow $language settings screen', (
+  for (final (language, label) in [
+    ('ru', 'Автономный режим'),
+    ('en', 'Offline mode'),
+    ('ja', 'オフラインモード'),
+  ]) {
+    testWidgets('offline mode fits a narrow $language settings screen', (
       tester,
     ) async {
       final previousMode = downloadedOnly.value;
@@ -939,7 +943,7 @@ void main() {
         () => tester.widget<SwitchListTile>(toggle).onChanged != null,
       );
       expect(
-        find.descendant(of: toggle, matching: find.text(tr('downloaded_only'))),
+        find.descendant(of: toggle, matching: find.text(label)),
         findsOneWidget,
       );
       expect(

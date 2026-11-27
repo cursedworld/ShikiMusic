@@ -4130,12 +4130,7 @@ class MainAppScreenState extends State<MainAppScreen>
       : const SizedBox.shrink();
 
   Widget _buildCatalogSyncButton() => downloadedOnly.value
-      ? IconButton(
-          key: const ValueKey('catalog_sync'),
-          tooltip: tr('downloaded_only'),
-          onPressed: null,
-          icon: const Icon(Icons.offline_pin_outlined),
-        )
+      ? const SizedBox.shrink()
       : CatalogSyncButton(
           status: catalogSyncStatus,
           onRefresh: () => unawaited(syncDatabase()),

@@ -189,6 +189,7 @@ void main() {
       }
 
       final switchFinder = find.byKey(const ValueKey('downloaded_only_switch'));
+      final catalogSync = find.byKey(const ValueKey('catalog_sync'));
       Finder rowTitle(int id, String title) => find.descendant(
         of: find.byKey(ValueKey(id)),
         matching: find.text(title),
@@ -229,6 +230,7 @@ void main() {
             await until(
               () => state.playingTrack?['id'] == 2 && !state.isLoading,
             );
+            expect(catalogSync, findsNothing);
             expect(find.byKey(const ValueKey(2)), findsNothing);
             expect(find.byKey(ValueKey(own.id)), findsOneWidget);
             state.didChangeAppLifecycleState(AppLifecycleState.hidden);
@@ -304,6 +306,7 @@ void main() {
             expect(downloadedOnly.value, isFalse);
             state.downloadQueue.clear();
             await goBack();
+            expect(catalogSync, findsOneWidget);
 
             await tester.tap(rowTitle(2, 'Server only'));
             await until(
@@ -339,6 +342,8 @@ void main() {
             await until(() => saved(true) && downloadedOnly.value);
             expect(releases, beforeRelease + 1);
             expect(state.isPlaying, isFalse);
+            await goBack();
+            expect(catalogSync, findsNothing);
             final beforePoll = calls.length;
             await tester.pump(const Duration(seconds: 13));
             expect(calls, hasLength(beforePoll));

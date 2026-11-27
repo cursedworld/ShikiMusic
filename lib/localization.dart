@@ -806,7 +806,7 @@ const Map<String, Map<String, String>> _translations = {
   },
   'lyrics_text_size': {
     'ru': 'Размер текста песен',
-    'en': 'Lyrics text size',
+    'en': 'Lyrics font size',
     'ja': '歌詞の文字サイズ',
   },
   'lyrics_text_size_small': {'ru': 'Мелкий', 'en': 'Small', 'ja': '小'},
@@ -820,7 +820,7 @@ const Map<String, Map<String, String>> _translations = {
   'settings_apply': {'ru': 'Применить', 'en': 'Apply', 'ja': '適用'},
   'lyrics_text_size_save_failed': {
     'ru': 'Не удалось сохранить размер текста песен.',
-    'en': 'Could not save the lyrics text size.',
+    'en': 'Could not save the lyrics font size.',
     'ja': '歌詞の文字サイズを保存できませんでした。',
   },
   'lyrics_background_blur': {
@@ -926,8 +926,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '保存',
   },
   'settings_background_dimming_save_failed': {
-    'ru': 'Не удалось сохранить затемнение. Вернулось прежнее значение.',
-    'en': 'Could not save dimming. The previous value was restored.',
+    'ru': 'Затемнение не сохранилось. Плеер вернул прежнее значение.',
+    'en':
+        'Could not save the new dimming level. The player kept the previous one.',
     'ja': '暗さを保存できませんでした。以前の設定に戻しました。',
   },
   'settings_background_custom': {
@@ -1046,9 +1047,10 @@ const Map<String, Map<String, String>> _translations = {
   },
   'storage_cache_hint': {
     'ru':
-        'Можно удалить только неиспользуемые обложки и их старые временные файлы.',
-    'en': 'Only unused artwork and its old temporary files can be cleared.',
-    'ja': '使われていないカバー画像と古い一時ファイルだけを消去できます。',
+        'Очистка удалит только неиспользуемые обложки и старые временные файлы изображений.',
+    'en':
+        'Clearing the cache removes only unused artwork and old temporary image files.',
+    'ja': 'キャッシュを消去すると、未使用のカバー画像と古い一時画像ファイルだけが削除されます。',
   },
   'storage_calculating': {
     'ru': 'Считаем размер файлов…',
@@ -1092,7 +1094,7 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '{size}の容量を解放しました。',
   },
   'storage_no_files_to_clear': {
-    'ru': 'К удалению ничего не осталось.',
+    'ru': 'Больше нечего удалять.',
     'en': 'There’s nothing left to clear.',
     'ja': '消去できるファイルはありません。',
   },
@@ -1207,29 +1209,33 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '接続テスト',
   },
   'downloaded_only': {
-    'ru': 'Только скачанное',
-    'en': 'Downloaded only',
-    'ja': 'ダウンロード済みのみ',
+    'ru': 'Автономный режим',
+    'en': 'Offline mode',
+    'ja': 'オフラインモード',
   },
   'downloaded_only_hint': {
-    'ru': 'Показывать музыку с устройства и не обращаться к серверу.',
-    'en': 'Show music on this device and pause server connections.',
-    'ja': '端末にある曲を表示し、サーバーに接続しません。',
+    'ru':
+        'На главной и в поиске остаются треки с устройства. Плеер не подключается к серверу.',
+    'en':
+        'Home and search show music on this device. The player won’t connect to the server.',
+    'ja': 'ホームと検索には端末にある曲だけが表示されます。サーバーには接続しません。',
   },
   'downloaded_only_server_paused': {
-    'ru': 'Проверка сервера отключена в режиме «Только скачанное».',
-    'en': 'Connection testing is off in Downloaded only mode.',
-    'ja': '「ダウンロード済みのみ」では接続をテストできません。',
+    'ru': 'Чтобы проверить соединение, выключи автономный режим.',
+    'en': 'Turn off offline mode to test the connection.',
+    'ja': '接続を確認するには、オフラインモードをオフにしてください。',
   },
   'downloaded_only_action': {
-    'ru': 'Выключи «Только скачанное», чтобы обратиться к серверу.',
-    'en': 'Turn off Downloaded only to use the server.',
-    'ja': 'サーバーを使うには「ダウンロード済みのみ」をオフにしてください。',
+    'ru': 'Выключи автономный режим, чтобы подключиться к серверу.',
+    'en': 'Turn off offline mode to connect to the server.',
+    'ja': 'サーバーに接続するには、オフラインモードをオフにしてください。',
   },
   'downloaded_only_busy': {
-    'ru': 'Дождись окончания поиска или загрузки, затем включи режим.',
-    'en': 'Wait for the search or download to finish, then try again.',
-    'ja': '検索やダウンロードが終わってから、もう一度お試しください。',
+    'ru':
+        'Дождись окончания поиска или загрузки, потом включи автономный режим.',
+    'en':
+        'Wait for the search or download to finish before turning on offline mode.',
+    'ja': '検索やダウンロードが終わってから、オフラインモードをオンにしてください。',
   },
   'downloaded_only_stream_busy': {
     'ru': 'Плеер ещё переключает трек. Попробуй снова.',
@@ -1237,9 +1243,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '曲を切り替えています。少し待ってからお試しください。',
   },
   'downloaded_only_stop_stream': {
-    'ru': 'Сейчас открыт трек с сервера. Остановить его и включить режим?',
-    'en': 'A track from the server is open. Stop it and switch modes?',
-    'ja': 'サーバーから曲を開いています。曲を停止して切り替えますか？',
+    'ru': 'Остановить трек с сервера?',
+    'en': 'This track uses the server. Stop playback?',
+    'ja': 'サーバーから曲を開いています。再生を停止しますか？',
   },
   'downloaded_only_stop_and_enable': {
     'ru': 'Остановить и включить',
@@ -1247,9 +1253,11 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '停止してオンにする',
   },
   'downloaded_only_save_failed': {
-    'ru': 'Не удалось сохранить режим. Он действует до закрытия плеера.',
-    'en': 'Could not save this mode. It applies until you close the player.',
-    'ja': 'モードを保存できませんでした。プレーヤーを閉じるまで有効です。',
+    'ru':
+        'Не удалось запомнить выбор. При следующем запуске вернётся прежняя настройка.',
+    'en':
+        'Could not save your choice. The previous setting will return the next time you open the player.',
+    'ja': '選んだ設定を保存できませんでした。次にプレーヤーを開くと以前の設定に戻ります。',
   },
   'downloaded_only_unavailable': {
     'ru': 'Не скачано',
@@ -1440,8 +1448,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '元の行に戻す',
   },
   'lyric_line_share_hint': {
-    'ru': 'На проверку уйдут все изменённые строки этого трека.',
-    'en': 'Send all edited lines for this track for review.',
+    'ru':
+        'Плеер отправит на проверку все строки, которые ты изменил в этом треке.',
+    'en': 'The player sends every line you edited in this track for review.',
     'ja': 'この曲で編集したすべての行を確認用に送信します。',
   },
   'lyric_line_track_changed': {
@@ -1549,8 +1558,8 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '聴いている曲を表示',
   },
   'discord_presence_enabled_hint': {
-    'ru': 'Показывает трек и исполнителя в активности «Слушает».',
-    'en': 'Show the track and artist in Discord’s Listening activity.',
+    'ru': 'Трек и исполнитель видны в статусе «Слушает».',
+    'en': 'The track and artist appear in your Discord activity.',
     'ja': 'Discordのアクティビティに曲名とアーティスト名を表示します。',
   },
   'discord_hide_on_pause': {
@@ -1559,9 +1568,9 @@ const Map<String, Map<String, String>> _translations = {
     'ja': '一時停止中は曲を非表示',
   },
   'discord_hide_on_pause_hint': {
-    'ru': 'Активность возвращается, когда музыка снова играет.',
-    'en': 'Show the activity again when playback resumes.',
-    'ja': '再生を再開するとアクティビティが再表示されます。',
+    'ru': 'Трек снова появится в Discord, когда продолжишь слушать.',
+    'en': 'The track reappears in Discord when you resume playback.',
+    'ja': '再生を再開すると、Discordに曲が表示されます。',
   },
   'discord_privacy_save_failed': {
     'ru':

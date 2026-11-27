@@ -4,7 +4,7 @@ import 'package:shiki/app_build_info.dart';
 
 void main() {
   test(
-    'settings version comes from actual package, including build number',
+    'settings show the package version without the internal build number',
     () async {
       PackageInfo.setMockInitialValues(
         appName: 'ShikiMusic',
@@ -16,7 +16,7 @@ void main() {
       final previous = appBuildLabel;
       addTearDown(() => appBuildLabel = previous);
       await loadAppBuildInfo();
-      expect(appBuildLabel, '4.2.3 (108)');
+      expect(appBuildLabel, '4.2.3');
     },
   );
 }

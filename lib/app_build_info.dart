@@ -7,9 +7,7 @@ String appBuildLabel = '';
 Future<void> loadAppBuildInfo() async {
   try {
     final info = await PackageInfo.fromPlatform();
-    appBuildLabel = info.buildNumber.isEmpty
-        ? info.version
-        : '${info.version} (${info.buildNumber})';
+    appBuildLabel = info.version;
   } catch (error) {
     debugPrint('Package version unavailable: $error');
   }
