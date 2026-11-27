@@ -1321,6 +1321,11 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'YouTube Musicのアルバム／プレイリストリンク',
   },
   'close': {'ru': 'Закрыть', 'en': 'Close', 'ja': '閉じる'},
+  'expand_clip': {
+    'ru': 'Развернуть клип',
+    'en': 'Expand music video',
+    'ja': 'ミュージックビデオを拡大',
+  },
   'download_album': {
     'ru': 'Скачать альбом',
     'en': 'Download album',

@@ -1,8 +1,11 @@
+import 'dart:ui' show PointerDeviceKind;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shiki/downloaded_only.dart';
 import 'package:shiki/globals.dart';
+import 'package:shiki/localization.dart';
 import 'package:shiki/screens/artist_screen.dart';
 import 'package:shiki/screens/home_screen.dart';
 
@@ -94,7 +97,20 @@ void main() {
     (tester) async {
       final state = await _openPlayer(tester);
 
-      await tester.tap(find.text('Solo artist'));
+      final artist = find.text('Solo artist');
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: const Offset(4, 4));
+      addTearDown(mouse.removePointer);
+      await mouse.moveTo(tester.getCenter(artist));
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      expect(find.text(tr('artist_open_page')), findsNothing);
+      expect(
+        tester.widget<Text>(artist).style?.decoration,
+        isNot(TextDecoration.underline),
+      );
+
+      await tester.tap(artist);
       await tester.pumpAndSettle();
 
       expect(find.byType(ArtistScreen), findsOneWidget);
@@ -158,6 +174,7 @@ void main() {
       );
       await tester.tap(find.text('Current track'));
       expect(state.lyricsOpened, 1);
+      expect(find.byTooltip(tr('artist_choose')), findsNothing);
 
       await tester.tap(find.text('Lead artist, Guest artist'));
       await tester.pumpAndSettle();

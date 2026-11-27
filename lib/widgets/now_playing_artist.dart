@@ -32,7 +32,6 @@ class NowPlayingArtist extends StatelessWidget {
       style: TextStyle(
         color: artists.isEmpty ? Colors.white54 : Colors.white70,
         fontSize: fontSize,
-        decoration: artists.isEmpty ? null : TextDecoration.underline,
       ),
       textAlign: centered ? TextAlign.center : TextAlign.start,
       maxLines: 1,
@@ -59,32 +58,33 @@ class NowPlayingArtist extends StatelessWidget {
       child: artists.length == 1
           ? Semantics(
               link: true,
-              child: Tooltip(
-                message: tr('artist_open_page'),
-                excludeFromSemantics: true,
-                child: InkWell(
-                  borderRadius: corners,
-                  onTap: () => open(artists.entries.single),
-                  child: target,
-                ),
+              hint: tr('artist_open_page'),
+              child: InkWell(
+                borderRadius: corners,
+                onTap: () => open(artists.entries.single),
+                child: target,
               ),
             )
-          : PopupMenuButton<MapEntry<int, String>>(
-              tooltip: tr('artist_choose'),
-              borderRadius: corners,
-              onSelected: open,
-              itemBuilder: (context) => [
-                for (final artist in artists.entries)
-                  PopupMenuItem(
-                    value: artist,
-                    child: Text(
-                      artist.value,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+          : Semantics(
+              button: true,
+              hint: tr('artist_choose'),
+              child: PopupMenuButton<MapEntry<int, String>>(
+                tooltip: '',
+                borderRadius: corners,
+                onSelected: open,
+                itemBuilder: (context) => [
+                  for (final artist in artists.entries)
+                    PopupMenuItem(
+                      value: artist,
+                      child: Text(
+                        artist.value,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
-              ],
-              child: target,
+                ],
+                child: target,
+              ),
             ),
     );
   }

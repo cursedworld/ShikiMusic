@@ -71,6 +71,7 @@ import '../track_updates.dart';
 import '../track_selection.dart';
 import '../widgets/track_updates_dialog.dart';
 import '../widgets/catalog_sync_button.dart';
+import '../widgets/clip_preview.dart';
 import '../widgets/desktop_player_panel.dart';
 import '../widgets/player_backdrop.dart';
 import '../widgets/local_music_import_dialog.dart';
@@ -7546,6 +7547,82 @@ class MainAppScreenState extends State<MainAppScreen>
 
   // ── Desktop player panel ─────────────────────────────────────────────────
 
+  Widget _buildDesktopArtwork() {
+    final controller = _videoController;
+    final clip =
+        supportsVideoClips &&
+            _isVideoInitialized &&
+            playVideoClipNotifier.value &&
+            controller?.value.isInitialized == true
+        ? controller
+        : null;
+    final track = playingTrack;
+    final cover = Builder(
+      builder: (context) => Image(
+        image: coverThumbnail(context, getPictureProvider(track), 240),
+        fit: BoxFit.cover,
+      ),
+    );
+    final artwork = RepaintBoundary(
+      child: RotationTransition(
+        turns: _vinylController ?? const AlwaysStoppedAnimation(0.0),
+        child: Container(
+          width: 240,
+          height: 240,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.5),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+            border: Border.all(color: Colors.white12, width: 3),
+          ),
+          child: ClipOval(
+            child: clip == null
+                ? cover
+                : ClipPreview(controller: clip, cover: cover),
+          ),
+        ),
+      ),
+    );
+    if (clip != null) return artwork;
+
+    final vinyl = supportsVinylRotation && vinylRotationNotifier.value;
+    // The old spin gestures are for the cover; clicking a clip expands it.
+    return GestureDetector(
+      onTap: vinyl
+          ? () {
+              setState(() {
+                if (_vinylController!.isAnimating) {
+                  _vinylController!.stop();
+                  _vinylUserStopped = true;
+                } else if (isPlaying) {
+                  _vinylController!.repeat();
+                  _vinylUserStopped = false;
+                }
+              });
+            }
+          : null,
+      onDoubleTap: vinyl
+          ? () {
+              _vinylController!.stop();
+              _vinylController!.value = 0.0;
+              _vinylUserStopped = true;
+              setState(() {});
+            }
+          : null,
+      child: MouseRegion(
+        cursor: supportsVinylRotation
+            ? SystemMouseCursors.click
+            : SystemMouseCursors.basic,
+        child: artwork,
+      ),
+    );
+  }
+
   Widget buildDesktopPlayer(BuildContext context) {
     return DesktopPlayerPanel(
       child: playingQueue.isEmpty
@@ -7553,85 +7630,7 @@ class MainAppScreenState extends State<MainAppScreen>
           : Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // ── Vinyl-style spinning cover art ──
-                // Tap to stop/resume, double-tap to reset to 0°.
-                GestureDetector(
-                  onTap: supportsVinylRotation && vinylRotationNotifier.value
-                      ? () {
-                          setState(() {
-                            if (_vinylController!.isAnimating) {
-                              _vinylController!.stop();
-                              _vinylUserStopped = true;
-                            } else if (isPlaying) {
-                              _vinylController!.repeat();
-                              _vinylUserStopped = false;
-                            }
-                          });
-                        }
-                      : null,
-                  onDoubleTap:
-                      supportsVinylRotation && vinylRotationNotifier.value
-                      ? () {
-                          _vinylController!.stop();
-                          _vinylController!.value = 0.0;
-                          _vinylUserStopped = true;
-                          setState(() {});
-                        }
-                      : null,
-                  child: MouseRegion(
-                    cursor: supportsVinylRotation
-                        ? SystemMouseCursors.click
-                        : SystemMouseCursors.basic,
-                    child: RepaintBoundary(
-                      child: RotationTransition(
-                        turns:
-                            _vinylController ??
-                            const AlwaysStoppedAnimation(0.0),
-                        child: Container(
-                          width: 240,
-                          height: 240,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withValues(alpha: 0.5),
-                                blurRadius: 20,
-                                offset: const Offset(0, 10),
-                              ),
-                            ],
-                            border: Border.all(color: Colors.white12, width: 3),
-                          ),
-                          child: ClipOval(
-                            child:
-                                _isVideoInitialized &&
-                                    _videoController != null &&
-                                    playVideoClipNotifier.value
-                                ? SizedBox.expand(
-                                    child: FittedBox(
-                                      fit: BoxFit.cover,
-                                      child: SizedBox(
-                                        width:
-                                            _videoController!.value.size.width,
-                                        height:
-                                            _videoController!.value.size.height,
-                                        child: VideoPlayer(_videoController!),
-                                      ),
-                                    ),
-                                  )
-                                : Image(
-                                    image: coverThumbnail(
-                                      context,
-                                      getPictureProvider(playingTrack),
-                                      240,
-                                    ),
-                                    fit: BoxFit.cover,
-                                  ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
+                _buildDesktopArtwork(),
                 const SizedBox(height: 30),
                 Text(
                   playingTrack['title'],

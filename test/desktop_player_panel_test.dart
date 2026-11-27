@@ -93,6 +93,7 @@ void main() {
     expect(panel.bottom - content.bottom, greaterThan(80));
     expect(content.center.dx, closeTo(panel.center.dx, 0.1));
     expect(tester.getSize(_artwork), const Size.square(240));
+    expect(find.byTooltip(tr('expand_clip')), findsNothing);
     expect(_position(tester).maxScrollExtent, 0);
 
     final artwork = tester.element(_artwork);
