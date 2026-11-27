@@ -76,6 +76,7 @@ import '../widgets/player_backdrop.dart';
 import '../widgets/local_music_import_dialog.dart';
 import '../widgets/track_selection_bar.dart';
 import '../widgets/mobile_playback_controls.dart';
+import '../widgets/now_playing_artist.dart';
 import '../widgets/play_next_panel.dart';
 import '../widgets/track_metadata_dialog.dart';
 import '../widgets/playlist_crop_dialog.dart';
@@ -7479,14 +7480,10 @@ class MainAppScreenState extends State<MainAppScreen>
                             overflow: TextOverflow.ellipsis,
                           ),
                           const SizedBox(height: 3),
-                          Text(
-                            trackArtistLabel(playingTrack),
-                            style: const TextStyle(
-                              color: Colors.white54,
-                              fontSize: 13,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                          NowPlayingArtist(
+                            track: playingTrack,
+                            onOpen: _openArtistScreen,
+                            fontSize: 13,
                           ),
                         ],
                       ),
@@ -7648,11 +7645,11 @@ class MainAppScreenState extends State<MainAppScreen>
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 5),
-                Text(
-                  trackArtistLabel(playingTrack),
-                  style: const TextStyle(fontSize: 16, color: Colors.white54),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                NowPlayingArtist(
+                  track: playingTrack,
+                  onOpen: _openArtistScreen,
+                  fontSize: 16,
+                  centered: true,
                 ),
                 const SizedBox(height: 20),
                 Row(

@@ -218,9 +218,11 @@ void main() {
       }
 
       bool saved(bool value) =>
+          // The toggle is disabled until the atomic settings write completes.
+          tester.widget<SwitchListTile>(switchFinder).onChanged != null &&
           (jsonDecode(settingsFile.readAsStringSync())
-              as Map)['downloadedOnly'] ==
-          value;
+                  as Map)['downloadedOnly'] ==
+              value;
 
       await http.runWithClient(
         () async {

@@ -20,18 +20,20 @@ int? downloadTrackId(dynamic track) {
   return id != null && id > 0 ? id : null;
 }
 
-/// Keep album ownership separate from the full performer credit.
-String trackArtistLabel(dynamic track, {String fallback = 'Unknown'}) {
-  if (track is! Map) return fallback;
+Iterable<Map> trackArtistEntries(dynamic track) sync* {
+  if (track is! Map) return;
   final album = track['album'];
   final primary = album is Map ? album['artist'] : null;
   final credited = track['artists'];
+  if (primary is Map) yield primary;
+  if (credited is List) yield* credited.whereType<Map>();
+}
+
+/// Keep album ownership separate from the full performer credit.
+String trackArtistLabel(dynamic track, {String fallback = 'Unknown'}) {
   final names = <String>[];
   final seen = <String>{};
-  for (final artist in [
-    if (primary is Map) primary,
-    if (credited is List) ...credited.whereType<Map>(),
-  ]) {
+  for (final artist in trackArtistEntries(track)) {
     final name = artist['name']?.toString().trim() ?? '';
     if (name.isNotEmpty && seen.add(_normalizeSearch(name))) names.add(name);
   }

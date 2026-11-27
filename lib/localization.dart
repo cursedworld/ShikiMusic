@@ -1631,6 +1631,16 @@ const Map<String, Map<String, String>> _translations = {
     'ja': 'アーティストが見つかりません。別の名前を試してください。',
   },
   'artist_bio': {'ru': 'Биография', 'en': 'Biography', 'ja': 'バイオグラフィー'},
+  'artist_open_page': {
+    'ru': 'Открыть страницу исполнителя',
+    'en': 'Open artist page',
+    'ja': 'アーティストのページを開く',
+  },
+  'artist_choose': {
+    'ru': 'Выбрать исполнителя',
+    'en': 'Choose an artist',
+    'ja': 'アーティストを選ぶ',
+  },
   'artist_albums': {'ru': 'Альбомы', 'en': 'Albums', 'ja': 'アルバム'},
   'artist_all_tracks': {'ru': 'Все треки', 'en': 'All Tracks', 'ja': 'すべての曲'},
   'artist_play_all': {'ru': 'Слушать всё', 'en': 'Play All', 'ja': 'すべて再生'},
