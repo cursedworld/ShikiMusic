@@ -149,6 +149,9 @@ class TrackUpdateMonitor {
   bool _visible = true, _playing = false;
   bool _closed = false;
   bool _checking = false;
+  bool _networkPaused = false;
+  bool _checkAfterResume = false;
+  int _networkRevision = 0;
   String? _catalogEtag;
   DateTime? _lastFullCheck;
   int _localGeneration = 0;
@@ -247,6 +250,21 @@ class TrackUpdateMonitor {
     _schedulePolling(checkImmediately: _visible);
   }
 
+  /// Manual local-only mode stops the timer and invalidates a playing check.
+  /// Keep the local index and pending offers; they are still valid offline.
+  void setNetworkPaused(bool paused) {
+    if (_closed || _networkPaused == paused) return;
+    _networkPaused = paused;
+    _networkRevision++;
+    for (final request in _requests) {
+      if (!request.isCompleted) request.complete();
+    }
+    _checkAfterResume = _started && !paused && _checking;
+    if (!_started) return;
+    _schedulePolling(checkImmediately: false);
+    if (!paused && !_checking) unawaited(checkNow());
+  }
+
   /// Only optional catalog work is throttled; audio and statistics are separate.
   void setActivity({required bool visible, required bool playing}) {
     if (_closed || (_visible == visible && _playing == playing)) return;
@@ -263,7 +281,7 @@ class TrackUpdateMonitor {
   void _schedulePolling({required bool checkImmediately}) {
     _timer?.cancel();
     _timer = null;
-    if (!_visible && !_playing) return;
+    if (_networkPaused || (!_visible && !_playing)) return;
     if (checkImmediately) unawaited(checkNow());
     _timer = Timer.periodic(
       _visible ? interval : const Duration(minutes: 1),
@@ -286,6 +304,7 @@ class TrackUpdateMonitor {
     String? etag,
   }) async {
     if (_closed) throw StateError('Track update monitor closed');
+    if (_networkPaused) throw http.RequestAbortedException();
     final abort = Completer<void>();
     _requests.add(abort);
     final timer = Timer(requestTimeout, () {
@@ -405,19 +424,25 @@ class TrackUpdateMonitor {
       });
 
   Future<void> checkNow() async {
-    if (_closed || _checking) return;
+    if (_closed || _checking || _networkPaused) return;
+    final revision = _networkRevision;
+    bool isCurrent() =>
+        !_closed && !_networkPaused && _networkRevision == revision;
     _checking = true;
     try {
       await _serial(() async {
+        if (!isCurrent()) return;
         final catalog = await _get(
           'api/tracks/catalog-revision/',
           etag: _catalogEtag,
         );
+        if (!isCurrent()) return;
         if (catalog.statusCode == 200) {
           final previous = _catalogEtag;
           final next = catalog.headers['etag'];
-          if ((previous == null || previous != next) && !_closed) {
+          if (previous == null || previous != next) {
             await onCatalogChanged?.call();
+            if (!isCurrent()) return;
           }
           _catalogEtag = next;
         } else if (catalog.statusCode != 304) {
@@ -444,7 +469,7 @@ class TrackUpdateMonitor {
         final ids = <int>[];
         for (final id in byId.keys) {
           final stat = await audioFile(id).stat();
-          if (_closed) return;
+          if (!isCurrent()) return;
           if ((stat.type == FileSystemEntityType.file && stat.size > 0) ||
               await lyricsFile(id).exists() ||
               (includeVideo && await videoFile(id).exists())) {
@@ -455,12 +480,14 @@ class TrackUpdateMonitor {
         final pending = <TrackUpdateOffer>[];
         var changedIndex = false;
         for (var offset = 0; offset < ids.length; offset += 100) {
+          if (!isCurrent()) return;
           final batch = ids.skip(offset).take(100).join(',');
           final response = await _get(
             'api/tracks/revisions/',
             query: {'ids': batch},
             etag: _etags[batch],
           );
+          if (!isCurrent()) return;
           List<dynamic> manifest;
           if (response.statusCode == 304 && _manifests.containsKey(batch)) {
             manifest = _manifests[batch]!;
@@ -477,7 +504,7 @@ class TrackUpdateMonitor {
             throw HttpException('Revision check: HTTP ${response.statusCode}');
           }
           for (final item in manifest) {
-            if (_closed) return;
+            if (!isCurrent()) return;
             if (item is! Map ||
                 item['id'] is! int ||
                 !byId.containsKey(item['id'])) {
@@ -488,7 +515,9 @@ class TrackUpdateMonitor {
               item['content_versions'],
             );
             if (!_local.containsKey(id)) {
-              _local[id] = await _legacy(id, byId[id]!, remote);
+              final legacy = await _legacy(id, byId[id]!, remote);
+              if (!isCurrent()) return;
+              _local[id] = legacy;
               changedIndex = true;
             } else if (_local[id]!.versions.metadata == _unknownMetadata) {
               final old = _local[id]!;
@@ -544,8 +573,9 @@ class TrackUpdateMonitor {
             }
           }
         }
-        if (_closed) return;
+        if (!isCurrent()) return;
         if (changedIndex) await _save(_local);
+        if (!isCurrent()) return;
         _publish(pending);
         // Discard batches for files the user explicitly removed.
         final batches = <String>{};
@@ -557,12 +587,16 @@ class TrackUpdateMonitor {
         _lastFullCheck = DateTime.now();
         _checkedLocalGeneration = _localGeneration;
       });
-      if (!_closed) onCheckSucceeded?.call();
+      if (isCurrent()) onCheckSucceeded?.call();
     } catch (error) {
-      if (!_closed) onCheckFailed?.call(error);
+      if (isCurrent()) onCheckFailed?.call(error);
       // Local server being offline is normal. Keep downloads and pending offers.
     } finally {
       _checking = false;
+      if (_checkAfterResume && !_closed && !_networkPaused) {
+        _checkAfterResume = false;
+        unawaited(checkNow());
+      }
     }
   }
 

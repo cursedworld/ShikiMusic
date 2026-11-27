@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import '../downloaded_only.dart';
 import '../localization.dart';
 import '../server_config.dart';
 
@@ -45,6 +46,8 @@ class _ServerAddressSettingState extends State<ServerAddressSetting> {
   }
 
   Future<void> _run(bool testConnection) async {
+    if (testConnection && downloadedOnly.value) return;
+    final revision = downloadedOnly.revision;
     final value = _controller.text.trim();
     if (!isValidServerBaseUrl(value)) {
       setState(() => _message = tr('server_invalid'));
@@ -56,14 +59,14 @@ class _ServerAddressSettingState extends State<ServerAddressSetting> {
     });
     try {
       if (testConnection) {
-        final client = widget.client ?? http.Client();
+        final client = downloadedOnly.client(delegate: widget.client);
         try {
           final response = await client
               .get(buildServerUriForBase(value, 'api/tracks/catalog-revision/'))
               .timeout(const Duration(seconds: 5));
           final valid =
               response.statusCode == 200 && jsonDecode(response.body) is Map;
-          if (mounted) {
+          if (mounted && downloadedOnly.permits(revision)) {
             setState(
               () => _message = tr(
                 valid ? 'server_connected' : 'server_unavailable',
@@ -71,7 +74,7 @@ class _ServerAddressSettingState extends State<ServerAddressSetting> {
             );
           }
         } finally {
-          if (widget.client == null) client.close();
+          client.close();
         }
       } else {
         final saved = await widget.onSave(normalizeServerBaseUrl(value));
@@ -82,50 +85,56 @@ class _ServerAddressSettingState extends State<ServerAddressSetting> {
         }
       }
     } catch (_) {
-      if (mounted) setState(() => _message = tr('server_unavailable'));
+      if (mounted && (!testConnection || downloadedOnly.permits(revision))) {
+        setState(() => _message = tr('server_unavailable'));
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(16),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        TextField(
-          key: const ValueKey('server_address'),
-          controller: _controller,
-          enabled: !_busy,
-          autocorrect: false,
-          keyboardType: TextInputType.url,
-          decoration: InputDecoration(
-            labelText: tr('server_address'),
-            hintText: tr('server_address_hint'),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: [
-            TextButton(
-              onPressed: _busy ? null : () => _run(true),
-              child: Text(tr('server_test')),
+  Widget build(BuildContext context) => ValueListenableBuilder<bool>(
+    valueListenable: downloadedOnly,
+    builder: (context, paused, _) => Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            key: const ValueKey('server_address'),
+            controller: _controller,
+            enabled: !_busy,
+            autocorrect: false,
+            keyboardType: TextInputType.url,
+            decoration: InputDecoration(
+              labelText: tr('server_address'),
+              hintText: tr('server_address_hint'),
             ),
-            TextButton(
-              onPressed: _busy ? null : () => _run(false),
-              child: Text(tr('server_save')),
-            ),
-          ],
-        ),
-        if (_busy) const LinearProgressIndicator(),
-        if (_message != null)
-          Text(
-            _message!,
-            style: const TextStyle(color: Colors.white70, fontSize: 12),
           ),
-      ],
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: [
+              TextButton(
+                onPressed: _busy || paused ? null : () => _run(true),
+                child: Text(tr('server_test')),
+              ),
+              TextButton(
+                onPressed: _busy ? null : () => _run(false),
+                child: Text(tr('server_save')),
+              ),
+            ],
+          ),
+          if (paused) Text(tr('downloaded_only_server_paused')),
+          if (_busy) const LinearProgressIndicator(),
+          if (_message != null)
+            Text(
+              _message!,
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+        ],
+      ),
     ),
   );
 }

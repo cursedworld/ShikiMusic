@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import '../globals.dart';
 import '../atomic_file_store.dart';
 import '../cover_processing.dart';
+import '../downloaded_only.dart';
 import '../local_music_catalog.dart';
 import '../localization.dart';
 import '../music_import.dart';
@@ -84,7 +85,6 @@ class _ArtistScreenState extends State<ArtistScreen> {
   int? _selectedAlbumId; // null = all albums
   final _selection = TrackSelection();
   late final http.Client _httpClient;
-  late final bool _ownsHttpClient;
   bool _hasFreshCatalog = false;
   int _cacheReloadRevision = 0;
   final Set<Future<void>> _metadataWork = {};
@@ -110,8 +110,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
     super.initState();
     _artistData = widget.initialArtistData;
     if (_artistData != null || widget.artistId < 0) _isLoading = false;
-    _ownsHttpClient = widget.httpClient == null;
-    _httpClient = widget.httpClient ?? http.Client();
+    _httpClient = downloadedOnly.client(delegate: widget.httpClient);
+    downloadedOnly.addListener(_onLibraryChanged);
     activeTrackNotifier.addListener(_onLibraryChanged);
     isPlayingNotifier.addListener(_onLibraryChanged);
     accentColorNotifier.addListener(_onLibraryChanged);
@@ -135,7 +135,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
     isPlayingNotifier.removeListener(_onLibraryChanged);
     accentColorNotifier.removeListener(_onLibraryChanged);
     widget.libraryChanges?.removeListener(_onCatalogChanged);
-    if (_ownsHttpClient) _httpClient.close();
+    downloadedOnly.removeListener(_onLibraryChanged);
+    _httpClient.close();
     super.dispose();
   }
 
@@ -210,7 +211,16 @@ class _ArtistScreenState extends State<ArtistScreen> {
   }
 
   Future<void> _fetchArtistDetails() async {
+    if (downloadedOnly.value) {
+      setState(() => _isLoading = false);
+      return;
+    }
     final revision = _cacheReloadRevision;
+    final networkRevision = downloadedOnly.revision;
+    bool isCurrent() =>
+        mounted &&
+        revision == _cacheReloadRevision &&
+        downloadedOnly.permits(networkRevision);
     try {
       final uri = configuredServerUri('/api/artists/${widget.artistId}/');
       final res = await _httpClient
@@ -219,7 +229,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
       if (res.statusCode == 200) {
         final data = jsonDecode(utf8.decode(res.bodyBytes));
         if (data is Map<String, dynamic>) {
-          if (!mounted || revision != _cacheReloadRevision) return;
+          if (!isCurrent()) return;
           // Metadata is ready; do not hold the screen behind a photo download.
           setState(() {
             _artistData = data;
@@ -231,12 +241,12 @@ class _ArtistScreenState extends State<ArtistScreen> {
                 '$globalLocalPath/artist_details_${widget.artistId}.json',
               );
               await atomicFileStore.writeStringLazy(file, () {
-                if (!mounted || revision != _cacheReloadRevision) {
+                if (!isCurrent()) {
                   throw StateError('Artist metadata response became stale');
                 }
                 return utf8.decode(res.bodyBytes);
               });
-              if (!mounted || revision != _cacheReloadRevision) return;
+              if (!isCurrent()) return;
 
               final photoUrl = data['photo']?.toString();
               if (photoUrl != null && photoUrl.isNotEmpty) {
@@ -251,26 +261,27 @@ class _ArtistScreenState extends State<ArtistScreen> {
                 );
                 if (!await photoFile.exists() ||
                     await photoFile.length() == 0) {
+                  if (!isCurrent()) return;
                   final photoUri = photoUrl.startsWith('http')
                       ? Uri.parse(photoUrl)
                       : configuredServerUri(photoUrl);
                   final photoRes = await _httpClient
                       .get(photoUri)
                       .timeout(const Duration(seconds: 10));
-                  if (!mounted || revision != _cacheReloadRevision) return;
+                  if (!isCurrent()) return;
                   if (photoRes.statusCode == 200 &&
                       photoRes.bodyBytes.length > 500) {
-                    await atomicFileStore.writeBytes(
-                      photoFile,
-                      photoRes.bodyBytes,
-                    );
+                    await atomicFileStore.writeBytesLazy(photoFile, () {
+                      if (!isCurrent()) throw http.RequestAbortedException();
+                      return photoRes.bodyBytes;
+                    });
                   }
                 }
               }
             } catch (_) {}
           }
 
-          if (!mounted || revision != _cacheReloadRevision) return;
+          if (!isCurrent()) return;
           setState(() {
             // Rebuild after a local photo becomes available.
           });
@@ -375,6 +386,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
   @override
   Widget build(BuildContext context) {
     final accent = accentColorNotifier.value;
+    final localOnly = downloadedOnly.value;
     final compactTracks =
         supportsCompactTrackList && compactTrackListNotifier.value;
     final activeTrackId = activeTrackNotifier.value?['id'];
@@ -399,14 +411,15 @@ class _ArtistScreenState extends State<ArtistScreen> {
           (track) => widget.isTrackFavorited(track['id'] as int),
         );
     final touchMode = MediaQuery.sizeOf(context).width < 800;
-    final downloadSelection =
-        (selectedTracks.isNotEmpty
-                ? selectedTracks
-                : _selectedAlbumId == null
-                ? tracks
-                : _albumDownloadTracks(_selectedAlbumId!))
-            .where((track) => downloadTrackId(track) != null)
-            .toList();
+    final downloadSelection = localOnly
+        ? const <dynamic>[]
+        : (selectedTracks.isNotEmpty
+                  ? selectedTracks
+                  : _selectedAlbumId == null
+                  ? tracks
+                  : _albumDownloadTracks(_selectedAlbumId!))
+              .where((track) => downloadTrackId(track) != null)
+              .toList();
 
     final photoUrl = _artistData?['photo'];
     final bio = _artistData?['bio']?.toString().trim() ?? '';
@@ -427,7 +440,10 @@ class _ArtistScreenState extends State<ArtistScreen> {
           touch: touchMode,
         );
       });
-      if (!consumed) widget.onPlayTrack(filteredTracks, index);
+      if (!consumed &&
+          (!localOnly || widget.isTrackDownloaded(filteredTracks[index]))) {
+        widget.onPlayTrack(filteredTracks, index);
+      }
     }
 
     Future<void> favoriteTracks(List<dynamic> targets) async {
@@ -611,6 +627,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                 ? null
                                 : albumTracks.isNotEmpty
                                 ? getPictureProvider(albumTracks.first)
+                                : downloadedOnly.value
+                                ? null
                                 : NetworkImage(
                                     coverUrl.startsWith('http')
                                         ? coverUrl
@@ -820,6 +838,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
                         final isPlayingThis =
                             activeTrackId == trackId && isPlaying;
                         final isDownloaded = widget.isTrackDownloaded(track);
+                        final unavailable = localOnly && !isDownloaded;
                         final isDownloading = widget.isDownloading(trackId);
                         final isFav = widget.isTrackFavorited(trackId);
                         final isSelected = _selection.contains(trackId as int);
@@ -870,7 +889,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: Text(
-                              track['album']?['title'] ?? '',
+                              unavailable
+                                  ? tr('downloaded_only_unavailable')
+                                  : track['album']?['title'] ?? '',
                               style: const TextStyle(
                                 color: Colors.white54,
                                 fontSize: 13,
@@ -938,7 +959,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                       setState(() {});
                                     },
                                   )
-                                else
+                                else if (!localOnly)
                                   IconButton(
                                     icon: const Icon(
                                       Icons.download,
@@ -951,7 +972,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                     },
                                   ),
                                 if (canPlayNext ||
-                                    (isLocalMusic(track) &&
+                                    (!localOnly &&
+                                        isLocalMusic(track) &&
                                         widget.onMatchLocalMusic != null))
                                   TrackPlayNextMenu(
                                     key: ValueKey('artist_play_next_$trackId'),
@@ -959,22 +981,24 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                         ? () => widget.onPlayNext!(targets)
                                         : null,
                                     onMatchLocal:
-                                        isLocalMusic(track) &&
+                                        !localOnly &&
+                                            isLocalMusic(track) &&
                                             widget.onMatchLocalMusic != null
                                         ? () => widget.onMatchLocalMusic!(track)
                                         : null,
                                     playNextCount: targets.length,
                                   ),
                                 const SizedBox(width: 8),
-                                Icon(
-                                  isPlayingThis
-                                      ? Icons.graphic_eq
-                                      : Icons.play_arrow,
-                                  color: isPlayingThis
-                                      ? accent
-                                      : Colors.white54,
-                                  size: 22,
-                                ),
+                                if (!unavailable)
+                                  Icon(
+                                    isPlayingThis
+                                        ? Icons.graphic_eq
+                                        : Icons.play_arrow,
+                                    color: isPlayingThis
+                                        ? accent
+                                        : Colors.white54,
+                                    size: 22,
+                                  ),
                               ],
                             ),
                             onTap: () => tapTrack(idx),

@@ -24,6 +24,116 @@ int? _next(
 
 void main() {
   test(
+    'local-only traversal skips missing base tracks and insertions without deleting them',
+    () {
+      final base = [_track(1), _track(2), _track(3), _track(4)];
+      final order = PlaybackOrder()..reset(base, 0);
+      order.insertNext([_track(5), _track(-1)]);
+      bool available(PlaybackEntry entry) => {1, 3, -1}.contains(entry.trackId);
+
+      final insertion = order.next(
+        LoopMode.off,
+        automatic: true,
+        isPlayable: available,
+      )!;
+      expect(insertion.entry.trackId, -1);
+      order.take(insertion, skipUnavailable: true);
+      final third = order.next(
+        LoopMode.off,
+        automatic: true,
+        isPlayable: available,
+      )!;
+      expect(third.entry.trackId, 3);
+      order.take(third, skipUnavailable: true);
+      expect(
+        order.next(LoopMode.off, automatic: true, isPlayable: available),
+        isNull,
+      );
+      expect(order.baseTracks, base);
+      expect(order.insertions.map((entry) => entry.trackId), [5]);
+      expect(order.next(LoopMode.off, automatic: true)?.entry.trackId, 5);
+    },
+  );
+
+  test(
+    'local-only repeat uses available tracks and never loops over missing ones',
+    () {
+      final order = PlaybackOrder()
+        ..reset([_track(1), _track(2), _track(3)], 2);
+      bool available(PlaybackEntry entry) => entry.trackId == 2;
+
+      expect(
+        order.next(LoopMode.one, automatic: true, isPlayable: available),
+        isNull,
+      );
+      final wrap = order.next(
+        LoopMode.list,
+        automatic: true,
+        isPlayable: available,
+      )!;
+      expect(wrap.entry.trackId, 2);
+      order.take(wrap, skipUnavailable: true);
+      final repeat = order.next(
+        LoopMode.one,
+        automatic: true,
+        isPlayable: available,
+      )!;
+      expect(repeat.lane, PlaybackLane.repeat);
+      expect(repeat.entry.trackId, 2);
+      expect(
+        order.next(LoopMode.list, automatic: true, isPlayable: (_) => false),
+        isNull,
+      );
+    },
+  );
+
+  test(
+    'local-only Previous and redo skip history entries that lack a file',
+    () {
+      final order = PlaybackOrder()
+        ..reset([_track(1), _track(2), _track(3), _track(4)], 0);
+      expect([_next(order), _next(order), _next(order)], [2, 3, 4]);
+      bool available(PlaybackEntry entry) => entry.trackId.isOdd;
+
+      expect(order.previous(LoopMode.off, isPlayable: available)?.trackId, 3);
+      expect(order.previous(LoopMode.off, isPlayable: available)?.trackId, 1);
+      final redo = order.next(
+        LoopMode.off,
+        automatic: true,
+        isPlayable: available,
+      )!;
+      expect(redo.entry.trackId, 3);
+      order.take(redo, skipUnavailable: true);
+      expect(
+        order.next(LoopMode.off, automatic: true, isPlayable: available),
+        isNull,
+      );
+    },
+  );
+
+  test(
+    'an audible local insertion stays reserved when server tracks return',
+    () {
+      final order = PlaybackOrder()..reset([_track(1), _track(2)], 0);
+      order.insertNext([_track(3), _track(4)]);
+      final local = order.next(
+        LoopMode.off,
+        automatic: true,
+        isPlayable: (entry) => entry.trackId != 3,
+      )!;
+      expect(local.entry.trackId, 4);
+      final handoff = order.next(
+        LoopMode.off,
+        automatic: true,
+        alreadyStarting: local.entry.slot,
+      )!;
+      order.take(handoff, skipUnavailable: true);
+      expect(order.current?.trackId, 4);
+      expect(_next(order), 3);
+    },
+  );
+
+  test(
     'deleting an owned track drops every occurrence, not the other slots',
     () {
       final order = PlaybackOrder()

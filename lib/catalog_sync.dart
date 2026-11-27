@@ -13,6 +13,8 @@ class CatalogSyncStatus extends ChangeNotifier {
 
   void checking() => _update(CatalogSyncPhase.checking);
 
+  void reset() => _update(CatalogSyncPhase.idle);
+
   void succeeded({DateTime? at}) {
     lastSuccess = at ?? DateTime.now();
     _update(CatalogSyncPhase.synced, force: true);

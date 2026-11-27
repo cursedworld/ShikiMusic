@@ -64,6 +64,7 @@ void main() {
       'lyricsTextSize': 'large',
       'lyricsBackgroundBlur': 0,
       'discordPresenceEnabled': false,
+      'downloadedOnly': true,
       'discordHideOnPause': true,
     });
     await File('${source.path}/playlist_artwork_5.png').writeAsBytes([1, 2, 3]);
@@ -104,6 +105,7 @@ void main() {
       expect(settings['lyricsTextSize'], 'large');
       expect(settings['lyricsBackgroundBlur'], 0);
       expect(settings['discordPresenceEnabled'], isFalse);
+      expect(settings['downloadedOnly'], isTrue);
       expect(settings['discordHideOnPause'], isTrue);
       expect(await applyPendingLibraryImport(target), isFalse);
     },

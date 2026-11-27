@@ -356,6 +356,7 @@ Future<List<LocalMusicEntry>?> updateLocalMusicMetadata({
   required Directory directory,
   required LocalMusicEntry target,
   required LocalMusicMetadata metadata,
+  bool Function()? isCurrent,
 }) async {
   List<LocalMusicEntry>? updated;
   await atomicFileStore.writeStringLazy(
@@ -365,7 +366,7 @@ Future<List<LocalMusicEntry>?> updateLocalMusicMetadata({
       final index = entries.indexWhere(
         (entry) => entry.id == target.id && entry.digest == target.digest,
       );
-      if (index >= 0) {
+      if (index >= 0 && (isCurrent?.call() ?? true)) {
         entries[index] = entries[index].withMetadata(metadata);
         updated = entries;
       }

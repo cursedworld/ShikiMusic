@@ -16,6 +16,7 @@ class PlayNextPanel extends StatelessWidget {
     required this.startingSlot,
     required this.onRemove,
     required this.onClear,
+    this.isUnavailable,
   });
 
   final Map? playing;
@@ -23,6 +24,7 @@ class PlayNextPanel extends StatelessWidget {
   final int? startingSlot;
   final ValueChanged<int> onRemove;
   final VoidCallback onClear;
+  final bool Function(PlaybackEntry)? isUnavailable;
 
   @override
   Widget build(BuildContext context) {
@@ -126,6 +128,8 @@ class PlayNextPanel extends StatelessWidget {
                             subtitle: Text(
                               starting
                                   ? tr('play_next_starting')
+                                  : isUnavailable?.call(entry) == true
+                                  ? tr('downloaded_only_unavailable')
                                   : trackArtistLabel(entry.track),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,

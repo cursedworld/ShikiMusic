@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'audio_handler.dart';
 import 'custom_background.dart';
 import 'discord_status.dart';
+import 'downloaded_only.dart';
 import 'local_music_catalog.dart';
 import 'lyrics_background_blur.dart';
 import 'lyrics_text_size.dart';
@@ -106,19 +107,20 @@ String? getVersionedCoverName(dynamic track) {
 /// Results are cached to avoid rebuilding the provider on every frame.
 ImageProvider getPictureProvider(dynamic currentObject) {
   final id = currentObject['id'] as int;
+  final localOnly = downloadedOnly.value;
   final ownDigest = localTrackDigest(currentObject);
   if (ownDigest != null) {
     final album = currentObject['album'];
     final coverUrl = album?['cover']?.toString() ?? '';
     final artist = album?['artist'];
     final key =
-        '$id-local:$ownDigest|$globalLocalPath|$coverUrl|${artist?['photo']}';
+        '$id-local:$ownDigest|$globalLocalPath|$coverUrl|${artist?['photo']}|$localOnly';
     final cached = _coverCache[key];
     if (cached != null) return cached;
     final cover = _ownCover(ownDigest);
     final provider = cover != null
         ? FileImage(cover)
-        : coverUrl.isNotEmpty
+        : !localOnly && coverUrl.isNotEmpty
         ? NetworkImage(coverUrl)
         : getArtistPhotoProvider(artist) ?? _emptyCover;
     return _rememberCover(key, provider);
@@ -129,7 +131,7 @@ ImageProvider getPictureProvider(dynamic currentObject) {
   final artist = currentObject['album']?['artist'];
   final cacheKey =
       '$id-$coverFileName|$versionedName|$globalLocalPath|$coverUrl|'
-      'artist:${artist?['id']}|${artist?['photo']}|${artist?['photo_version']}';
+      'artist:${artist?['id']}|${artist?['photo']}|${artist?['photo_version']}|$localOnly';
   final cached = _coverCache[cacheKey];
   if (cached != null) return cached;
 
@@ -149,12 +151,12 @@ ImageProvider getPictureProvider(dynamic currentObject) {
     } else if (fallbackImage.existsSync() && fallbackImage.lengthSync() > 0) {
       provider = FileImage(fallbackImage);
     } else {
-      provider = coverUrl.isEmpty
+      provider = localOnly || coverUrl.isEmpty
           ? getArtistPhotoProvider(artist) ?? _emptyCover
           : NetworkImage(coverUrl);
     }
   } else {
-    provider = coverUrl.isEmpty
+    provider = localOnly || coverUrl.isEmpty
         ? getArtistPhotoProvider(artist) ?? _emptyCover
         : NetworkImage(coverUrl);
   }
@@ -213,7 +215,7 @@ Uri? getArtUri(dynamic track) {
     }
   }
   final coverUrl = track['album']?['cover']?.toString().trim() ?? '';
-  if (coverUrl.isNotEmpty) return Uri.parse(coverUrl);
+  if (!downloadedOnly.value && coverUrl.isNotEmpty) return Uri.parse(coverUrl);
   final artistPhoto = getArtistPhotoProvider(track['album']?['artist']);
   if (artistPhoto is FileImage) return Uri.file(artistPhoto.file.path);
   if (artistPhoto is NetworkImage) return Uri.tryParse(artistPhoto.url);
@@ -241,7 +243,7 @@ ImageProvider? getArtistPhotoProvider(dynamic artistData) {
   }
 
   final photoUrl = artistData is Map ? artistData['photo']?.toString() : null;
-  if (photoUrl == null || photoUrl.isEmpty) return null;
+  if (downloadedOnly.value || photoUrl == null || photoUrl.isEmpty) return null;
 
   return NetworkImage(photoUrl);
 }

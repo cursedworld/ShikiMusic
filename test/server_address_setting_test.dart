@@ -2,10 +2,44 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shiki/downloaded_only.dart';
 import 'package:shiki/localization.dart';
 import 'package:shiki/widgets/server_address_setting.dart';
 
 void main() {
+  testWidgets(
+    'only downloaded prevents server checks but still saves the address',
+    (tester) async {
+      final previous = downloadedOnly.value;
+      downloadedOnly.value = true;
+      addTearDown(() => downloadedOnly.value = previous);
+      final client = MockClient((_) async => fail('Unexpected Django request'));
+      addTearDown(client.close);
+      String? saved;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ServerAddressSetting(
+              value: 'http://localhost:8000',
+              client: client,
+              onSave: (value) async {
+                saved = value;
+                return true;
+              },
+            ),
+          ),
+        ),
+      );
+
+      final button = find.widgetWithText(TextButton, tr('server_test'));
+      expect(tester.widget<TextButton>(button).onPressed, isNull);
+      expect(find.text(tr('downloaded_only_server_paused')), findsOneWidget);
+      await tester.tap(find.text(tr('server_save')));
+      await tester.pumpAndSettle();
+      expect(saved, 'http://localhost:8000');
+    },
+  );
+
   testWidgets(
     'server address can be tested and saved without redirecting current player',
     (tester) async {

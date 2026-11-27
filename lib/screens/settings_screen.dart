@@ -12,6 +12,7 @@ import '../atomic_file_store.dart';
 import '../background_photo.dart';
 import '../background_video.dart';
 import '../custom_background.dart';
+import '../downloaded_only.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../listening_statistics.dart';
@@ -89,6 +90,7 @@ class SettingsScreen extends StatefulWidget {
   final WidgetBuilder? storageBuilder;
   final Future<Directory> Function() dataDirectoryProvider;
   final Future<void> Function()? beforeLibraryExport;
+  final Future<bool> Function(bool, BuildContext)? changeDownloadedOnly;
   const SettingsScreen({
     super.key,
     this.storageBuilder,
@@ -97,6 +99,7 @@ class SettingsScreen extends StatefulWidget {
     this.statisticsTracks = const [],
     this.statisticsArtists = const [],
     this.beforeLibraryExport,
+    this.changeDownloadedOnly,
   });
 
   @override
@@ -123,6 +126,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _serverBaseUrl = configuredServerBaseUrl;
   bool _settingsReady = false;
   bool _settingsLoadFailed = false;
+  bool _changingDownloadedOnly = false;
 
   @override
   void initState() {
@@ -234,6 +238,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'discordLyricsStatus': _discordLyricsStatus,
       'discordPresenceEnabled': discordPrivacyNotifier.value.enabled,
       'discordHideOnPause': discordPrivacyNotifier.value.hideOnPause,
+      'downloadedOnly': downloadedOnly.value,
       'serverBaseUrl': _serverBaseUrl,
       'customBackground': customBackgroundNotifier.value,
       'backgroundDimming': backgroundDimming ?? _backgroundDimming,
@@ -553,6 +558,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         title: tr('settings_server'),
                         value: _serverBaseUrl,
                         onTap: _settingsReady ? _editServer : null,
+                      ),
+                      _toggle(
+                        key: const ValueKey('downloaded_only_switch'),
+                        title: tr('downloaded_only'),
+                        hint: tr('downloaded_only_hint'),
+                        value: downloadedOnly.value,
+                        onChanged: _changingDownloadedOnly
+                            ? null
+                            : (enabled) =>
+                                  unawaited(_setDownloadedOnly(enabled)),
                       ),
                       _section(tr('about')),
                       _row(
@@ -1100,6 +1115,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ],
     ),
   );
+
+  Future<void> _setDownloadedOnly(bool enabled) async {
+    if (_changingDownloadedOnly || enabled == downloadedOnly.value) return;
+    setState(() => _changingDownloadedOnly = true);
+    try {
+      final change = widget.changeDownloadedOnly;
+      if (change == null) {
+        downloadedOnly.value = enabled;
+      } else if (!await change(enabled, context)) {
+        return;
+      }
+      if (mounted) setState(() {});
+      if (!await _saveSettings() && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(tr('downloaded_only_save_failed'))),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _changingDownloadedOnly = false);
+    }
+  }
 
   Future<void> _uploadCustomBackground() =>
       _enqueueBackgroundMutation(_uploadCustomBackgroundNow);

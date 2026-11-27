@@ -1206,6 +1206,61 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Test connection',
     'ja': '接続テスト',
   },
+  'downloaded_only': {
+    'ru': 'Только скачанное',
+    'en': 'Downloaded only',
+    'ja': 'ダウンロード済みのみ',
+  },
+  'downloaded_only_hint': {
+    'ru': 'Показывать музыку с устройства и не обращаться к серверу.',
+    'en': 'Show music on this device and pause server connections.',
+    'ja': '端末にある曲を表示し、サーバーに接続しません。',
+  },
+  'downloaded_only_server_paused': {
+    'ru': 'Проверка сервера отключена в режиме «Только скачанное».',
+    'en': 'Connection testing is off in Downloaded only mode.',
+    'ja': '「ダウンロード済みのみ」では接続をテストできません。',
+  },
+  'downloaded_only_action': {
+    'ru': 'Выключи «Только скачанное», чтобы обратиться к серверу.',
+    'en': 'Turn off Downloaded only to use the server.',
+    'ja': 'サーバーを使うには「ダウンロード済みのみ」をオフにしてください。',
+  },
+  'downloaded_only_busy': {
+    'ru': 'Дождись окончания поиска или загрузки, затем включи режим.',
+    'en': 'Wait for the search or download to finish, then try again.',
+    'ja': '検索やダウンロードが終わってから、もう一度お試しください。',
+  },
+  'downloaded_only_stream_busy': {
+    'ru': 'Плеер ещё переключает трек. Попробуй снова.',
+    'en': 'The player is still changing tracks. Try again in a moment.',
+    'ja': '曲を切り替えています。少し待ってからお試しください。',
+  },
+  'downloaded_only_stop_stream': {
+    'ru': 'Сейчас открыт трек с сервера. Остановить его и включить режим?',
+    'en': 'A track from the server is open. Stop it and switch modes?',
+    'ja': 'サーバーから曲を開いています。曲を停止して切り替えますか？',
+  },
+  'downloaded_only_stop_and_enable': {
+    'ru': 'Остановить и включить',
+    'en': 'Stop and turn on',
+    'ja': '停止してオンにする',
+  },
+  'downloaded_only_save_failed': {
+    'ru': 'Не удалось сохранить режим. Он действует до закрытия плеера.',
+    'en': 'Could not save this mode. It applies until you close the player.',
+    'ja': 'モードを保存できませんでした。プレーヤーを閉じるまで有効です。',
+  },
+  'downloaded_only_unavailable': {
+    'ru': 'Не скачано',
+    'en': 'Not downloaded',
+    'ja': '未ダウンロード',
+  },
+  'downloaded_only_empty': {
+    'ru': 'На устройстве пока нет треков.',
+    'en': 'No tracks on this device yet.',
+    'ja': '端末に保存された曲はまだありません。',
+  },
   'server_connected': {
     'ru': 'Сервер доступен',
     'en': 'Server connected',

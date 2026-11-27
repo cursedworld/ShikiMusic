@@ -176,28 +176,31 @@ void main() {
       SwitchListTile tile(Finder finder) =>
           tester.widget<SwitchListTile>(finder);
 
-      Future<void> open() async {
-        await tester.pumpWidget(screen());
+      Future<void> show(Finder finder, double delta) async {
         await tester.scrollUntilVisible(
-          presence,
-          230,
+          finder,
+          delta,
           scrollable: find.byType(Scrollable).first,
         );
         await tester.pumpAndSettle();
       }
 
+      Future<void> open() async {
+        await tester.pumpWidget(screen());
+        await show(presence, 230);
+      }
+
       await open();
       await driveUntil(tester, () => tile(presence).onChanged != null);
       expect(tile(presence).value, isTrue);
+      await show(pause, 180);
       expect(tile(pause).value, isFalse);
-      await tester.ensureVisible(pause);
-      await tester.pumpAndSettle();
       await tapSavingSwitch(tester, pause);
-      await tester.ensureVisible(presence);
-      await tester.pumpAndSettle();
+      await show(presence, -180);
       await tapSavingSwitch(tester, presence);
       final hidden = (enabled: false, hideOnPause: true);
       expect(discordPrivacyNotifier.value, hidden);
+      await show(pause, 180);
       expect(tile(pause).onChanged, isNull);
       Map? saved;
       await driveUntil(tester, () {
@@ -213,6 +216,7 @@ void main() {
       discordPrivacyNotifier.value = discordPrivacyFromSettings(saved!);
       await open();
       expect(tile(presence).value, isFalse);
+      await show(pause, 180);
       expect(tile(pause).value, isTrue);
       await tester.pumpWidget(const SizedBox.shrink());
       expect(tester.takeException(), isNull);

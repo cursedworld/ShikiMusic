@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shiki/downloaded_only.dart';
 import 'package:shiki/globals.dart';
 import 'package:shiki/localization.dart';
 import 'package:shiki/lyrics_text_size.dart';
@@ -914,6 +915,41 @@ void main() {
         220,
         scrollable: find.byType(Scrollable).first,
       );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final language in ['ru', 'en', 'ja']) {
+    testWidgets('only downloaded fits a narrow $language settings screen', (
+      tester,
+    ) async {
+      final previousMode = downloadedOnly.value;
+      downloadedOnly.value = true;
+      addTearDown(() => downloadedOnly.value = previousMode);
+      languageNotifier.value = language;
+      await show(tester, width: 320, scale: 2);
+      final toggle = find.byKey(const ValueKey('downloaded_only_switch'));
+      await tester.scrollUntilVisible(
+        toggle,
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await drive(
+        tester,
+        () => tester.widget<SwitchListTile>(toggle).onChanged != null,
+      );
+      expect(
+        find.descendant(of: toggle, matching: find.text(tr('downloaded_only'))),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: toggle,
+          matching: find.text(tr('downloaded_only_hint')),
+        ),
+        findsOneWidget,
+      );
+      expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
       expect(tester.takeException(), isNull);
     });
   }

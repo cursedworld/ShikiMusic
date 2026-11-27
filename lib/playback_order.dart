@@ -198,46 +198,74 @@ class PlaybackOrder {
     LoopMode loop, {
     required bool automatic,
     int? alreadyStarting,
+    bool Function(PlaybackEntry)? isPlayable,
   }) {
     final active = _current;
     if (active == null) return null;
-    if (automatic && loop == LoopMode.one) {
+    bool canPlay(PlaybackEntry entry) => isPlayable?.call(entry) ?? true;
+    if (automatic && loop == LoopMode.one && canPlay(active)) {
       return (entry: active, lane: PlaybackLane.repeat);
     }
-    final pending = _pending.firstOrNull;
-    final forward = _forward.lastOrNull;
     if (automatic && alreadyStarting != null) {
-      if (pending?.slot == alreadyStarting) {
-        return (entry: pending!, lane: PlaybackLane.insertion);
+      for (final entry in _pending) {
+        if (entry.slot == alreadyStarting) {
+          return (entry: entry, lane: PlaybackLane.insertion);
+        }
       }
-      if (forward?.slot == alreadyStarting) {
-        return (entry: forward!, lane: PlaybackLane.forward);
+      for (final entry in _forward.reversed) {
+        if (entry.slot == alreadyStarting) {
+          return (entry: entry, lane: PlaybackLane.forward);
+        }
       }
       final index = _baseIndexBySlot[alreadyStarting];
       if (index != null) return (entry: _base[index], lane: PlaybackLane.base);
     }
-    if (pending != null && (forward == null || _pendingAheadOfForward > 0)) {
-      return (entry: pending, lane: PlaybackLane.insertion);
+
+    final split = _forward.isEmpty ? _pending.length : _pendingAheadOfForward;
+    for (var index = 0; index < split; index++) {
+      final entry = _pending[index];
+      if (canPlay(entry)) return (entry: entry, lane: PlaybackLane.insertion);
     }
-    if (forward != null) return (entry: forward, lane: PlaybackLane.forward);
-    if (_baseIndex + 1 < _base.length) {
-      return (entry: _base[_baseIndex + 1], lane: PlaybackLane.base);
+    for (final entry in _forward.reversed) {
+      if (canPlay(entry)) return (entry: entry, lane: PlaybackLane.forward);
     }
-    return loop == LoopMode.list || (!automatic && loop == LoopMode.one)
-        ? (entry: _base.first, lane: PlaybackLane.base)
-        : null;
+    for (var index = split; index < _pending.length; index++) {
+      final entry = _pending[index];
+      if (canPlay(entry)) return (entry: entry, lane: PlaybackLane.insertion);
+    }
+    for (var index = _baseIndex + 1; index < _base.length; index++) {
+      final entry = _base[index];
+      if (canPlay(entry)) return (entry: entry, lane: PlaybackLane.base);
+    }
+    if (loop == LoopMode.list || (!automatic && loop == LoopMode.one)) {
+      for (
+        var index = 0;
+        index <= _baseIndex && index < _base.length;
+        index++
+      ) {
+        final entry = _base[index];
+        if (canPlay(entry)) return (entry: entry, lane: PlaybackLane.base);
+      }
+    }
+    return null;
   }
 
-  void take(PlaybackMove move) {
+  void take(PlaybackMove move, {bool skipUnavailable = false}) {
     if (move.lane == PlaybackLane.repeat) return;
     switch (move.lane) {
       case PlaybackLane.insertion:
-        if (_pending.isEmpty || _pending.first != move.entry) return;
-        _pending.removeAt(0);
-        if (_pendingAheadOfForward > 0) _pendingAheadOfForward--;
+        final index = skipUnavailable
+            ? _pending.indexOf(move.entry)
+            : (_pending.firstOrNull == move.entry ? 0 : -1);
+        if (index < 0) return;
+        _pending.removeAt(index);
+        if (index < _pendingAheadOfForward) _pendingAheadOfForward--;
       case PlaybackLane.forward:
-        if (_forward.isEmpty || _forward.last != move.entry) return;
-        _forward.removeLast();
+        final index = skipUnavailable
+            ? _forward.lastIndexOf(move.entry)
+            : (_forward.lastOrNull == move.entry ? _forward.length - 1 : -1);
+        if (index < 0) return;
+        _forward.removeAt(index);
         if (_forward.isEmpty) _pendingAheadOfForward = 0;
       case PlaybackLane.base:
         final index = _baseIndexBySlot[move.entry.slot];
@@ -254,22 +282,35 @@ class PlaybackOrder {
     _current = move.entry;
   }
 
-  PlaybackEntry? previous(LoopMode loop) {
+  PlaybackEntry? previous(
+    LoopMode loop, {
+    bool Function(PlaybackEntry)? isPlayable,
+  }) {
     final active = _current;
     if (active == null || _forward.length == historyLimit) return null;
-    if (_history.isNotEmpty) {
+    bool canPlay(PlaybackEntry entry) => isPlayable?.call(entry) ?? true;
+    final last = isPlayable == null
+        ? _history.length - 1
+        : _history.lastIndexWhere(canPlay);
+    if (last >= 0) {
       _forward.add(active);
-      return _current = _history.removeLast();
+      return _current = _history.removeAt(last);
     }
     final index = _baseIndexBySlot[active.slot];
-    if (index == null || (index == 0 && loop == LoopMode.off)) return null;
-    final previous = index == 0 ? _base.length - 1 : index - 1;
-    if (_forward.isEmpty) {
-      _baseIndex = previous;
-    } else {
-      _forward.add(active);
+    if (index == null) return null;
+    final count = loop == LoopMode.off ? index : _base.length;
+    for (var step = 1; step <= count; step++) {
+      final previous = (index - step) % _base.length;
+      final entry = _base[previous];
+      if (!canPlay(entry)) continue;
+      if (_forward.isEmpty) {
+        _baseIndex = previous;
+      } else {
+        _forward.add(active);
+      }
+      return _current = entry;
     }
-    return _current = _base[previous];
+    return null;
   }
 
   /// A failed insertion is neither history nor a candidate for repeat-one.

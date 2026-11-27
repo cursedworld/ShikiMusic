@@ -32,6 +32,7 @@ import '../discord_cover.dart';
 import '../discord_presence.dart';
 import '../discord_status.dart';
 import '../download_batch.dart';
+import '../downloaded_only.dart';
 import '../globals.dart';
 import '../localization.dart';
 import '../lrc_parser.dart';
@@ -419,12 +420,15 @@ class MainAppScreenState extends State<MainAppScreen>
 
   /// Download and crop cover to a perfect square to prevent system widget distortion
   Future<bool> _downloadAndCropCover(String url, File file) async {
+    if (downloadedOnly.value || _stateDisposing) return false;
+    final revision = downloadedOnly.revision;
     final absolutePath = file.absolute.path;
-    final key = Platform.isWindows ? absolutePath.toLowerCase() : absolutePath;
+    final path = Platform.isWindows ? absolutePath.toLowerCase() : absolutePath;
+    final key = '$revision:$path';
     final pending = _coverDownloads[key];
     if (pending != null) return pending;
 
-    final operation = _downloadAndCropCoverOnce(url, file);
+    final operation = _downloadAndCropCoverOnce(url, file, revision);
     _coverDownloads[key] = operation;
     try {
       return await operation;
@@ -435,37 +439,55 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
-  Future<bool> _downloadAndCropCoverOnce(String url, File file) async {
+  Future<bool> _downloadAndCropCoverOnce(
+    String url,
+    File file,
+    int revision,
+  ) async {
     try {
-      final res = await http
+      final res = await _serverClient
           .get(Uri.parse(url))
           .timeout(const Duration(seconds: 5));
-      if (res.statusCode == 200) {
+      if (res.statusCode == 200 && _catalogRequestCurrent(revision)) {
         final jpegBytes = await compute(cropCoverBytes, res.bodyBytes);
-        if (jpegBytes != null) {
-          await atomicFileStore.writeBytes(file, jpegBytes);
-          return true;
+        if (jpegBytes != null && _catalogRequestCurrent(revision)) {
+          await atomicFileStore.writeBytesLazy(file, () {
+            if (!_catalogRequestCurrent(revision)) {
+              throw http.RequestAbortedException();
+            }
+            return jpegBytes;
+          });
+          return _catalogRequestCurrent(revision);
         }
       }
     } catch (e) {
-      debugPrint('Error downloading or cropping cover: $e');
+      if (_catalogRequestCurrent(revision)) {
+        debugPrint('Error downloading or cropping cover: $e');
+      }
     }
     return false;
   }
 
   /// Asynchronously download cover art to local storage for the lock screen widget
   Future<void> _ensureCoverDownloaded(dynamic track) async {
-    if (isDesktop || localPath.isEmpty || isLocalMusic(track)) return;
+    if (isDesktop ||
+        localPath.isEmpty ||
+        isLocalMusic(track) ||
+        downloadedOnly.value) {
+      return;
+    }
+    final revision = downloadedOnly.revision;
     final id = track['id'];
     final coverFile = File('$localPath/cover_$id.jpg');
 
     if (await _isCoverValidAndSquare(coverFile)) return;
+    if (!_catalogRequestCurrent(revision)) return;
 
     final success = await _downloadAndCropCover(
       track['album']['cover'].toString(),
       coverFile,
     );
-    if (success) {
+    if (success && _catalogRequestCurrent(revision)) {
       invalidateTrackCover(track['id'] as int);
       _syncMediaSessionMetadata();
     }
@@ -490,10 +512,10 @@ class MainAppScreenState extends State<MainAppScreen>
   final _pendingLocalMatches = <String>{};
   List<dynamic> cachedArtists = [];
   WindowsTaskbarControls? _taskbarControls;
-  bool _isSyncingArtists = false;
+  int? _artistSyncRevision;
   bool _isRefreshingArtistPhotos = false;
   final Map<int, Map> _artistPhotoQueue = {};
-  final http.Client _artistArtworkClient = http.Client();
+  final http.Client _serverClient = downloadedOnly.client();
   bool _isRefreshingArtwork = false;
   final ValueNotifier<int> _artistLibraryChanges = ValueNotifier<int>(0);
   bool isLoading = true;
@@ -534,7 +556,9 @@ class MainAppScreenState extends State<MainAppScreen>
   VideoPlayerController? _initializingVideoController;
   bool _isVideoInitialized = false;
   Duration? _lastBenchmarkVideoPosition;
-  final MediaFileDownloader _mediaFileDownloader = MediaFileDownloader();
+  late final MediaFileDownloader _mediaFileDownloader = MediaFileDownloader(
+    client: _serverClient,
+  );
   TrackUpdateMonitor? _trackUpdates;
   final catalogSyncStatus = CatalogSyncStatus();
   String _lastUpdateNotice = '';
@@ -546,7 +570,6 @@ class MainAppScreenState extends State<MainAppScreen>
   final AsyncTaskLimiter _clipTransportLimiter = AsyncTaskLimiter(2);
   final Map<int, _SharedClipGeneration> _clipGenerationRequests =
       <int, _SharedClipGeneration>{};
-  http.Client? _clipHttpClient;
   Future<void> _audioWork = Future<void>.value();
   Future<void> _videoWork = Future<void>.value();
   Timer? _videoReleaseTimer;
@@ -567,6 +590,8 @@ class MainAppScreenState extends State<MainAppScreen>
   int _databaseSyncRevision = 0;
   int? _audioSourceTrackId;
   bool _audioSourceLocal = false;
+  bool _openingRemoteAudio = false;
+  bool _resumeNeedsSource = false;
   int _settledTrackRevision = -1;
   int _lyricsRevision = 0;
   LyricTimingStore? _lyricTimingStore;
@@ -619,6 +644,7 @@ class MainAppScreenState extends State<MainAppScreen>
   int _lyricsSearchQueryRevision = 0;
   bool _preparingLyricsSearch = false;
   bool isSearchLoading = false;
+  bool _retryingAlbumTrack = false;
   String? _albumImportProgress;
   bool _importErrorsOpen = false;
 
@@ -629,6 +655,7 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void initState() {
     super.initState();
+    downloadedOnly.addListener(_onDownloadedOnlyChanged);
     WidgetsBinding.instance.addObserver(this);
     _videoLifecycleVisible = !_isVideoHiddenLifecycle(
       WidgetsBinding.instance.lifecycleState,
@@ -774,6 +801,7 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   void dispose() {
     _stateDisposing = true;
+    downloadedOnly.removeListener(_onDownloadedOnlyChanged);
     trackTransitionModeNotifier.removeListener(_onTrackFadeChanged);
     replayGainEnabledNotifier.removeListener(_onReplayGainChanged);
     _crossfade?.cancel();
@@ -791,7 +819,7 @@ class MainAppScreenState extends State<MainAppScreen>
     if (isAudioServiceActive) audioHandler.onSeekStateChanged = null;
     _discordArtwork?.dispose();
     _discordCovers?.dispose();
-    _artistArtworkClient.close();
+    _serverClient.close();
     _localMusicServer?.close();
     _artistPhotoQueue.clear();
     _trackUpdates?.offers.removeListener(_onTrackUpdates);
@@ -839,7 +867,6 @@ class MainAppScreenState extends State<MainAppScreen>
     _clipTaskLimiter.close();
     _foregroundClipTaskLimiter.close();
     _clipTransportLimiter.close();
-    _clipHttpClient?.close();
     unawaited(_mediaFileDownloader.close());
     unawaited(_foregroundVideoDownloader?.close());
     unawaited(_audioDurationSubscription?.cancel());
@@ -1070,13 +1097,15 @@ class MainAppScreenState extends State<MainAppScreen>
     int revision,
     _VideoOperation operation,
   ) async {
+    if (downloadedOnly.value) return;
     String? signature;
     try {
       await Future<void>.delayed(_clipFetchDebounce);
       final res = await _foregroundClipTaskLimiter.run<http.Response?>(
         () async {
           final activeTrack = activeTrackNotifier.value;
-          if (!_isCurrentVideoOperation(revision, operation) ||
+          if (downloadedOnly.value ||
+              !_isCurrentVideoOperation(revision, operation) ||
               !_videoVisible ||
               !_videoSurfaceAvailable ||
               !playVideoClipNotifier.value ||
@@ -1091,7 +1120,11 @@ class MainAppScreenState extends State<MainAppScreen>
           );
         },
       );
-      if (res == null) return;
+      if (res == null ||
+          downloadedOnly.value ||
+          !_isCurrentVideoOperation(revision, operation)) {
+        return;
+      }
       if (res.statusCode != HttpStatus.ok) {
         if (signature != null) {
           _recordClipFailure(trackId, signature!, res);
@@ -1169,7 +1202,7 @@ class MainAppScreenState extends State<MainAppScreen>
       request.body = json.encode({'force': true});
     }
     try {
-      final streamedResponse = await (_clipHttpClient ??= http.Client())
+      final streamedResponse = await _serverClient
           .send(request)
           .timeout(_clipGenerationTimeout);
       return await http.Response.fromStream(
@@ -1408,6 +1441,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final hasLocalVideo = await _hasNonEmptyFile(localVideoFile);
     if (!_isCurrentVideoOperation(revision, operation)) return;
     if (!hasLocalVideo) {
+      if (downloadedOnly.value) return;
       final videoFileUrl = request.videoUrl;
       if (videoFileUrl == null) {
         unawaited(_fetchAndDownloadClip(trackId, revision, operation));
@@ -1570,7 +1604,7 @@ class MainAppScreenState extends State<MainAppScreen>
     required _VideoOperation operation,
     required File destination,
   }) async {
-    if (_downloadRecoveryFailed) return;
+    if (_downloadRecoveryFailed || downloadedOnly.value) return;
     final source = request.videoUrl;
     if (source == null) return;
     try {
@@ -1580,6 +1614,7 @@ class MainAppScreenState extends State<MainAppScreen>
         return;
       }
       final downloader = _foregroundVideoDownloader ??= MediaFileDownloader(
+        client: _serverClient,
         maxConcurrent: 1,
       );
       await downloader.download(
@@ -1587,6 +1622,7 @@ class MainAppScreenState extends State<MainAppScreen>
         destination: destination,
         abortTrigger: operation.whenCanceled,
       );
+      if (!_isCurrentVideoOperation(revision, operation)) return;
       if (!await _hasNonEmptyFile(destination)) {
         throw FileSystemException(
           'Downloaded video is empty.',
@@ -1771,6 +1807,38 @@ class MainAppScreenState extends State<MainAppScreen>
     visible: _videoLifecycleVisible,
     playing: isPlaying,
   );
+
+  void _onDownloadedOnlyChanged() {
+    final paused = downloadedOnly.value;
+    _databaseSyncRevision++;
+    catalogSyncStatus.reset();
+    _trackUpdates?.setNetworkPaused(paused);
+    if (paused) {
+      _artistPhotoQueue.clear();
+      _videoOperation?.cancel();
+    }
+    clearCoverCache();
+    if (_videoVisible) _initializeVideo(activeTrackNotifier.value);
+    final track = activeTrackNotifier.value;
+    if (track != null && isAudioServiceActive) {
+      final item = audioHandler.mediaItem.value;
+      if (item != null) {
+        audioHandler.mediaItem.add(item.copyWith(artUri: getArtUri(track)));
+      }
+    }
+    _crossfade?.reconcileNextSource();
+    _syncMediaSessionMetadata();
+    _syncMediaSessionPlayback();
+    _notifyPlayNext();
+    updateRPC(force: true);
+    if (mounted) setState(() {});
+  }
+
+  bool _showDownloadedOnlyNotice() {
+    if (!downloadedOnly.value) return false;
+    if (mounted) _playNextNotice(tr('downloaded_only_action'));
+    return true;
+  }
 
   /// Cycle through loop modes and sync the global notifier.
   void toggleLoopMode() {
@@ -2472,12 +2540,14 @@ class MainAppScreenState extends State<MainAppScreen>
       final monitor = TrackUpdateMonitor(
         directory: appDir,
         tracks: () => _serverTracks,
+        client: _serverClient,
         onCatalogChanged: _refreshLiveCatalog,
         onCheckSucceeded: catalogSyncStatus.succeeded,
         onCheckFailed: catalogSyncStatus.failed,
         includeVideo: supportsVideoClips,
       );
       _trackUpdates = monitor;
+      monitor.setNetworkPaused(downloadedOnly.value);
       _updateCatalogActivity();
       await monitor.load();
       if (_stateDisposing) return;
@@ -2968,6 +3038,7 @@ class MainAppScreenState extends State<MainAppScreen>
         builder: (_) => LocalMusicImportDialog(
           desktop: isDesktop,
           onImport: (files, cancel, onProgress) async {
+            final revision = downloadedOnly.revision;
             final result = await importLocalMusic(
               directory: Directory(localPath),
               files: files,
@@ -2977,7 +3048,9 @@ class MainAppScreenState extends State<MainAppScreen>
             );
             if (mounted && !_stateDisposing) {
               publishLocalMusic(result.entries);
-              _queueOwnMusicMatch(result.matchEntries);
+              if (_catalogRequestCurrent(revision)) {
+                _queueOwnMusicMatch(result.matchEntries);
+              }
             }
             return result;
           },
@@ -2992,6 +3065,8 @@ class MainAppScreenState extends State<MainAppScreen>
     Iterable<LocalMusicEntry> entries, {
     bool manual = false,
   }) {
+    if (downloadedOnly.value) return;
+    final revision = downloadedOnly.revision;
     final batch = entries
         .where((entry) => _pendingLocalMatches.add(entry.digest))
         .toList();
@@ -3000,29 +3075,36 @@ class MainAppScreenState extends State<MainAppScreen>
     final serverKey = localMusicServerKey(configuredServerBaseUri);
     _localMatchTail = _localMatchTail.then((_) async {
       try {
-        if (_stateDisposing) return;
-        final service = _localMusicServer ??= LocalMusicServerMatchClient();
+        if (!_catalogRequestCurrent(revision)) return;
+        final service = _localMusicServer ??= LocalMusicServerMatchClient(
+          client: _serverClient,
+        );
         if (!await service.isAvailable(endpoint)) {
-          if (manual) _localMusicNotice(tr('local_match_unavailable'));
+          if (manual && _catalogRequestCurrent(revision)) {
+            _localMusicNotice(tr('local_match_unavailable'));
+          }
           return;
         }
         final counts = <LocalMusicMatchOutcome, int>{};
         for (final entry in batch) {
-          if (_stateDisposing) return;
+          if (!_catalogRequestCurrent(revision)) return;
           if (localTrackDigest(_ownTracks[entry.id]) != entry.digest) continue;
           final result = await service.match(
             endpoint,
             entry,
             serverKey: serverKey,
           );
-          if (_stateDisposing) return;
+          if (!_catalogRequestCurrent(revision)) return;
           if (result.metadata case final metadata?) {
             final updated = await updateLocalMusicMetadata(
               directory: Directory(localPath),
               target: entry,
               metadata: metadata,
+              isCurrent: () => _catalogRequestCurrent(revision),
             );
-            if (updated != null && mounted && !_stateDisposing) {
+            if (updated != null &&
+                mounted &&
+                _catalogRequestCurrent(revision)) {
               publishLocalMusic(updated);
             }
           }
@@ -3032,10 +3114,11 @@ class MainAppScreenState extends State<MainAppScreen>
             ifAbsent: () => 1,
           );
         }
-        if (_stateDisposing || counts.isEmpty) return;
+        if (!_catalogRequestCurrent(revision) || counts.isEmpty) return;
         if (counts.containsKey(LocalMusicMatchOutcome.existing)) {
           await syncDatabase();
         }
+        if (!_catalogRequestCurrent(revision)) return;
         _localMusicNotice(
           [
             for (final result in LocalMusicMatchOutcome.values)
@@ -3050,6 +3133,7 @@ class MainAppScreenState extends State<MainAppScreen>
           ].join(' · '),
         );
       } catch (error) {
+        if (!_catalogRequestCurrent(revision)) return;
         debugPrint('Local recording lookup failed: ${error.runtimeType}');
         _localMusicNotice(
           tr('local_match_failed').replaceFirst('{count}', '1'),
@@ -3063,11 +3147,13 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> _matchOwnTrack(Map track) async {
+    if (_showDownloadedOnlyNotice()) return;
+    final revision = downloadedOnly.revision;
     final digest = localTrackDigest(track);
     if (_stateDisposing || localPath.isEmpty || digest == null) return;
     try {
       final entries = await readLocalMusicCatalog(Directory(localPath));
-      if (_stateDisposing) return;
+      if (!_catalogRequestCurrent(revision)) return;
       _queueOwnMusicMatch(
         entries.where((entry) => entry.digest == digest),
         manual: true,
@@ -3403,17 +3489,21 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> _syncArtistsCache({bool reportFailure = false}) async {
-    if (_isSyncingArtists) {
+    if (localPath.isEmpty || _stateDisposing || downloadedOnly.value) return;
+    final revision = downloadedOnly.revision;
+    if (_artistSyncRevision == revision) {
       if (reportFailure) {
         throw StateError('Artist catalog refresh still running');
       }
       return;
     }
-    if (localPath.isEmpty || _stateDisposing) return;
-    _isSyncingArtists = true;
+    _artistSyncRevision = revision;
     try {
       final uri = configuredServerUri('/api/artists/');
-      final res = await http.get(uri).timeout(const Duration(seconds: 8));
+      final res = await _serverClient
+          .get(uri)
+          .timeout(const Duration(seconds: 8));
+      if (!_catalogRequestCurrent(revision)) return;
       if (res.statusCode == HttpStatus.ok) {
         final decoded = json.decode(utf8.decode(res.bodyBytes));
         if (decoded is List) {
@@ -3427,12 +3517,13 @@ class MainAppScreenState extends State<MainAppScreen>
             File('$localPath/offline_artists.json'),
             json.encode(artistsList),
           );
-          if (mounted && !_stateDisposing) setState(() {});
+          if (!_catalogRequestCurrent(revision)) return;
+          if (mounted) setState(() {});
 
           // The list already contains name, bio and photo. No eager detail HTTP
           // request per artist; full albums are loaded only when the page opens.
           for (final artist in artistsList) {
-            if (_stateDisposing) break;
+            if (!_catalogRequestCurrent(revision)) return;
             if (artist is! Map) continue;
             final artistId = artist['id'];
             if (artistId == null) continue;
@@ -3458,13 +3549,17 @@ class MainAppScreenState extends State<MainAppScreen>
                     details = Map<String, dynamic>.from(oldDetails);
                   }
                 }
-                await atomicFileStore.writeString(
-                  detailFile,
-                  json.encode({...details, ...artist}),
-                );
+                if (!_catalogRequestCurrent(revision)) return;
+                await atomicFileStore.writeStringLazy(detailFile, () {
+                  if (!_catalogRequestCurrent(revision)) {
+                    throw http.RequestAbortedException();
+                  }
+                  return json.encode({...details, ...artist});
+                });
               }
             } catch (_) {}
 
+            if (!_catalogRequestCurrent(revision)) return;
             if (artistId is int &&
                 (artist['photo']?.toString().isNotEmpty ?? false)) {
               _artistPhotoQueue[artistId] = artist;
@@ -3479,19 +3574,23 @@ class MainAppScreenState extends State<MainAppScreen>
         throw HttpException('Artist catalog: HTTP ${res.statusCode}');
       }
     } catch (e) {
+      if (!_catalogRequestCurrent(revision)) return;
       if (reportFailure) rethrow;
       debugPrint('Artists cache sync notice (working offline): $e');
     } finally {
-      _isSyncingArtists = false;
+      if (_artistSyncRevision == revision) _artistSyncRevision = null;
     }
   }
 
   Future<void> _refreshArtistPhotos() async {
-    if (_isRefreshingArtistPhotos || _stateDisposing) return;
+    if (_isRefreshingArtistPhotos || _stateDisposing || downloadedOnly.value) {
+      return;
+    }
+    final revision = downloadedOnly.revision;
     _isRefreshingArtistPhotos = true;
     try {
       // One worker, deduplicated IDs. Optional photos never hold revision polling.
-      while (_artistPhotoQueue.isNotEmpty && !_stateDisposing) {
+      while (_artistPhotoQueue.isNotEmpty && _catalogRequestCurrent(revision)) {
         final id = _artistPhotoQueue.keys.first;
         final artist = _artistPhotoQueue.remove(id)!;
         final url = artist['photo'].toString();
@@ -3503,13 +3602,20 @@ class MainAppScreenState extends State<MainAppScreen>
         final file = File('$localPath/artist_$id$suffix.jpg');
         try {
           if (await _hasNonEmptyFile(file)) continue;
-          final response = await _artistArtworkClient
+          if (!_catalogRequestCurrent(revision)) return;
+          final response = await _serverClient
               .get(Uri.parse(_resolveAbsoluteUrl(url)))
               .timeout(const Duration(seconds: 10));
-          if (_stateDisposing) return;
+          if (!_catalogRequestCurrent(revision)) return;
           if (response.statusCode == HttpStatus.ok &&
               response.bodyBytes.length > 500) {
-            await atomicFileStore.writeBytes(file, response.bodyBytes);
+            await atomicFileStore.writeBytesLazy(file, () {
+              if (!_catalogRequestCurrent(revision)) {
+                throw http.RequestAbortedException();
+              }
+              return response.bodyBytes;
+            });
+            if (!_catalogRequestCurrent(revision)) return;
             invalidateArtistPhoto(id);
             if (mounted && !_stateDisposing) {
               setState(() {});
@@ -3522,26 +3628,43 @@ class MainAppScreenState extends State<MainAppScreen>
       }
     } finally {
       _isRefreshingArtistPhotos = false;
+      if (!_stateDisposing &&
+          !downloadedOnly.value &&
+          _artistPhotoQueue.isNotEmpty) {
+        unawaited(_refreshArtistPhotos());
+      }
     }
   }
 
+  bool _catalogRequestCurrent(int revision) =>
+      !_stateDisposing && downloadedOnly.permits(revision);
+
   bool _isCurrentDatabaseSync(int revision) =>
-      !_stateDisposing && revision == _databaseSyncRevision;
+      !_stateDisposing &&
+      !downloadedOnly.value &&
+      revision == _databaseSyncRevision;
 
   Future<void> _refreshLiveCatalog() async {
+    if (downloadedOnly.value) return;
+    final revision = downloadedOnly.revision;
     await syncDatabase(reportFailure: true, refreshArtists: false);
-    if (_stateDisposing) return;
+    if (!_catalogRequestCurrent(revision)) return;
     await _syncArtistsCache(reportFailure: true);
+    if (!_catalogRequestCurrent(revision)) return;
     unawaited(_refreshCachedArtwork());
   }
 
   Future<void> _refreshCachedArtwork() async {
-    if (_isRefreshingArtwork || localPath.isEmpty) return;
+    if (_isRefreshingArtwork || localPath.isEmpty || downloadedOnly.value) {
+      return;
+    }
+    final revision = downloadedOnly.revision;
     _isRefreshingArtwork = true;
     try {
       final snapshot = List<dynamic>.from(_serverTracks);
       for (final track in snapshot) {
-        if (_stateDisposing || track is! Map || track['id'] is! int) continue;
+        if (!_catalogRequestCurrent(revision)) return;
+        if (track is! Map || track['id'] is! int) continue;
         final id = track['id'] as int;
         final name = getVersionedCoverName(track);
         final url = track['album']?['cover']?.toString();
@@ -3557,6 +3680,7 @@ class MainAppScreenState extends State<MainAppScreen>
           continue;
         }
         try {
+          if (!_catalogRequestCurrent(revision)) return;
           if (await _downloadAndCropCover(
             _resolveAbsoluteUrl(url),
             destination,
@@ -3567,7 +3691,7 @@ class MainAppScreenState extends State<MainAppScreen>
           debugPrint('Artwork refresh deferred: $error');
         }
       }
-      if (mounted && !_stateDisposing) {
+      if (mounted && _catalogRequestCurrent(revision)) {
         setState(() {});
         uiSignal.value++;
         _syncMediaSessionMetadata();
@@ -3581,12 +3705,16 @@ class MainAppScreenState extends State<MainAppScreen>
     bool reportFailure = false,
     bool refreshArtists = true,
   }) async {
+    if (downloadedOnly.value || _stateDisposing) return;
     final revision = ++_databaseSyncRevision;
     final tracksUri = configuredServerUri('/api/tracks/');
     catalogSyncStatus.checking();
 
     try {
-      final res = await http.get(tracksUri).timeout(const Duration(seconds: 5));
+      final res = await _serverClient
+          .get(tracksUri)
+          .timeout(const Duration(seconds: 5));
+      if (!_isCurrentDatabaseSync(revision)) return;
       if (res.statusCode != HttpStatus.ok) {
         throw HttpException(
           'Track sync failed with HTTP ${res.statusCode}.',
@@ -3605,7 +3733,9 @@ class MainAppScreenState extends State<MainAppScreen>
       } catch (error) {
         debugPrint('Offline track cache write failed: $error');
       }
-      if (refreshArtists) unawaited(_syncArtistsCache());
+      if (refreshArtists && _isCurrentDatabaseSync(revision)) {
+        unawaited(_syncArtistsCache());
+      }
     } catch (e) {
       if (!_isCurrentDatabaseSync(revision)) return;
       catalogSyncStatus.failed(e);
@@ -3621,6 +3751,7 @@ class MainAppScreenState extends State<MainAppScreen>
   Future<void> downloadFromNetwork() async {
     final query = searchQuery.trim();
     if (query.isEmpty || isSearchLoading || _stateDisposing) return;
+    if (_showDownloadedOnlyNotice()) return;
     if (isSupportedAlbumLink(query)) {
       await _importAlbum(query);
       return;
@@ -3631,7 +3762,7 @@ class MainAppScreenState extends State<MainAppScreen>
         '/api/smart_search/',
         queryParameters: <String, Object?>{'q': query},
       );
-      final res = await http
+      final res = await _serverClient
           .get(queryEndpoint)
           .timeout(const Duration(minutes: 5));
       final response = _decodeApiResponse(res);
@@ -3676,6 +3807,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> _showAlbumImport() async {
     if (isSearchLoading || !mounted) return;
+    if (_showDownloadedOnlyNotice()) return;
     final url = await showDialog<String>(
       context: context,
       builder: (_) => AlbumImportDialog(
@@ -3689,6 +3821,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> _importAlbum(String url) async {
     if (isSearchLoading || _stateDisposing) return;
+    if (_showDownloadedOnlyNotice()) return;
     if (!isSupportedAlbumLink(url)) {
       ScaffoldMessenger.of(
         context,
@@ -3697,7 +3830,7 @@ class MainAppScreenState extends State<MainAppScreen>
     }
     setState(() => isSearchLoading = true);
     try {
-      final res = await http
+      final res = await _serverClient
           .post(
             configuredServerUri('/api/import_album/'),
             headers: const {'Content-Type': 'application/json'},
@@ -3719,7 +3852,7 @@ class MainAppScreenState extends State<MainAppScreen>
         while (!_stateDisposing) {
           await Future<void>.delayed(const Duration(seconds: 2));
           if (_stateDisposing) return;
-          final status = await http
+          final status = await _serverClient
               .get(configuredServerUri('/api/import_jobs/$jobId/'))
               .timeout(const Duration(seconds: 10));
           response = _decodeApiResponse(status);
@@ -3830,9 +3963,15 @@ class MainAppScreenState extends State<MainAppScreen>
       context: context,
       builder: (_) => TrackMetadataDialog(metadata: metadata),
     );
-    if (confirmed == null || _stateDisposing || !mounted) return false;
+    if (confirmed == null ||
+        _stateDisposing ||
+        !mounted ||
+        _showDownloadedOnlyNotice()) {
+      return false;
+    }
+    _retryingAlbumTrack = true;
     try {
-      final response = await http
+      final response = await _serverClient
           .post(
             configuredServerUri('/api/smart_search/'),
             headers: const {'Content-Type': 'application/json'},
@@ -3867,6 +4006,8 @@ class MainAppScreenState extends State<MainAppScreen>
         );
       }
       return false;
+    } finally {
+      _retryingAlbumTrack = false;
     }
   }
 
@@ -3903,7 +4044,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void _onTrackUpdates() {
-    if (_stateDisposing || !mounted) return;
+    if (_stateDisposing || !mounted || downloadedOnly.value) return;
     final offers = _trackUpdates?.offers.value ?? const <TrackUpdateOffer>[];
     setState(() {});
     final signature = offers.map((offer) => offer.signature).join('|');
@@ -3925,6 +4066,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> _showTrackUpdates() async {
+    if (_showDownloadedOnlyNotice()) return;
     if (_downloadRecoveryFailed) {
       _downloadRemovalNotice('download_recovery_failed');
       return;
@@ -3938,6 +4080,9 @@ class MainAppScreenState extends State<MainAppScreen>
         builder: (_) => TrackUpdatesDialog(
           monitor: monitor,
           onUpdate: (offer) async {
+            if (downloadedOnly.value) {
+              throw StateError(tr('downloaded_only_action'));
+            }
             if (downloadQueue.contains(offer.id)) {
               throw StateError('Track is being downloaded');
             }
@@ -3976,7 +4121,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Widget _buildTrackUpdatesButton() =>
-      (_trackUpdates?.offers.value.isNotEmpty ?? false)
+      !downloadedOnly.value && (_trackUpdates?.offers.value.isNotEmpty ?? false)
       ? IconButton(
           tooltip: tr('track_updates'),
           onPressed: _showTrackUpdates,
@@ -3984,10 +4129,17 @@ class MainAppScreenState extends State<MainAppScreen>
         )
       : const SizedBox.shrink();
 
-  Widget _buildCatalogSyncButton() => CatalogSyncButton(
-    status: catalogSyncStatus,
-    onRefresh: () => unawaited(syncDatabase()),
-  );
+  Widget _buildCatalogSyncButton() => downloadedOnly.value
+      ? IconButton(
+          key: const ValueKey('catalog_sync'),
+          tooltip: tr('downloaded_only'),
+          onPressed: null,
+          icon: const Icon(Icons.offline_pin_outlined),
+        )
+      : CatalogSyncButton(
+          status: catalogSyncStatus,
+          onRefresh: () => unawaited(syncDatabase()),
+        );
 
   bool isTrackDownloadComplete(dynamic track) {
     if (localPath.isEmpty || track is! Map) return false;
@@ -4148,6 +4300,7 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   Future<void> downloadMediaFile(dynamic mediaObj) async {
+    if (_showDownloadedOnlyNotice()) return;
     if (isLocalMusic(mediaObj)) return;
     final result = await _downloadMedia(mediaObj, retryUnavailableVideo: true);
     if (mounted && !_stateDisposing) {
@@ -4481,10 +4634,12 @@ class MainAppScreenState extends State<MainAppScreen>
     List<dynamic> tracksToDownload, {
     bool retryUnavailableVideo = false,
   }) async {
+    if (_showDownloadedOnlyNotice()) return;
+    final revision = downloadedOnly.revision;
     while (_bulkDownloadActive && !_stateDisposing) {
       await _bulkDownloadFinished?.future;
     }
-    if (_stateDisposing || !mounted) return;
+    if (!_catalogRequestCurrent(revision) || !mounted) return;
     final tracks = tracksToDownload
         .where((track) => downloadTrackId(track) != null)
         .toList();
@@ -4855,20 +5010,27 @@ class MainAppScreenState extends State<MainAppScreen>
     if (selected || (isPlaying && _playbackOrder.current?.trackId == id)) {
       return;
     }
+    if (downloadedOnly.value && !isTrackDownloadComplete(tracks[index])) {
+      _playNextNotice(tr('downloaded_only_unavailable'));
+      return;
+    }
     startPlayback(tracks, index, playlistId: playlistId);
   }
 
-  ImageProvider getPlaylistImage(String pathOrUrl) {
-    if (pathOrUrl.startsWith('http')) return NetworkImage(pathOrUrl);
+  ImageProvider? getPlaylistImage(String pathOrUrl) {
+    if (pathOrUrl.startsWith('http')) {
+      return downloadedOnly.value ? null : NetworkImage(pathOrUrl);
+    }
     return FileImage(resolvePlaylistArtwork(Directory(localPath), pathOrUrl));
   }
 
-  ImageProvider _playlistThumbnail(
+  ImageProvider? _playlistThumbnail(
     BuildContext context,
     String path,
     double size,
   ) {
     final provider = getPlaylistImage(path);
+    if (provider == null) return null;
     final version = _playlistArtworkVersions[path] ?? 0;
     final imagePath =
         Uri.tryParse(path)?.path.toLowerCase() ?? path.toLowerCase();
@@ -4889,7 +5051,7 @@ class MainAppScreenState extends State<MainAppScreen>
       (version) => version + 1,
       ifAbsent: () => 1,
     );
-    await getPlaylistImage(path).evict();
+    await getPlaylistImage(path)?.evict();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -4982,8 +5144,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _audioCompleteSubscription = player.onPlayerComplete.listen((_) {
       if (!stillCurrent() || !sourceSettled()) return;
       final handoff = _crossfade?.takeAtEnd();
-      final next = _playbackOrder.next(
-        loopMode,
+      final next = _nextPlaybackMove(
         automatic: true,
         alreadyStarting: handoff?.source.slot,
       );
@@ -4999,8 +5160,22 @@ class MainAppScreenState extends State<MainAppScreen>
 
   int? get _startingQueueSlot => _crossfade?.audibleSource?.slot;
 
-  bool get _canPlayNext =>
-      _playbackOrder.next(loopMode, automatic: false) != null;
+  bool Function(PlaybackEntry)? get _playbackAvailability =>
+      downloadedOnly.value
+      ? (entry) => isTrackDownloadComplete(entry.track)
+      : null;
+
+  PlaybackMove? _nextPlaybackMove({
+    required bool automatic,
+    int? alreadyStarting,
+  }) => _playbackOrder.next(
+    loopMode,
+    automatic: automatic,
+    alreadyStarting: alreadyStarting,
+    isPlayable: _playbackAvailability,
+  );
+
+  bool get _canPlayNext => _nextPlaybackMove(automatic: false) != null;
 
   void _notifyPlayNext() {
     if (!_stateDisposing) _playNextChanges.value++;
@@ -5038,6 +5213,9 @@ class MainAppScreenState extends State<MainAppScreen>
         playing: playingTrack as Map?,
         insertions: _playbackOrder.insertions.toList(),
         startingSlot: _startingQueueSlot,
+        isUnavailable: downloadedOnly.value
+            ? (entry) => !isTrackDownloadComplete(entry.track)
+            : null,
         onRemove: (slot) {
           if (_playbackOrder.removeInsertion(
             slot,
@@ -5107,9 +5285,10 @@ class MainAppScreenState extends State<MainAppScreen>
         (Platform.isAndroid && _androidPlaybackFocus?.available != true)) {
       return null;
     }
-    final next = _playbackOrder
-        .next(loopMode, automatic: true, alreadyStarting: _startingQueueSlot)
-        ?.entry;
+    final next = _nextPlaybackMove(
+      automatic: true,
+      alreadyStarting: _startingQueueSlot,
+    )?.entry;
     if (next == null) return null;
     final nextId = next.trackId;
     if (nextId == _audioSourceTrackId ||
@@ -5247,6 +5426,13 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void startPlayback(List<dynamic> targetQueue, int index, {int? playlistId}) {
     if (targetQueue.isEmpty || index < 0 || index >= targetQueue.length) return;
+    if (downloadedOnly.value) {
+      index = targetQueue.indexWhere(isTrackDownloadComplete, index);
+      if (index < 0) {
+        if (mounted) _playNextNotice(tr('downloaded_only_unavailable'));
+        return;
+      }
+    }
     if (isPremium) playCount++;
 
     setState(() {
@@ -5262,8 +5448,18 @@ class MainAppScreenState extends State<MainAppScreen>
     final shouldPlay = !isPlaying;
     final entry = _playbackOrder.current;
     if (shouldPlay &&
+        downloadedOnly.value &&
         entry != null &&
-        (entry.inserted || isLocalMusic(entry.track)) &&
+        !isTrackDownloadComplete(entry.track)) {
+      _playNextNotice(tr('downloaded_only_unavailable'));
+      return;
+    }
+    if (shouldPlay &&
+        entry != null &&
+        (downloadedOnly.value ||
+            _resumeNeedsSource ||
+            entry.inserted ||
+            isLocalMusic(entry.track)) &&
         (_settledTrackRevision != _trackRevision ||
             _audioSourceTrackId != entry.trackId)) {
       _activateTrackForPlayback(entry.track);
@@ -5323,7 +5519,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void nextTrack() {
     if (_playbackOrder.current == null) return;
-    final next = _playbackOrder.next(loopMode, automatic: false);
+    final next = _nextPlaybackMove(automatic: false);
     if (next != null) {
       _advancePlayback(next);
     } else {
@@ -5337,7 +5533,10 @@ class MainAppScreenState extends State<MainAppScreen>
       seekTo(Duration.zero);
       return;
     }
-    final previous = _playbackOrder.previous(loopMode);
+    final previous = _playbackOrder.previous(
+      loopMode,
+      isPlayable: _playbackAvailability,
+    );
     if (previous == null) {
       seekTo(Duration.zero);
     } else {
@@ -5358,7 +5557,12 @@ class MainAppScreenState extends State<MainAppScreen>
     PlaybackMove move, {
     CrossfadeHandoff<PlaybackDeck>? handoff,
   }) {
-    _playbackOrder.take(move);
+    // An already audible preroll may have skipped an unavailable insertion
+    // while local-only was on. Keep that reservation if the mode just changed.
+    _playbackOrder.take(
+      move,
+      skipUnavailable: downloadedOnly.value || handoff != null,
+    );
     _activateTrackForPlayback(move.entry.track, handoff: handoff);
   }
 
@@ -5380,7 +5584,7 @@ class MainAppScreenState extends State<MainAppScreen>
       ).replaceFirst('{title}', entry.track['title']?.toString() ?? ''),
     );
     // Do not repeat a failed occurrence, even with repeat-one enabled.
-    final next = _playbackOrder.next(loopMode, automatic: false);
+    final next = _nextPlaybackMove(automatic: false);
     if (next != null) {
       _advancePlayback(next);
     } else {
@@ -5395,6 +5599,7 @@ class MainAppScreenState extends State<MainAppScreen>
     CrossfadeHandoff<PlaybackDeck>? handoff,
     bool play = true,
   }) {
+    _resumeNeedsSource = false;
     _crossfade?.cancel(allowRetry: true);
     _trackFade.beginTrack();
     _statistics?.endTrack();
@@ -5482,14 +5687,19 @@ class MainAppScreenState extends State<MainAppScreen>
     _audioSourceTrackId = null;
     _audioSourceLocal = false;
     _settledTrackRevision = -1;
-    if (localAudio == null && isLocalMusic(targetTrack)) {
+    if (localAudio == null &&
+        (isLocalMusic(targetTrack) || downloadedOnly.value)) {
       if (_skipUnavailableInsertion(entry, trackRevision, transportRevision)) {
         return;
       }
       if (transportRevision == _transportRevision) {
         _setPlaying(false);
         _syncMediaSessionPlayback();
-        _localMusicMissing();
+        if (isLocalMusic(targetTrack)) {
+          _localMusicMissing();
+        } else if (mounted) {
+          _playNextNotice(tr('downloaded_only_unavailable'));
+        }
       }
       await audioPlayer.stop();
       return;
@@ -5527,12 +5737,10 @@ class MainAppScreenState extends State<MainAppScreen>
         }
         audioUrl = resolved.toString();
       }
-      await _audioDeck.setTrackSource(
-        localAudio == null
-            ? UrlSource(audioUrl)
-            : DeviceFileSource(localAudio.path),
-        localAudio: localAudio,
-      );
+      if (!await _setPlaybackSource(localAudio, audioUrl)) {
+        if (_isCurrentTrackRevision(trackRevision)) _stopPlaybackAtQueueEnd();
+        return;
+      }
     } catch (error) {
       if (_skipUnavailableInsertion(entry, trackRevision, transportRevision)) {
         _logAudioError(error);
@@ -5633,12 +5841,13 @@ class MainAppScreenState extends State<MainAppScreen>
       await _configureAndroidFocusForSource(trackRevision);
       if (!_isCurrentTrackRevision(trackRevision)) return;
     }
-    await _audioDeck.setTrackSource(
-      localAudio == null
-          ? UrlSource(targetTrack['audio_file'].toString())
-          : DeviceFileSource(localAudio.path),
-      localAudio: localAudio,
-    );
+    if (!await _setPlaybackSource(
+      localAudio,
+      targetTrack['audio_file'].toString(),
+    )) {
+      _resumeNeedsSource = true;
+      return;
+    }
     if (!_isCurrentTrackRevision(trackRevision)) return;
 
     _audioSourceTrackId = trackId;
@@ -5664,6 +5873,20 @@ class MainAppScreenState extends State<MainAppScreen>
     if (_isCurrentTrackRevision(trackRevision)) {
       _statistics?.beginTrack(targetTrack as Map, duration: duration);
       _statistics?.setPlaying(audioPlayer.state == PlayerState.playing);
+    }
+  }
+
+  Future<bool> _setPlaybackSource(LyricAudioFile? file, String url) async {
+    if (file == null && downloadedOnly.value) return false;
+    _openingRemoteAudio = file == null;
+    try {
+      await _audioDeck.setTrackSource(
+        file == null ? UrlSource(url) : DeviceFileSource(file.path),
+        localAudio: file,
+      );
+      return true;
+    } finally {
+      _openingRemoteAudio = false;
     }
   }
 
@@ -5723,6 +5946,11 @@ class MainAppScreenState extends State<MainAppScreen>
   }
 
   void seekTo(Duration pos) {
+    if (downloadedOnly.value &&
+        playingTrack != null &&
+        !isTrackDownloadComplete(playingTrack)) {
+      return;
+    }
     final trackRevision = _trackRevision;
     final seekRevision = ++_seekRevision;
     _fadeSeekRevision = seekRevision;
@@ -5775,6 +6003,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> fetchLyrics(dynamic trackObj) async {
     final revision = ++_lyricsRevision;
+    final networkRevision = downloadedOnly.revision;
     _pendingTimedLyrics = null;
     _lyricTiming.value = null;
     globalLyrics.clear();
@@ -5839,16 +6068,26 @@ class MainAppScreenState extends State<MainAppScreen>
     }
 
     try {
+      if (!_catalogRequestCurrent(networkRevision)) {
+        _commitLyrics(
+          revision: revision,
+          trackId: trackId,
+          lyrics: const [],
+          plainText: '',
+        );
+        return;
+      }
       final parsedUrl = Uri.https('lrclib.net', '/api/get', {
         'artist_name': artistName,
         'track_name': trackTitle,
         if (recordingDuration > 0) 'duration': '$recordingDuration',
       });
-      final res = await http
+      final res = await _serverClient
           .get(parsedUrl)
           .timeout(const Duration(seconds: 15));
       if (!_isCurrentLyricsRequest(revision, trackId)) return;
-      if (res.statusCode == HttpStatus.ok) {
+      if (res.statusCode == HttpStatus.ok &&
+          _catalogRequestCurrent(networkRevision)) {
         final jsonData = json.decode(utf8.decode(res.bodyBytes));
         final metadataUnchanged = lyricsLookupUnchanged(
           trackObj,
@@ -5880,7 +6119,7 @@ class MainAppScreenState extends State<MainAppScreen>
         }
       }
     } catch (e) {
-      debugPrint("error $e");
+      if (_catalogRequestCurrent(networkRevision)) debugPrint("error $e");
     }
 
     _commitLyrics(
@@ -5992,10 +6231,11 @@ class MainAppScreenState extends State<MainAppScreen>
     String lyricsText,
     String expectedLyricsVersion,
   ) async {
-    if (trackId <= 0) return;
+    if (trackId <= 0 || downloadedOnly.value) return;
+    final revision = downloadedOnly.revision;
     try {
       final url = configuredServerUri('/api/tracks/$trackId/update_lyrics/');
-      final res = await http
+      final res = await _serverClient
           .post(
             url,
             headers: {'Content-Type': 'application/json'},
@@ -6005,6 +6245,7 @@ class MainAppScreenState extends State<MainAppScreen>
             }),
           )
           .timeout(const Duration(seconds: 15));
+      if (!_catalogRequestCurrent(revision)) return;
       if (res.statusCode == 200) {
         debugPrint('Lyrics updated on server for track $trackId');
 
@@ -6017,6 +6258,7 @@ class MainAppScreenState extends State<MainAppScreen>
         }
         // Also update offline_tracks.json
         await _persistOfflineTracks();
+        if (!_catalogRequestCurrent(revision)) return;
         await _trackUpdates?.acknowledgeLocalLyrics(trackId, lyricsText);
       } else if (res.statusCode == HttpStatus.conflict) {
         // A manual edit wins. Keep its server content and let normal polling offer it.
@@ -6025,7 +6267,9 @@ class MainAppScreenState extends State<MainAppScreen>
         debugPrint('Failed to update lyrics on server: ${res.body}');
       }
     } catch (e) {
-      debugPrint('Error updating lyrics on server: $e');
+      if (_catalogRequestCurrent(revision)) {
+        debugPrint('Error updating lyrics on server: $e');
+      }
     }
   }
 
@@ -6066,7 +6310,9 @@ class MainAppScreenState extends State<MainAppScreen>
     final largeImage =
         selectDiscordCoverImage(
           discovered: publicCover,
-          stored: trackData['album']?['cover']?.toString(),
+          stored: downloadedOnly.value
+              ? null
+              : trackData['album']?['cover']?.toString(),
           animated: animatedCover,
         ) ??
         'https://cdn.discordapp.com/app-icons/1480246072042590219/36573ffd3ca304580ed8968517090b0e.png';
@@ -6128,7 +6374,11 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void showLyricsScreen() {
     if (playingQueue.isEmpty) return;
-    final proposals = _lyricTimingProposals ??= LyricTimingProposalClient();
+    final proposals = downloadedOnly.value
+        ? null
+        : _lyricTimingProposals ??= LyricTimingProposalClient(
+            client: _serverClient,
+          );
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -6561,6 +6811,8 @@ class MainAppScreenState extends State<MainAppScreen>
         tooltip: tr('delete_downloaded_track'),
         onPressed: () => deleteDownloadedTrack(playingTrack),
       );
+    } else if (downloadedOnly.value) {
+      return const SizedBox(width: 24);
     } else {
       return IconButton(
         icon: const Icon(Icons.download, color: Colors.white54, size: 24),
@@ -6629,6 +6881,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   Future<void> submitSearch() async {
     final submitted = searchQuery;
+    final revision = downloadedOnly.revision;
     if (navId != -1 && normalizeLyricsSearch(submitted).isNotEmpty) {
       await refreshLyricsSearch();
       if (_stateDisposing || submitted != searchQuery) return;
@@ -6639,6 +6892,7 @@ class MainAppScreenState extends State<MainAppScreen>
         return;
       }
     }
+    if (!_catalogRequestCurrent(revision)) return;
     await downloadFromNetwork();
   }
 
@@ -6678,24 +6932,25 @@ class MainAppScreenState extends State<MainAppScreen>
                     updateSearchQuery('');
                   },
                 ),
-              IconButton(
-                key: const ValueKey('import_album_link'),
-                tooltip: _albumImportProgress == null
-                    ? tr('import_album')
-                    : '${tr('import_progress')}: $_albumImportProgress',
-                onPressed: isSearchLoading ? null : _showAlbumImport,
-                icon: isSearchLoading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(
-                        Icons.album_outlined,
-                        color: Colors.white54,
-                        size: 18,
-                      ),
-              ),
+              if (!downloadedOnly.value)
+                IconButton(
+                  key: const ValueKey('import_album_link'),
+                  tooltip: _albumImportProgress == null
+                      ? tr('import_album')
+                      : '${tr('import_progress')}: $_albumImportProgress',
+                  onPressed: isSearchLoading ? null : _showAlbumImport,
+                  icon: isSearchLoading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(
+                          Icons.album_outlined,
+                          color: Colors.white54,
+                          size: 18,
+                        ),
+                ),
             ],
           ),
         ),
@@ -7039,6 +7294,7 @@ class MainAppScreenState extends State<MainAppScreen>
       context,
       SettingsRoute(
         builder: (context) => SettingsScreen(
+          changeDownloadedOnly: _changeDownloadedOnly,
           storageBuilder: (_) => StorageScreen(
             loadUsage: loadStorageUsage,
             clearCache: clearAllCache,
@@ -7065,6 +7321,91 @@ class MainAppScreenState extends State<MainAppScreen>
     ).then((_) {
       if (mounted) setState(() {});
     });
+  }
+
+  bool get _hasServerTransfer =>
+      isSearchLoading ||
+      _retryingAlbumTrack ||
+      _bulkDownloadActive ||
+      _mediaDownloadTasks.isNotEmpty ||
+      downloadQueue.isNotEmpty;
+
+  Future<bool> _changeDownloadedOnly(
+    bool enabled,
+    BuildContext settings,
+  ) async {
+    if (!enabled) {
+      downloadedOnly.value = false;
+      return true;
+    }
+    bool busy(String key) {
+      if (settings.mounted) {
+        ScaffoldMessenger.of(
+          settings,
+        ).showSnackBar(SnackBar(content: Text(tr(key))));
+      }
+      return false;
+    }
+
+    if (_hasServerTransfer) return busy('downloaded_only_busy');
+    if (_openingRemoteAudio) return busy('downloaded_only_stream_busy');
+    if (audioPlayer.source is UrlSource) {
+      final trackRevision = _trackRevision;
+      final stop = await showDialog<bool>(
+        context: settings,
+        builder: (context) => AlertDialog(
+          title: Text(tr('downloaded_only')),
+          content: Text(tr('downloaded_only_stop_stream')),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text(tr('cancel')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(tr('downloaded_only_stop_and_enable')),
+            ),
+          ],
+        ),
+      );
+      if (stop != true || !settings.mounted || _stateDisposing) return false;
+      if (_hasServerTransfer) return busy('downloaded_only_busy');
+      if (_openingRemoteAudio || !_isCurrentTrackRevision(trackRevision)) {
+        return busy('downloaded_only_stream_busy');
+      }
+      var applied = false;
+      await _enqueueAudioWork(() async {
+        if (!_isCurrentTrackRevision(trackRevision) || _hasServerTransfer) {
+          return;
+        }
+        if (audioPlayer.source is UrlSource) {
+          await audioPlayer.release();
+          if (!_isCurrentTrackRevision(trackRevision)) return;
+          _transportRevision++;
+          _seekRevision++;
+          _statistics?.endTrack();
+          _audioSourceTrackId = null;
+          _audioSourceLocal = false;
+          _settledTrackRevision = -1;
+          _resumeNeedsSource = true;
+          _setPlaying(false);
+          discordStart = null;
+          unawaited(_saveState());
+        }
+        if (_hasServerTransfer) return;
+        downloadedOnly.value = true;
+        applied = true;
+      });
+      return applied ||
+          busy(
+            _hasServerTransfer
+                ? 'downloaded_only_busy'
+                : 'downloaded_only_stream_busy',
+          );
+    }
+
+    downloadedOnly.value = true;
+    return true;
   }
 
   // ── Mobile mini-player ───────────────────────────────────────────────────
@@ -7521,6 +7862,7 @@ class MainAppScreenState extends State<MainAppScreen>
   @override
   Widget build(BuildContext context) {
     bool isMobile = MediaQuery.of(context).size.width < 800;
+    final localOnly = downloadedOnly.value;
     final compactTracks =
         supportsCompactTrackList && compactTrackListNotifier.value;
 
@@ -7563,11 +7905,16 @@ class MainAppScreenState extends State<MainAppScreen>
     }
 
     final lyricsQuery = LyricsSearchQuery(searchQuery);
+    final filterToLocal =
+        localOnly &&
+        navId != 2 &&
+        (navId == 0 || searchQuery.trim().isNotEmpty);
     List<dynamic> finalList = finalListToRender
         .where(
           (track) =>
-              matchesTrackSearch(track, searchQuery) ||
-              lyricsSearchIndex.matches(track['id'] as int, lyricsQuery),
+              (matchesTrackSearch(track, searchQuery) ||
+                  lyricsSearchIndex.matches(track['id'] as int, lyricsQuery)) &&
+              (!filterToLocal || isTrackDownloadComplete(track)),
         )
         .toList();
     // Drop selection for rows hidden by live catalog or lyric-search updates.
@@ -7581,7 +7928,9 @@ class MainAppScreenState extends State<MainAppScreen>
     final requestedDownloads = selectedTracks.isEmpty
         ? finalList
         : selectedTracks;
-    final downloadTargets = _ownTracks.isEmpty
+    final downloadTargets = localOnly
+        ? const <dynamic>[]
+        : _ownTracks.isEmpty
         ? requestedDownloads
         : requestedDownloads
               .where((track) => downloadTrackId(track) != null)
@@ -7820,6 +8169,8 @@ class MainAppScreenState extends State<MainAppScreen>
                                       ? tr('favorites_empty')
                                       : navId >= 3
                                       ? tr('playlist_empty')
+                                      : localOnly
+                                      ? tr('downloaded_only_empty')
                                       : tr('no_data'),
                                   style: const TextStyle(
                                     color: Colors.white54,
@@ -7827,7 +8178,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                   ),
                                   textAlign: TextAlign.center,
                                 ),
-                                if (searchQuery.isNotEmpty) ...[
+                                if (searchQuery.isNotEmpty && !localOnly) ...[
                                   const SizedBox(height: 20),
                                   ElevatedButton.icon(
                                     onPressed: downloadFromNetwork,
@@ -7838,7 +8189,8 @@ class MainAppScreenState extends State<MainAppScreen>
                                       foregroundColor: Colors.white,
                                     ),
                                   ),
-                                ] else if (navId == 0 &&
+                                ] else if (searchQuery.isEmpty &&
+                                    navId == 0 &&
                                     localPath.isNotEmpty) ...[
                                   const SizedBox(height: 12),
                                   TextButton.icon(
@@ -7871,6 +8223,7 @@ class MainAppScreenState extends State<MainAppScreen>
                         final isDownloaded = isTrackDownloadComplete(
                           currentObject,
                         );
+                        final unavailable = localOnly && !isDownloaded;
                         final isDownloading = downloadQueue.contains(trackId);
                         final isFavorited = favs.contains(trackId);
                         final isSelected = trackSelection.contains(
@@ -7940,36 +8293,46 @@ class MainAppScreenState extends State<MainAppScreen>
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: MouseRegion(
-                              cursor: SystemMouseCursors.click,
+                              cursor: unavailable
+                                  ? SystemMouseCursors.basic
+                                  : SystemMouseCursors.click,
                               child: GestureDetector(
-                                onTap: () {
-                                  if (trackSelection.isNotEmpty ||
-                                      HardwareKeyboard
-                                          .instance
-                                          .isControlPressed ||
-                                      HardwareKeyboard.instance.isMetaPressed ||
-                                      HardwareKeyboard
-                                          .instance
-                                          .isShiftPressed) {
-                                    handleTrackTap(
-                                      finalList,
-                                      idx,
-                                      touch: isMobile,
-                                      playlistId: playlistId,
-                                    );
-                                    return;
-                                  }
-                                  final a = currentObject['album']?['artist'];
-                                  final aId = a?['id'] is int
-                                      ? a['id'] as int
-                                      : 0;
-                                  final aName = a?['name']?.toString() ?? '';
-                                  if (aName.isNotEmpty) {
-                                    _openArtistScreen(aId, aName);
-                                  }
-                                },
+                                onTap: unavailable
+                                    ? null
+                                    : () {
+                                        if (trackSelection.isNotEmpty ||
+                                            HardwareKeyboard
+                                                .instance
+                                                .isControlPressed ||
+                                            HardwareKeyboard
+                                                .instance
+                                                .isMetaPressed ||
+                                            HardwareKeyboard
+                                                .instance
+                                                .isShiftPressed) {
+                                          handleTrackTap(
+                                            finalList,
+                                            idx,
+                                            touch: isMobile,
+                                            playlistId: playlistId,
+                                          );
+                                          return;
+                                        }
+                                        final a =
+                                            currentObject['album']?['artist'];
+                                        final aId = a?['id'] is int
+                                            ? a['id'] as int
+                                            : 0;
+                                        final aName =
+                                            a?['name']?.toString() ?? '';
+                                        if (aName.isNotEmpty) {
+                                          _openArtistScreen(aId, aName);
+                                        }
+                                      },
                                 child: Text(
-                                  trackArtistLabel(currentObject),
+                                  unavailable
+                                      ? tr('downloaded_only_unavailable')
+                                      : trackArtistLabel(currentObject),
                                   style: const TextStyle(color: Colors.white54),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
@@ -7998,7 +8361,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                         ),
                                       ),
                                     ),
-                                  if (ownTrack ||
+                                  if ((ownTrack && !localOnly) ||
                                       playingTrack != null ||
                                       (playlistId == null &&
                                           myPlaylists.isNotEmpty))
@@ -8013,7 +8376,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                           ? null
                                           : () => playTracksNext(actionTracks),
                                       playNextCount: actionTracks.length,
-                                      onMatchLocal: ownTrack
+                                      onMatchLocal: ownTrack && !localOnly
                                           ? () => unawaited(
                                               _matchOwnTrack(currentObject),
                                             )
@@ -8087,7 +8450,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                       onPressed: () =>
                                           deleteDownloadedTrack(currentObject),
                                     )
-                                  else
+                                  else if (!localOnly)
                                     IconButton(
                                       icon: const Icon(
                                         Icons.download,
@@ -8102,9 +8465,10 @@ class MainAppScreenState extends State<MainAppScreen>
                                       Icons.graphic_eq,
                                       color: Colors.redAccent,
                                     ),
-                                  ] else if (!isMobile ||
-                                      playlistId == null ||
-                                      playingTrack == null) ...[
+                                  ] else if (!unavailable &&
+                                      (!isMobile ||
+                                          playlistId == null ||
+                                          playingTrack == null)) ...[
                                     const SizedBox(width: 15),
                                     const Icon(
                                       Icons.play_arrow,

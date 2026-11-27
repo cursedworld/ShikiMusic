@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,6 +7,83 @@ import 'package:http/testing.dart';
 import 'package:shiki/track_updates.dart';
 
 void main() {
+  test(
+    'manual pause skips startup and foreground polling, then checks once',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'shiki-poll-test-',
+      );
+      var requests = 0;
+      final checked = Completer<void>();
+      final client = MockClient((_) async {
+        requests++;
+        return http.Response('{}', 200);
+      });
+      final monitor = TrackUpdateMonitor(
+        directory: directory,
+        tracks: () => [],
+        client: client,
+        onCheckSucceeded: checked.complete,
+        interval: const Duration(minutes: 5),
+      );
+      addTearDown(() async {
+        monitor.dispose();
+        client.close();
+        await directory.delete(recursive: true);
+      });
+
+      monitor.setNetworkPaused(true);
+      monitor.start();
+      monitor.setActivity(visible: false, playing: true);
+      monitor.setActivity(visible: true, playing: true);
+      await monitor.checkNow();
+      expect(requests, 0);
+
+      monitor.setNetworkPaused(false);
+      await checked.future;
+      expect(requests, 1);
+    },
+  );
+
+  test('late catalog response is ignored after pause and resume', () async {
+    final directory = await Directory.systemTemp.createTemp('shiki-poll-test-');
+    final pending = Completer<http.Response>();
+    final sent = Completer<void>();
+    final checked = Completer<void>();
+    final requestedEtags = <String?>[];
+    var refreshes = 0;
+    final client = MockClient((request) async {
+      requestedEtags.add(request.headers['if-none-match']);
+      if (sent.isCompleted) {
+        return http.Response('{}', 200, headers: {'etag': 'new'});
+      }
+      sent.complete();
+      return pending.future;
+    });
+    final monitor = TrackUpdateMonitor(
+      directory: directory,
+      tracks: () => [],
+      client: client,
+      onCatalogChanged: () async => refreshes++,
+      onCheckSucceeded: checked.complete,
+      interval: const Duration(minutes: 5),
+    );
+    addTearDown(() async {
+      monitor.dispose();
+      client.close();
+      await directory.delete(recursive: true);
+    });
+
+    monitor.start();
+    await sent.future;
+    monitor.setNetworkPaused(true);
+    monitor.setNetworkPaused(false);
+    pending.complete(http.Response('{}', 200, headers: {'etag': 'old'}));
+    await checked.future;
+    expect(requestedEtags, [null, null]);
+    expect(refreshes, 1);
+  });
+
   test(
     'background pause stops catalog polls; foreground resumes immediately',
     () async {

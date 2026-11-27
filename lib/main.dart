@@ -9,6 +9,7 @@ import 'app_build_info.dart';
 import 'atomic_file_store.dart';
 import 'custom_background.dart';
 import 'discord_status.dart';
+import 'downloaded_only.dart';
 import 'globals.dart';
 import 'lyrics_background_blur.dart';
 import 'lyrics_text_size.dart';
@@ -92,6 +93,7 @@ Future<void> _loadSavedSettings() async {
       }
       // A benchmark must never pick up a real server from copied preferences.
       if (!PerformanceFrameMonitor.enabled && data is Map) {
+        downloadedOnly.value = downloadedOnlyFromSettings(data);
         restoreSavedServerBaseUrl(data['serverBaseUrl'] as String?);
       }
 
