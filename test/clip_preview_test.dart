@@ -26,14 +26,18 @@ VideoPlayerController _clip([Size size = const Size(1280, 720)]) {
 
 Future<ValueNotifier<VideoPlayerController?>> _showPreview(
   WidgetTester tester,
-  VideoPlayerController controller,
-) async {
+  VideoPlayerController controller, {
+  ValueChanged<bool>? onExpanded,
+  ValueNotifier<int?>? track,
+}) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = const Size(1280, 720);
   addTearDown(tester.view.resetDevicePixelRatio);
   addTearDown(tester.view.resetPhysicalSize);
   final source = ValueNotifier<VideoPlayerController?>(controller);
   addTearDown(source.dispose);
+  final selectedTrack = track ?? ValueNotifier<int?>(1);
+  if (track == null) addTearDown(selectedTrack.dispose);
   await tester.pumpWidget(
     MaterialApp(
       theme: ThemeData.dark(),
@@ -43,10 +47,15 @@ Future<ValueNotifier<VideoPlayerController?>> _showPreview(
             dimension: 240,
             child: ClipOval(
               child: ValueListenableBuilder(
-                valueListenable: source,
-                builder: (context, clip, child) => clip == null
+                valueListenable: selectedTrack,
+                builder: (context, id, child) => id == null
                     ? child!
-                    : ClipPreview(controller: clip, cover: child!),
+                    : ClipPreview(
+                        key: ValueKey(id),
+                        controller: source,
+                        cover: child!,
+                        onExpanded: onExpanded ?? (_) {},
+                      ),
                 child: _cover,
               ),
             ),
@@ -86,6 +95,39 @@ void main() {
     },
   );
 
+  testWidgets('the close button has an accessible name but no hover label', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    try {
+      await _showPreview(tester, _clip());
+      await tester.tap(find.byType(ClipPreview));
+      await tester.pumpAndSettle();
+
+      final close = find.descendant(
+        of: frame,
+        matching: find.byIcon(Icons.close),
+      );
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: tester.getCenter(close));
+      addTearDown(mouse.removePointer);
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+
+      expect(find.text(tr('close')), findsNothing);
+      expect(find.byTooltip(tr('close')), findsNothing);
+      expect(
+        find.descendant(
+          of: frame,
+          matching: find.bySemanticsLabel(tr('close')),
+        ),
+        findsOneWidget,
+      );
+    } finally {
+      semantics.dispose();
+    }
+  });
+
   testWidgets('a click moves the same playing clip into a dialog and back', (
     tester,
   ) async {
@@ -103,7 +145,7 @@ void main() {
     final preview = tester.element(find.byType(ClipPreview));
     expect(TickerMode.valuesOf(preview).enabled, isTrue);
 
-    await tester.tap(find.byTooltip(tr('close')));
+    await tester.tap(find.byIcon(Icons.close));
     await tester.pump();
     expect(video, findsOneWidget);
     await tester.pumpAndSettle();
@@ -157,15 +199,49 @@ void main() {
     });
   }
 
-  testWidgets('changing or removing the clip dismisses its old dialog', (
+  testWidgets('switching quality keeps one surface and the same dialog', (
     tester,
   ) async {
-    final source = await _showPreview(tester, _clip());
+    final small = _clip(const Size(640, 360));
+    final large = _clip(const Size(1920, 1080));
+    final changes = <bool>[];
+    final source = await _showPreview(tester, small, onExpanded: changes.add);
+    await tester.tap(find.byType(ClipPreview));
+    await tester.pumpAndSettle();
+    expect(changes, [true]);
+    expect(tester.widget<VideoPlayer>(video).controller, same(small));
+
+    source.value = null;
+    await tester.pump();
+    expect(frame, findsOneWidget);
+    expect(video, findsNothing);
+    source.value = large;
+    await tester.pumpAndSettle();
+    expect(frame, findsOneWidget);
+    expect(tester.widget<VideoPlayer>(video).controller, same(large));
+
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pump();
+    expect(changes, [true]);
+    await tester.pumpAndSettle();
+    expect(changes, [true, false]);
+    source.value = small;
+    await tester.pumpAndSettle();
+    expect(tester.widget<VideoPlayer>(video).controller, same(small));
+  });
+
+  testWidgets('changing or removing the track dismisses its old dialog', (
+    tester,
+  ) async {
+    final track = ValueNotifier<int?>(1);
+    addTearDown(track.dispose);
+    final source = await _showPreview(tester, _clip(), track: track);
     await tester.tap(find.byType(ClipPreview));
     await tester.pumpAndSettle();
     expect(frame, findsOneWidget);
 
     final next = _clip();
+    track.value = 2;
     source.value = next;
     await tester.pumpAndSettle();
     expect(frame, findsNothing);
@@ -174,7 +250,7 @@ void main() {
     await tester.tap(find.byType(ClipPreview));
     await tester.pumpAndSettle();
     expect(frame, findsOneWidget);
-    source.value = null;
+    track.value = null;
     await tester.pumpAndSettle();
     expect(frame, findsNothing);
     expect(video, findsNothing);

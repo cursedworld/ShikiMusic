@@ -192,6 +192,9 @@ class LocalMusicEntry {
       'duration': duration,
       'audio_file': '',
       'video_file': video,
+      if (serverTrack?['video_preview'] case final String preview
+          when video.isNotEmpty)
+        'video_preview': preview,
       'lyrics': displayedLyrics,
       'track_number': trackNumber ?? serverTrack?['track_number'],
       'disc_number': discNumber ?? serverTrack?['disc_number'],

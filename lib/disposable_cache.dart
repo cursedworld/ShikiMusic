@@ -19,6 +19,7 @@ final RegExp _artworkTemporary = RegExp(
 final _serverAudio = RegExp(r'^track_\d+(?:_[a-f0-9]{64})?\.mp3$');
 final _serverClip = RegExp(r'^video_\d+(?:_[a-f0-9]{64})?\.mp4$');
 final _localClip = RegExp(r'^local_video_[a-f0-9]{64}\.mp4$');
+final _clipPreview = RegExp(r'^clip_preview_[a-f0-9]{64}\.mp4$');
 
 class StorageUsage {
   const StorageUsage({
@@ -97,7 +98,10 @@ Future<StorageUsage> readStorageUsage(
           (local && name.endsWith('.mp3')) ||
           (!legacy && _serverAudio.hasMatch(name));
       final isClip =
-          !legacy && (_serverClip.hasMatch(name) || _localClip.hasMatch(name));
+          !legacy &&
+          (_serverClip.hasMatch(name) ||
+              _localClip.hasMatch(name) ||
+              _clipPreview.hasMatch(name));
       final isArtwork =
           (local && name.endsWith('.jpg')) ||
           (!legacy &&

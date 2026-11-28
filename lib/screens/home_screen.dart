@@ -51,6 +51,7 @@ import '../linux_media_session.dart';
 import '../statistics_store.dart';
 import '../media_file_downloader.dart';
 import '../music_import.dart';
+import '../clip_preview_cache.dart';
 import '../clip_retry_gate.dart';
 import '../perf/frame_metrics.dart';
 import '../playlist_artwork.dart';
@@ -112,7 +113,11 @@ class _SmoothScrollBehavior extends ScrollBehavior {
 }
 
 class _VideoRequest {
-  const _VideoRequest({required this.trackId, required this.videoUrl});
+  const _VideoRequest({
+    required this.trackId,
+    required this.videoUrl,
+    this.preview,
+  });
 
   factory _VideoRequest.from(dynamic trackData) {
     if (trackData is! Map) {
@@ -129,14 +134,29 @@ class _VideoRequest {
         (rawVideoUrl == null || rawVideoUrl.isEmpty)) {
       return const _VideoRequest(trackId: null, videoUrl: null);
     }
+    final videoUrl = rawVideoUrl == null || rawVideoUrl.isEmpty
+        ? null
+        : rawVideoUrl;
+    final catalogId = isLocalMusic(trackData)
+        ? trackData['local_match_id']
+        : trackId;
     return _VideoRequest(
       trackId: trackId,
-      videoUrl: rawVideoUrl == null || rawVideoUrl.isEmpty ? null : rawVideoUrl,
+      videoUrl: videoUrl,
+      preview: catalogId is int
+          ? ClipPreviewReference.fromAdvertisement(
+              trackData['video_preview'],
+              serverTrackId: catalogId,
+              originalUrl: videoUrl,
+              serverBaseUrl: configuredServerBaseUrl,
+            )
+          : null,
     );
   }
 
   final int? trackId;
   final String? videoUrl;
+  final ClipPreviewReference? preview;
 }
 
 class _VideoOperation {
@@ -555,6 +575,10 @@ class MainAppScreenState extends State<MainAppScreen>
   bool _vinylUserStopped = false;
 
   VideoPlayerController? _videoController;
+  final _visibleClip = ValueNotifier<VideoPlayerController?>(null);
+  late final _clipPreviewCache = ClipPreviewCache(Directory(localPath));
+  final _clipPreviewGate = ClipRetryGate();
+  int? _expandedClipTrack;
   VideoPlayerController? _initializingVideoController;
   bool _isVideoInitialized = false;
   Duration? _lastBenchmarkVideoPosition;
@@ -612,7 +636,7 @@ class MainAppScreenState extends State<MainAppScreen>
   static const Duration _videoTrackSwitchDebounce = Duration(milliseconds: 300);
   static const Duration _clipGenerationTimeout = Duration(minutes: 10);
   final Map<String, Future<bool>> _coverDownloads = <String, Future<bool>>{};
-  final Expando<bool> _disposedVideoControllers = Expando<bool>();
+  final _videoDisposals = Expando<Future<void>>();
 
   final ValueNotifier<Duration> fullDurationNotifier = ValueNotifier(
     Duration.zero,
@@ -795,6 +819,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final surfaceAvailable = MediaQuery.sizeOf(context).width >= 800;
     if (_videoSurfaceAvailable != surfaceAvailable) {
       _videoSurfaceAvailable = surfaceAvailable;
+      if (!surfaceAvailable) _expandedClipTrack = null;
       _initializeVideo(activeTrackNotifier.value);
     }
     if (routeChanged) _reconcileVideoVisibility();
@@ -855,6 +880,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _initializingVideoController = null;
     _isVideoInitialized = false;
     _videoTrackId = null;
+    _visibleClip.dispose();
     if (videoController != null) {
       unawaited(_disposeVideoController(videoController));
     }
@@ -1008,6 +1034,8 @@ class MainAppScreenState extends State<MainAppScreen>
     _videoOperation?.cancel();
     _videoOperation = null;
     _videoRevision += 1;
+    _expandedClipTrack = null;
+    _visibleClip.value = null;
     _lastBenchmarkVideoPosition = null;
     final controller = _videoController;
     if (_isVideoInitialized) {
@@ -1034,6 +1062,7 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void _onVideoSettingChanged() {
     if (mounted && supportsVideoClips) {
+      if (!playVideoClipNotifier.value) _expandedClipTrack = null;
       _crossfade?.cancel(allowRetry: true);
       _videoTrackSwitchTimer?.cancel();
       _videoTrackSwitchTimer = null;
@@ -1144,6 +1173,7 @@ class MainAppScreenState extends State<MainAppScreen>
         return;
       }
       final videoUrl = _resolveAbsoluteUrl(rawVideoUrl);
+      final videoPreview = data['video_preview'];
       final requestStillCurrent =
           _isCurrentVideoOperation(revision, operation) &&
           _videoVisible &&
@@ -1154,17 +1184,20 @@ class MainAppScreenState extends State<MainAppScreen>
       for (final track in _playbackOrder.retainedTracks) {
         if (track['id'] == trackId) {
           track['video_file'] = videoUrl;
+          track['video_preview'] = videoPreview;
           changed = true;
         }
       }
       final currentActiveTrack = activeTrackNotifier.value;
       if (currentActiveTrack?['id'] == trackId) {
         currentActiveTrack['video_file'] = videoUrl;
+        currentActiveTrack['video_preview'] = videoPreview;
         changed = true;
       }
       for (var i = 0; i < cachedTracks.length; i++) {
         if (cachedTracks[i]['id'] == trackId) {
           cachedTracks[i]['video_file'] = videoUrl;
+          cachedTracks[i]['video_preview'] = videoPreview;
           changed = true;
         }
       }
@@ -1336,6 +1369,17 @@ class MainAppScreenState extends State<MainAppScreen>
     _enqueueVideoWork(() => _applyVideoRequest(request, revision, operation));
   }
 
+  void _setClipExpanded(int trackId, bool expanded) {
+    final track = activeTrackNotifier.value;
+    if (_stateDisposing ||
+        track?['id'] != trackId ||
+        (!expanded && _expandedClipTrack != trackId)) {
+      return;
+    }
+    setState(() => _expandedClipTrack = expanded ? trackId : null);
+    if (_VideoRequest.from(track).preview != null) _initializeVideo(track);
+  }
+
   void _enqueueVideoWork(Future<void> Function() work) {
     final previous = _videoWork;
     _videoWork = _runVideoWork(previous, work);
@@ -1407,57 +1451,95 @@ class MainAppScreenState extends State<MainAppScreen>
     _VideoOperation operation,
   ) async {
     if (!_isCurrentVideoOperation(revision, operation)) return;
-    final shouldRun = _shouldRunVideo(request);
-    final current = _videoController;
-    if (shouldRun &&
-        current != null &&
-        _videoTrackId == request.trackId &&
-        _videoSourcePath == _localVideoFile(request.trackId!).path &&
-        current.value.isInitialized) {
-      await _synchronizeVideoController(current);
-      if (!_isCurrentVideoOperation(revision, operation) ||
-          !_shouldRunVideo(request)) {
-        return;
-      }
-      _isVideoInitialized = true;
-      _lastBenchmarkVideoPosition = null;
-      if (mounted) setState(() {});
-      return;
-    }
-
-    await _disposeCurrentVideo();
-    if (!_isCurrentVideoOperation(revision, operation)) return;
-    if (!shouldRun) {
-      if (_videoVisible &&
-          _videoSurfaceAvailable &&
-          playVideoClipNotifier.value &&
-          request.trackId != null &&
-          request.videoUrl == null) {
-        unawaited(_fetchAndDownloadClip(request.trackId!, revision, operation));
-      }
+    if (!_shouldRunVideo(request)) {
+      await _disposeCurrentVideo();
       return;
     }
 
     final trackId = request.trackId!;
-    final localVideoFile = _localVideoFile(trackId);
-    final hasLocalVideo = await _hasNonEmptyFile(localVideoFile);
+    if (_videoTrackId != null && _videoTrackId != trackId) {
+      await _disposeCurrentVideo();
+      if (!_isCurrentVideoOperation(revision, operation)) return;
+    }
+    final original = _localVideoFile(trackId);
+    final hasOriginal = await _hasNonEmptyFile(original);
+    final reference = request.preview;
+    final previewSignature = reference?.endpoint.toString();
+    final allowPreview =
+        previewSignature != null &&
+        _clipPreviewGate.canRequest(trackId, previewSignature);
+    final cachedPreview = allowPreview && reference != null
+        ? await _clipPreviewCache.read(reference)
+        : null;
+    // A downloaded original can be an older edition the user chose to keep.
+    final preview =
+        cachedPreview == null ||
+            (hasOriginal &&
+                !await _clipPreviewCache.matchesOriginal(
+                  cachedPreview,
+                  original,
+                ))
+        ? null
+        : cachedPreview;
     if (!_isCurrentVideoOperation(revision, operation)) return;
-    if (!hasLocalVideo) {
-      if (downloadedOnly.value) return;
+    final originalBlocked = _blockedVideoSources.contains(
+      _videoSourceKey(request),
+    );
+    final originalReady = hasOriginal && (!originalBlocked || preview == null);
+    final canDownload = !downloadedOnly.value && !_downloadRecoveryFailed;
+    final plan = planClipPlayback(
+      expanded: _expandedClipTrack == trackId,
+      originalReady: originalReady,
+      previewReady: preview != null,
+      canFetchPreview: canDownload && allowPreview && cachedPreview == null,
+      canFetchOriginal: canDownload && !originalBlocked,
+    );
+    if (plan.fetchPreview && reference != null) {
+      unawaited(
+        _downloadClipPreview(reference, trackId, original, revision, operation),
+      );
+    }
+    if (plan.fetchOriginal) {
       final videoFileUrl = request.videoUrl;
       if (videoFileUrl == null) {
         unawaited(_fetchAndDownloadClip(trackId, revision, operation));
-        return;
+      } else {
+        unawaited(
+          _downloadVideoForPlayback(
+            request: request,
+            revision: revision,
+            operation: operation,
+            destination: original,
+            expectedSha256: preview?.originalSha256,
+          ),
+        );
       }
-      if (_blockedVideoSources.contains(_videoSourceKey(request))) return;
-      unawaited(
-        _downloadVideoForPlayback(
-          request: request,
-          revision: revision,
-          operation: operation,
-          destination: localVideoFile,
-        ),
-      );
+    }
+
+    final localVideoFile = plan.usePreview
+        ? preview?.file
+        : originalReady
+        ? original
+        : null;
+    final current = _videoController;
+    if (localVideoFile != null &&
+        current != null &&
+        _videoSourcePath == localVideoFile.path &&
+        current.value.isInitialized) {
+      await _synchronizeVideoController(current);
+      if (_isCurrentVideoOperation(revision, operation) &&
+          _shouldRunVideo(request)) {
+        _isVideoInitialized = true;
+        _visibleClip.value = current;
+        _lastBenchmarkVideoPosition = null;
+        if (mounted) setState(() {});
+      }
+      return;
+    }
+
+    await _disposeCurrentVideo();
+    if (localVideoFile == null ||
+        !_isCurrentVideoOperation(revision, operation)) {
       return;
     }
 
@@ -1498,19 +1580,37 @@ class MainAppScreenState extends State<MainAppScreen>
       _videoSourcePath = localVideoFile.path;
       _isVideoInitialized = true;
       _lastBenchmarkVideoPosition = null;
-      _blockedVideoSources.remove(_videoSourceKey(request));
+      if (!plan.usePreview) {
+        _blockedVideoSources.remove(_videoSourceKey(request));
+      }
       installed = true;
+      _visibleClip.value = controller;
       if (mounted) setState(() {});
     } catch (error) {
       await _disposeVideoController(controller);
-      await _handleLocalVideoInitializationFailure(
-        request: request,
-        revision: revision,
-        operation: operation,
-        localVideoFile: localVideoFile,
-        error: error,
-        initializationCompleted: initializationCompleted,
-      );
+      if (_isCurrentVideoOperation(revision, operation)) {
+        if (plan.usePreview && previewSignature != null) {
+          _clipPreviewGate.recordFailure(
+            trackId,
+            previewSignature,
+            const Duration(minutes: 30),
+          );
+          _initializeVideo(activeTrackNotifier.value);
+        } else if (preview != null && _expandedClipTrack == trackId) {
+          // Preserve both files when the platform can play only the small one.
+          _blockedVideoSources.add(_videoSourceKey(request));
+          _initializeVideo(activeTrackNotifier.value);
+        } else {
+          await _handleLocalVideoInitializationFailure(
+            request: request,
+            revision: revision,
+            operation: operation,
+            localVideoFile: localVideoFile,
+            error: error,
+            initializationCompleted: initializationCompleted,
+          );
+        }
+      }
     } finally {
       if (identical(_initializingVideoController, controller)) {
         _initializingVideoController = null;
@@ -1519,6 +1619,48 @@ class MainAppScreenState extends State<MainAppScreen>
         await _disposeVideoController(controller);
       }
     }
+  }
+
+  MediaFileDownloader get _playbackVideoDownloader =>
+      _foregroundVideoDownloader ??= MediaFileDownloader(
+        client: _serverClient,
+        maxConcurrent: 1,
+      );
+
+  Future<void> _downloadClipPreview(
+    ClipPreviewReference reference,
+    int trackId,
+    File original,
+    int revision,
+    _VideoOperation operation,
+  ) async {
+    ClipPreviewAsset? asset;
+    try {
+      asset = await _clipPreviewCache.fetch(
+        reference,
+        _serverClient,
+        _playbackVideoDownloader,
+        abort: operation.whenCanceled,
+        acceptOriginal: (digest) async {
+          if (!await _hasNonEmptyFile(original)) return !operation.isCanceled;
+          return await _clipPreviewCache.matchesDigest(digest, original) &&
+              !operation.isCanceled;
+        },
+      );
+    } catch (error) {
+      if (!operation.isCanceled) {
+        debugPrint('Clip preview unavailable: ${error.runtimeType}');
+      }
+    }
+    if (!_isCurrentVideoOperation(revision, operation)) return;
+    if (asset == null) {
+      _clipPreviewGate.recordFailure(
+        trackId,
+        reference.endpoint.toString(),
+        const Duration(minutes: 2),
+      );
+    }
+    _initializeVideo(activeTrackNotifier.value);
   }
 
   Future<bool> _hasNonEmptyFile(File file) async {
@@ -1605,6 +1747,7 @@ class MainAppScreenState extends State<MainAppScreen>
     required int revision,
     required _VideoOperation operation,
     required File destination,
+    String? expectedSha256,
   }) async {
     if (_downloadRecoveryFailed || downloadedOnly.value) return;
     final source = request.videoUrl;
@@ -1615,14 +1758,11 @@ class MainAppScreenState extends State<MainAppScreen>
           activeTrackNotifier.value?['id'] != request.trackId) {
         return;
       }
-      final downloader = _foregroundVideoDownloader ??= MediaFileDownloader(
-        client: _serverClient,
-        maxConcurrent: 1,
-      );
-      await downloader.download(
+      await _playbackVideoDownloader.download(
         source: Uri.parse(_resolveAbsoluteUrl(source)),
         destination: destination,
         abortTrigger: operation.whenCanceled,
+        expectedSha256: expectedSha256,
       );
       if (!_isCurrentVideoOperation(revision, operation)) return;
       if (!await _hasNonEmptyFile(destination)) {
@@ -1694,6 +1834,7 @@ class MainAppScreenState extends State<MainAppScreen>
     _videoTrackId = null;
     _videoSourcePath = null;
     _isVideoInitialized = false;
+    _visibleClip.value = null;
     _lastBenchmarkVideoPosition = null;
     if (controller == null) {
       PerformanceFrameMonitor.markVideoControllerReleased();
@@ -1705,9 +1846,10 @@ class MainAppScreenState extends State<MainAppScreen>
     PerformanceFrameMonitor.markVideoControllerReleased();
   }
 
-  Future<void> _disposeVideoController(VideoPlayerController controller) async {
-    if (_disposedVideoControllers[controller] == true) return;
-    _disposedVideoControllers[controller] = true;
+  Future<void> _disposeVideoController(VideoPlayerController controller) =>
+      _videoDisposals[controller] ??= _releaseVideoController(controller);
+
+  Future<void> _releaseVideoController(VideoPlayerController controller) async {
     if (PerformanceFrameMonitor.enabled) {
       try {
         controller.removeListener(_reportBenchmarkVideoFrame);
@@ -3397,6 +3539,7 @@ class MainAppScreenState extends State<MainAppScreen>
     final currentIsOwn = isLocalMusic(current);
     final previousLyrics = currentIsOwn ? current['lyrics'] : null;
     final previousVideo = currentIsOwn ? current['video_file'] : null;
+    final previousPreview = current?['video_preview'];
     // Never replace the source of an already playing MP3.
     for (final track in _playbackOrder.retainedTracks) {
       final fresh = freshById[track['id']];
@@ -3416,11 +3559,13 @@ class MainAppScreenState extends State<MainAppScreen>
     if (searchQuery.trim().isNotEmpty) _scheduleLyricsSearch();
     if (currentIsOwn && mounted) {
       if (previousLyrics != current['lyrics']) unawaited(fetchLyrics(current));
-      if (supportsVideoClips &&
-          playVideoClipNotifier.value &&
-          previousVideo != current['video_file']) {
-        _initializeVideo(current);
-      }
+    }
+    if (mounted &&
+        supportsVideoClips &&
+        playVideoClipNotifier.value &&
+        (previousPreview != current?['video_preview'] ||
+            (currentIsOwn && previousVideo != current['video_file']))) {
+      _initializeVideo(current);
     }
     if (activeTrackNotifier.value != null) {
       uiSignal.value++;
@@ -3441,6 +3586,7 @@ class MainAppScreenState extends State<MainAppScreen>
       'duration',
       'audio_file',
       'video_file',
+      'video_preview',
       'lyrics',
       'content_versions',
       'local_match_id',
@@ -4565,7 +4711,12 @@ class MainAppScreenState extends State<MainAppScreen>
       errors[DownloadComponent.library] = _downloadError(error);
     } finally {
       downloadQueue.remove(id);
-      if (mounted && !_stateDisposing) setState(() {});
+      if (mounted && !_stateDisposing) {
+        setState(() {});
+        if (videoReady && _expandedClipTrack == id) {
+          _initializeVideo(activeTrackNotifier.value);
+        }
+      }
       _notifyArtistLibraryChanged();
     }
     return TrackDownloadResult(
@@ -7548,15 +7699,14 @@ class MainAppScreenState extends State<MainAppScreen>
   // ── Desktop player panel ─────────────────────────────────────────────────
 
   Widget _buildDesktopArtwork() {
-    final controller = _videoController;
-    final clip =
-        supportsVideoClips &&
-            _isVideoInitialized &&
-            playVideoClipNotifier.value &&
-            controller?.value.isInitialized == true
-        ? controller
-        : null;
     final track = playingTrack;
+    final trackId = track?['id'];
+    final showClip =
+        trackId is int &&
+        supportsVideoClips &&
+        playVideoClipNotifier.value &&
+        (_expandedClipTrack == trackId ||
+            (_videoTrackId == trackId && _isVideoInitialized));
     final cover = Builder(
       builder: (context) => Image(
         image: coverThumbnail(context, getPictureProvider(track), 240),
@@ -7581,14 +7731,20 @@ class MainAppScreenState extends State<MainAppScreen>
             border: Border.all(color: Colors.white12, width: 3),
           ),
           child: ClipOval(
-            child: clip == null
-                ? cover
-                : ClipPreview(controller: clip, cover: cover),
+            child: showClip
+                ? ClipPreview(
+                    key: ValueKey(trackId),
+                    controller: _visibleClip,
+                    cover: cover,
+                    onExpanded: (expanded) =>
+                        _setClipExpanded(trackId, expanded),
+                  )
+                : cover,
           ),
         ),
       ),
     );
-    if (clip != null) return artwork;
+    if (showClip) return artwork;
 
     final vinyl = supportsVinylRotation && vinylRotationNotifier.value;
     // The old spin gestures are for the cover; clicking a clip expands it.

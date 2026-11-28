@@ -1326,6 +1326,11 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Expand music video',
     'ja': 'ミュージックビデオを拡大',
   },
+  'clip_loading': {
+    'ru': 'Клип загружается',
+    'en': 'Loading video',
+    'ja': '動画を読み込み中',
+  },
   'download_album': {
     'ru': 'Скачать альбом',
     'en': 'Download album',
