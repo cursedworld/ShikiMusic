@@ -131,12 +131,16 @@ class _ClipDialog extends StatelessWidget {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.all(Radius.circular(12)),
       ),
-      child: SizedBox.expand(
-        key: const ValueKey('expanded_clip_frame'),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Center(
+      child: Semantics(
+        label: tr('play_video_clip_desc'),
+        // Flutter's barrier is excluded from accessibility on Windows/Linux.
+        onDismiss: () => Navigator.of(context).maybePop(),
+        child: Focus(
+          autofocus: true,
+          skipTraversal: true,
+          child: SizedBox.expand(
+            key: const ValueKey('expanded_clip_frame'),
+            child: Center(
               child: ValueListenableBuilder(
                 valueListenable: controller,
                 builder: (context, clip, _) {
@@ -154,24 +158,7 @@ class _ClipDialog extends StatelessWidget {
                 },
               ),
             ),
-            PositionedDirectional(
-              top: 8,
-              end: 8,
-              child: Semantics(
-                container: true,
-                label: tr('close'),
-                child: IconButton.filled(
-                  autofocus: true,
-                  style: IconButton.styleFrom(
-                    backgroundColor: Colors.black87,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

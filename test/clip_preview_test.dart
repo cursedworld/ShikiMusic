@@ -1,4 +1,4 @@
-import 'dart:ui' show PointerDeviceKind;
+import 'dart:ui' show PointerDeviceKind, SemanticsAction;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +9,11 @@ import 'package:video_player/video_player.dart';
 
 const _cover = ColoredBox(color: Colors.brown);
 const _frame = ValueKey('expanded_clip_frame');
+const _desktop = TargetPlatformVariant({
+  TargetPlatform.windows,
+  TargetPlatform.linux,
+  TargetPlatform.macOS,
+});
 
 VideoPlayerController _clip([Size size = const Size(1280, 720)]) {
   final controller = VideoPlayerController.asset('unused-test-clip.mp4')
@@ -95,38 +100,50 @@ void main() {
     },
   );
 
-  testWidgets('the close button has an accessible name but no hover label', (
+  testWidgets('the clip has no close button and a click outside closes it', (
     tester,
   ) async {
-    final semantics = tester.ensureSemantics();
-    try {
-      await _showPreview(tester, _clip());
-      await tester.tap(find.byType(ClipPreview));
-      await tester.pumpAndSettle();
+    await _showPreview(tester, _clip());
+    await tester.tap(find.byType(ClipPreview));
+    await tester.pumpAndSettle();
 
-      final close = find.descendant(
-        of: frame,
-        matching: find.byIcon(Icons.close),
-      );
-      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
-      await mouse.addPointer(location: tester.getCenter(close));
-      addTearDown(mouse.removePointer);
-      await tester.pump(const Duration(seconds: 1));
-      await tester.pumpAndSettle();
+    expect(
+      find.descendant(of: frame, matching: find.byIcon(Icons.close)),
+      findsNothing,
+    );
+    await tester.tapAt(tester.getCenter(video));
+    await tester.pumpAndSettle();
+    expect(frame, findsOneWidget);
 
-      expect(find.text(tr('close')), findsNothing);
-      expect(find.byTooltip(tr('close')), findsNothing);
-      expect(
-        find.descendant(
-          of: frame,
-          matching: find.bySemanticsLabel(tr('close')),
-        ),
-        findsOneWidget,
-      );
-    } finally {
-      semantics.dispose();
-    }
+    final panel = tester.getRect(frame);
+    await tester.tapAt(Offset(panel.right + 4, panel.center.dy));
+    await tester.pumpAndSettle();
+    expect(frame, findsNothing);
+    expect(video, findsOneWidget);
   });
+
+  testWidgets(
+    'the expanded clip can be dismissed by assistive technology',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        await _showPreview(tester, _clip());
+        await tester.tap(find.byType(ClipPreview));
+        await tester.pumpAndSettle();
+
+        tester.semantics.performAction(
+          find.semantics.byLabel(tr('play_video_clip_desc')),
+          SemanticsAction.dismiss,
+        );
+        await tester.pumpAndSettle();
+        expect(frame, findsNothing);
+        expect(video, findsOneWidget);
+      } finally {
+        semantics.dispose();
+      }
+    },
+    variant: _desktop,
+  );
 
   testWidgets('a click moves the same playing clip into a dialog and back', (
     tester,
@@ -145,7 +162,7 @@ void main() {
     final preview = tester.element(find.byType(ClipPreview));
     expect(TickerMode.valuesOf(preview).enabled, isTrue);
 
-    await tester.tap(find.byIcon(Icons.close));
+    await tester.tapAt(const Offset(4, 4));
     await tester.pump();
     expect(video, findsOneWidget);
     await tester.pumpAndSettle();
@@ -170,7 +187,7 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pumpAndSettle();
     expect(frame, findsNothing);
-  });
+  }, variant: _desktop);
 
   for (final size in [const Size(1280, 720), const Size(720, 1280)]) {
     testWidgets('expanded clip fits its window without cropping a $size clip', (
@@ -220,7 +237,7 @@ void main() {
     expect(frame, findsOneWidget);
     expect(tester.widget<VideoPlayer>(video).controller, same(large));
 
-    await tester.tap(find.byIcon(Icons.close));
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await tester.pump();
     expect(changes, [true]);
     await tester.pumpAndSettle();
