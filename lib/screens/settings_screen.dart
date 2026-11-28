@@ -86,7 +86,10 @@ class SettingsRoute extends MaterialPageRoute<void> {
 
 class SettingsScreen extends StatefulWidget {
   final ListeningStatistics? statistics;
-  final List<dynamic> statisticsTracks, statisticsArtists;
+  final List<dynamic> statisticsArtists;
+  final List<dynamic> Function()? getStatisticsTracks;
+  final Future<bool> Function(String name, List<int> trackIds)?
+  onCreateStatisticsPlaylist;
   final WidgetBuilder? storageBuilder;
   final Future<Directory> Function() dataDirectoryProvider;
   final Future<void> Function()? beforeLibraryExport;
@@ -96,8 +99,9 @@ class SettingsScreen extends StatefulWidget {
     this.storageBuilder,
     this.dataDirectoryProvider = getShikiDataDirectory,
     this.statistics,
-    this.statisticsTracks = const [],
+    this.getStatisticsTracks,
     this.statisticsArtists = const [],
+    this.onCreateStatisticsPlaylist,
     this.beforeLibraryExport,
     this.changeDownloadedOnly,
   });
@@ -547,8 +551,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             MaterialPageRoute(
                               builder: (_) => StatisticsScreen(
                                 statistics: widget.statistics!,
-                                tracks: widget.statisticsTracks,
+                                currentTracks: widget.getStatisticsTracks,
                                 artists: widget.statisticsArtists,
+                                onCreatePlaylist:
+                                    widget.onCreateStatisticsPlaylist,
                               ),
                             ),
                           ),

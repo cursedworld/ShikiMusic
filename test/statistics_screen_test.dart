@@ -18,6 +18,7 @@ class _ScreenStore extends StatisticsStore {
   _ScreenStore() : super('unused');
   bool empty = false, fail = false;
   int trackCount = 3;
+  final orders = <(String?, bool), List<int>>{};
   String? requestedFrom;
   bool requestedByPlays = false;
   Completer<void>? pendingRead;
@@ -56,16 +57,18 @@ class _ScreenStore extends StatisticsStore {
       ],
       'top_tracks': [
         if (!empty)
-          for (var i = 0; i < trackCount; i++)
+          for (final id
+              in orders[(from, byPlays)] ??
+                  List.generate(trackCount, (index) => index + 1))
             {
-              'key': 'track:${i + 1}',
-              'name': i == 0
+              'key': 'track:$id',
+              'name': id == 1
                   ? 'Без ответа'
-                  : i == 1
+                  : id == 2
                   ? 'Уличная жизнь'
-                  : 'Трек ${i + 1}',
-              'detail': i == 0 ? 'Кишлак, 707' : 'Исполнитель',
-              'ms': 600000 - i * 1000,
+                  : 'Трек $id',
+              'detail': id == 1 ? 'Кишлак, 707' : 'Исполнитель',
+              'ms': 600000 - id * 1000,
               'plays': 4,
             },
       ],
@@ -146,6 +149,8 @@ void main() {
     double width = 1024,
     double scale = 1,
     bool settle = true,
+    List<dynamic> Function()? currentTracks,
+    Future<bool> Function(String, List<int>)? onCreatePlaylist,
   }) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = Size(width, 900);
@@ -172,7 +177,11 @@ void main() {
             ).copyWith(textScaler: TextScaler.linear(scale)),
             child: child!,
           ),
-          home: StatisticsScreen(statistics: statistics),
+          home: StatisticsScreen(
+            statistics: statistics,
+            currentTracks: currentTracks,
+            onCreatePlaylist: onCreatePlaylist,
+          ),
         ),
       ),
     );
@@ -232,7 +241,8 @@ void main() {
   for (final language in ['ru', 'en', 'ja']) {
     testWidgets('statistics fits narrow layout in $language', (tester) async {
       languageNotifier.value = language;
-      await show(tester, width: 375);
+      await show(tester, width: 375, onCreatePlaylist: (_, _) async => true);
+      expect(find.text(tr('create_playlist')), findsOneWidget);
       await tester.scrollUntilVisible(
         find.text(tr('stats_import')),
         200,
@@ -370,7 +380,12 @@ void main() {
     tester,
   ) async {
     languageNotifier.value = 'en';
-    await show(tester, width: 320, scale: 2);
+    await show(
+      tester,
+      width: 320,
+      scale: 2,
+      onCreatePlaylist: (_, _) async => true,
+    );
     await tester.scrollUntilVisible(
       find.text('Import'),
       200,
@@ -379,13 +394,190 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  final create = find.byKey(const ValueKey('stats_create_playlist'));
+
   testWidgets('empty history reports no listening for the selected period', (
     tester,
   ) async {
     store.empty = true;
-    await show(tester);
+    await show(tester, onCreatePlaylist: (_, _) async => true);
     expect(find.text('За выбранный период нет прослушиваний.'), findsOneWidget);
+    expect(tester.widget<TextButton>(create).onPressed, isNull);
     expect(tester.takeException(), isNull);
+  });
+
+  Future<void> openPlaylistDialog(WidgetTester tester) async {
+    await tester.ensureVisible(create);
+    await tester.pumpAndSettle();
+    await tester.tap(create);
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> confirmPlaylist(WidgetTester tester) async {
+    final submit = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.text(tr('create')),
+    );
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('creates the full monthly top even when collapsed at 320px', (
+    tester,
+  ) async {
+    store.trackCount = 8;
+    var library = [
+      for (var id = 7; id > 0; id--) {'id': id},
+    ];
+    final saved = <(String, List<int>)>[];
+    await show(
+      tester,
+      width: 320,
+      scale: 1.5,
+      currentTracks: () => library,
+      onCreatePlaylist: (name, ids) async {
+        saved.add((name, ids));
+        return true;
+      },
+    );
+    expect(find.text('Трек 6'), findsNothing);
+    await openPlaylistDialog(tester);
+    final name = find.byType(TextField);
+    expect(
+      tester.widget<TextField>(name).controller!.text,
+      contains('30 дней'),
+    );
+    expect(
+      find.textContaining(
+        tr('stats_playlist_missing').replaceAll('{count}', '1'),
+      ),
+      findsOneWidget,
+    );
+    // Re-resolve at confirmation instead of saving stale library references.
+    library = library.where((track) => track['id'] != 3).toList();
+    await tester.enterText(name, 'Мой ноябрь');
+    await confirmPlaylist(tester);
+    expect(saved.single.$1, 'Мой ноябрь');
+    expect(saved.single.$2, [1, 2, 4, 5, 6, 7]);
+    expect(
+      find.textContaining(
+        tr('stats_playlist_missing').replaceAll('{count}', '2'),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('disables creation during a period change and uses latest sort', (
+    tester,
+  ) async {
+    final now = DateTime.now();
+    final week = statisticsDay(DateTime(now.year, now.month, now.day - 6));
+    store.orders[(week, false)] = [2, 1];
+    store.orders[(week, true)] = [3, 2];
+    final saved = <List<int>>[];
+    await show(
+      tester,
+      currentTracks: () => [
+        for (var id = 1; id <= 3; id++) {'id': id},
+      ],
+      onCreatePlaylist: (_, ids) async {
+        saved.add(ids);
+        return true;
+      },
+    );
+    await tester.tap(find.byKey(const ValueKey('stats_period')));
+    await tester.pumpAndSettle();
+    final pending = store.pendingRead = Completer<void>();
+    await tester.tap(find.text(tr('stats_period_week')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.widget<TextButton>(create).onPressed, isNull);
+    expect(saved, isEmpty);
+
+    store.pendingRead = null;
+    final sort = find.byKey(const ValueKey('stats_sort'));
+    await tester.ensureVisible(sort);
+    await tester.tap(sort);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(
+      find.widgetWithText(PopupMenuItem<bool>, tr('stats_sort_plays')),
+    );
+    await tester.pumpAndSettle();
+    pending.complete();
+    await tester.pumpAndSettle();
+    await openPlaylistDialog(tester);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      contains('7 дней'),
+    );
+    await confirmPlaylist(tester);
+    expect(saved, [
+      [3, 2],
+    ]);
+  });
+
+  testWidgets('uses the custom range and refuses a top with no matching IDs', (
+    tester,
+  ) async {
+    final now = DateTime.now();
+    final start = DateTime(now.year, now.month, now.day - 10);
+    final range = DateTimeRange(
+      start: start,
+      end: start.add(const Duration(days: 2)),
+    );
+    store.orders[(statisticsDay(start), false)] = [44, 55];
+    var library = [
+      {'id': 1},
+    ];
+    final saved = <List<int>>[];
+    await show(
+      tester,
+      currentTracks: () => library,
+      onCreatePlaylist: (_, ids) async {
+        saved.add(ids);
+        return true;
+      },
+    );
+    final formatDate = MaterialLocalizations.of(
+      tester.element(find.byType(StatisticsScreen)),
+    ).formatCompactDate;
+    await tester.tap(find.byKey(const ValueKey('stats_period')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.widgetWithText(PopupMenuItem<String>, tr('stats_period_custom')),
+    );
+    await tester.pumpAndSettle();
+    Navigator.of(tester.element(find.byType(DateRangePickerDialog))).pop(range);
+    await tester.pumpAndSettle();
+    expect(store.requestedFrom, statisticsDay(start));
+    await openPlaylistDialog(tester);
+    expect(find.byType(TextField), findsNothing);
+    expect(find.textContaining(tr('stats_playlist_empty')), findsOneWidget);
+    expect(
+      find.textContaining(
+        tr('stats_playlist_missing').replaceAll('{count}', '2'),
+      ),
+      findsOneWidget,
+    );
+    expect(saved, isEmpty);
+
+    library = [
+      {'id': 55},
+      {'id': 44},
+    ];
+    await openPlaylistDialog(tester);
+    final name = tester
+        .widget<TextField>(find.byType(TextField))
+        .controller!
+        .text;
+    expect(name, contains(formatDate(range.start)));
+    expect(name, contains(formatDate(range.end)));
+    await confirmPlaylist(tester);
+    expect(saved, [
+      [44, 55],
+    ]);
   });
 
   testWidgets('read failure offers retry and then recovers', (tester) async {

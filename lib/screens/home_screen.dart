@@ -7531,8 +7531,10 @@ class MainAppScreenState extends State<MainAppScreen>
             clearCache: clearAllCache,
           ),
           statistics: _statistics,
-          statisticsTracks: cachedTracks,
+          getStatisticsTracks: () => cachedTracks,
           statisticsArtists: cachedArtists,
+          onCreateStatisticsPlaylist: (name, ids) =>
+              createPlaylist(name, trackIds: ids),
           beforeLibraryExport: () async {
             if (_downloadRecoveryFailed) {
               throw StateError(tr('download_recovery_failed'));

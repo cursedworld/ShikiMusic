@@ -10,10 +10,13 @@ import 'package:shiki/app_paths.dart';
 import 'package:shiki/atomic_file_store.dart';
 import 'package:shiki/downloaded_only.dart';
 import 'package:shiki/globals.dart';
+import 'package:shiki/listening_statistics.dart';
 import 'package:shiki/local_music_import.dart';
 import 'package:shiki/localization.dart';
 import 'package:shiki/screens/home_screen.dart';
 import 'package:shiki/screens/settings_screen.dart';
+import 'package:shiki/screens/statistics_screen.dart';
+import 'package:shiki/statistics_store.dart';
 
 import 'fixtures/local_mp3.dart';
 
@@ -100,6 +103,33 @@ void main() {
           cancel: LocalImportCancel(),
         ),
       ))!.entries.single;
+      final history = StatisticsStore(
+        '${profile.path}/listening_statistics.sqlite',
+      );
+      final trackKeys = [
+        'source:youtube:offline-fixture-3',
+        'local:${own.digest}',
+        'source:youtube:offline-fixture-1',
+      ];
+      final day = statisticsDay(DateTime.now());
+      await tester.runAsync(
+        () => history.write([
+          for (var i = 0; i < trackKeys.length; i++)
+            {
+              'id': '${i + 1}'.padLeft(32, '0'),
+              'day': day,
+              'track_key': trackKeys[i],
+              'title': 'History track ${i + 1}',
+              'artists': [
+                {'key': 'artist:1', 'name': 'Artist'},
+              ],
+              'listening_ms': 100000 - i * 10000,
+              'app_ms': 0,
+              'plays': 1,
+              'updated_at': 1,
+            },
+        ]),
+      );
 
       addTearDown(() async {
         downloadedOnly.value = previousMode;
@@ -404,6 +434,59 @@ void main() {
             expect(catalogSync, findsNothing);
             final beforePoll = calls.length;
             await tester.pump(const Duration(seconds: 13));
+            expect(calls, hasLength(beforePoll));
+
+            await openSettings();
+            final statistics = find.byKey(const ValueKey('open_statistics'));
+            await tester.ensureVisible(statistics);
+            await tester.pumpAndSettle();
+            await tester.tap(statistics);
+            final create = find.byKey(const ValueKey('stats_create_playlist'));
+            await until(
+              () =>
+                  create.evaluate().isNotEmpty &&
+                  tester.widget<TextButton>(create).onPressed != null,
+            );
+            await tester.ensureVisible(create);
+            await tester.pumpAndSettle();
+            await tester.tap(create);
+            await tester.pumpAndSettle();
+            await tester.enterText(find.byType(TextField), 'Offline top');
+            final submit = find.descendant(
+              of: find.byType(AlertDialog),
+              matching: find.text(tr('create')),
+            );
+            await tester.runAsync(() async => tester.tap(submit));
+            await until(
+              () =>
+                  find.text(tr('stats_playlist_created')).evaluate().isNotEmpty,
+            );
+            Navigator.of(tester.element(find.byType(StatisticsScreen))).pop();
+            await tester.pumpAndSettle();
+            await goBack();
+
+            final rankedIds = [3, own.id, 1];
+            state.myPlaylists = [];
+            await tester.runAsync(state.readPlaylists);
+            final top = state.myPlaylists.last;
+            expect(top['name'], 'Offline top');
+            expect(top['tracks'], rankedIds);
+            state.navId = 4;
+            state.updateSearchQuery('');
+            await tester.pump();
+            expect(
+              tester.getTopLeft(rowTitle(3, 'Last download')).dy,
+              lessThan(
+                tester.getTopLeft(rowTitle(own.id, 'My local title')).dy,
+              ),
+            );
+            expect(
+              await tester.runAsync(
+                () => state.reorderPlaylist(top['id'] as int, rankedIds, 0, 3),
+              ),
+              isTrue,
+            );
+            expect(top['tracks'], [own.id, 1, 3]);
             expect(calls, hasLength(beforePoll));
           } finally {
             await tester.pumpWidget(const SizedBox.shrink());

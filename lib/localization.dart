@@ -633,6 +633,31 @@ const Map<String, Map<String, String>> _translations = {
     'en': 'Up to 100 artists or tracks for the selected period',
     'ja': '選択した期間の上位100組のアーティストまたは100曲を表示します',
   },
+  'stats_playlist_name': {
+    'ru': 'Топ треков · {period}',
+    'en': 'Top tracks · {period}',
+    'ja': 'よく聴いた曲（{period}）',
+  },
+  'stats_playlist_tracks': {
+    'ru': 'Треков в плейлисте: {count}',
+    'en': 'Tracks in playlist: {count}',
+    'ja': 'プレイリストに追加：{count}曲',
+  },
+  'stats_playlist_missing': {
+    'ru': 'Нет в библиотеке: {count}',
+    'en': 'Missing from the library: {count}',
+    'ja': 'ライブラリにない曲：{count}曲',
+  },
+  'stats_playlist_empty': {
+    'ru': 'Из этого топа нечего добавить в плейлист.',
+    'en': 'There are no tracks from this ranking to add.',
+    'ja': 'このランキングから追加できる曲がありません。',
+  },
+  'stats_playlist_created': {
+    'ru': 'Плейлист создан',
+    'en': 'Playlist created',
+    'ja': 'プレイリストを作成しました',
+  },
   'stats_empty': {
     'ru': 'За выбранный период нет прослушиваний.',
     'en': 'No listening history for the selected period.',

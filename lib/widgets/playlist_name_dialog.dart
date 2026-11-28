@@ -4,8 +4,15 @@ import '../globals.dart';
 import '../localization.dart';
 
 class PlaylistNameDialog extends StatefulWidget {
-  const PlaylistNameDialog({super.key, required this.initialName});
+  const PlaylistNameDialog({
+    super.key,
+    required this.initialName,
+    this.creating = false,
+    this.description,
+  });
   final String initialName;
+  final bool creating;
+  final String? description;
 
   @override
   State<PlaylistNameDialog> createState() => _PlaylistNameDialogState();
@@ -37,28 +44,39 @@ class _PlaylistNameDialogState extends State<PlaylistNameDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
+    scrollable: true,
     backgroundColor: const Color(0xFF242024),
     title: Text(
-      tr('playlist_rename'),
+      tr(widget.creating ? 'create_playlist' : 'playlist_rename'),
       style: const TextStyle(color: Colors.white),
     ),
     content: SizedBox(
       width: 320,
-      child: TextField(
-        key: const ValueKey('playlist_rename_input'),
-        controller: _name,
-        autofocus: true,
-        style: const TextStyle(color: Colors.white),
-        textInputAction: TextInputAction.done,
-        decoration: InputDecoration(
-          labelText: tr('playlist_name'),
-          labelStyle: const TextStyle(color: Colors.white70),
-          focusedBorder: UnderlineInputBorder(
-            borderSide: BorderSide(color: accentColorNotifier.value),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (widget.description case final String description) ...[
+            Text(description, style: const TextStyle(color: Colors.white70)),
+            const SizedBox(height: 12),
+          ],
+          TextField(
+            key: const ValueKey('playlist_rename_input'),
+            controller: _name,
+            autofocus: true,
+            style: const TextStyle(color: Colors.white),
+            textInputAction: TextInputAction.done,
+            decoration: InputDecoration(
+              labelText: tr('playlist_name'),
+              labelStyle: const TextStyle(color: Colors.white70),
+              focusedBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: accentColorNotifier.value),
+              ),
+            ),
+            onChanged: (_) => setState(() {}),
+            onSubmitted: (_) => _save(),
           ),
-        ),
-        onChanged: (_) => setState(() {}),
-        onSubmitted: (_) => _save(),
+        ],
       ),
     ),
     actions: [
@@ -68,7 +86,7 @@ class _PlaylistNameDialogState extends State<PlaylistNameDialog> {
       ),
       TextButton(
         onPressed: _name.text.trim().isEmpty ? null : _save,
-        child: Text(tr('playlist_save')),
+        child: Text(tr(widget.creating ? 'create' : 'playlist_save')),
       ),
     ],
   );

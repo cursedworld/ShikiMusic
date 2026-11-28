@@ -7,6 +7,8 @@ import '../globals.dart';
 import '../listening_statistics.dart';
 import '../localization.dart';
 import '../statistics_artwork.dart';
+import '../statistics_playlist.dart';
+import '../widgets/playlist_name_dialog.dart';
 
 class StatisticsScreen extends StatefulWidget {
   const StatisticsScreen({
@@ -14,9 +16,14 @@ class StatisticsScreen extends StatefulWidget {
     required this.statistics,
     this.tracks = const [],
     this.artists = const [],
+    this.currentTracks,
+    this.onCreatePlaylist,
   });
   final ListeningStatistics statistics;
   final List<dynamic> tracks, artists;
+  final List<dynamic> Function()? currentTracks;
+  final Future<bool> Function(String name, List<int> trackIds)?
+  onCreatePlaylist;
 
   @override
   State<StatisticsScreen> createState() => _StatisticsScreenState();
@@ -33,15 +40,14 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
   String? _error;
   int _request = 0;
   bool _expanded = false;
+  bool _creatingPlaylist = false;
   late final StatisticsArtwork _artworks;
+  List<dynamic> get _library => widget.currentTracks?.call() ?? widget.tracks;
 
   @override
   void initState() {
     super.initState();
-    _artworks = StatisticsArtwork(
-      tracks: widget.tracks,
-      artists: widget.artists,
-    );
+    _artworks = StatisticsArtwork(tracks: _library, artists: widget.artists);
     _load();
   }
 
@@ -171,6 +177,83 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
       }
     } finally {
       if (mounted) setState(() => _transferring = false);
+    }
+  }
+
+  bool get _canCreatePlaylist =>
+      widget.onCreatePlaylist != null &&
+      !_showArtists &&
+      !_loading &&
+      !_transferring &&
+      !_creatingPlaylist &&
+      _error == null &&
+      (_summary?.topTracks.isNotEmpty ?? false);
+
+  String _suggestedPlaylistName() {
+    final format = MaterialLocalizations.of(context).formatCompactDate;
+    final range = _customRange;
+    final period = switch (_period) {
+      'custom' when range != null =>
+        '${format(range.start)} — ${format(range.end)}',
+      'year' => '${DateTime.now().year}',
+      _ => tr('stats_period_$_period'),
+    };
+    return tr('stats_playlist_name').replaceFirst('{period}', period);
+  }
+
+  String _withMissing(String text, int count) => count == 0
+      ? text
+      : "$text\n${tr('stats_playlist_missing').replaceFirst('{count}', '$count')}";
+
+  void _playlistNotice(String text) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+
+  Future<void> _createPlaylistFromRanking() async {
+    if (!_canCreatePlaylist) return;
+    final request = _request;
+    final ranking = _summary!.topTracks;
+    final preview = resolveStatisticsPlaylist(ranking, _library);
+    if (preview.trackIds.isEmpty) {
+      _playlistNotice(
+        _withMissing(tr('stats_playlist_empty'), preview.missing),
+      );
+      return;
+    }
+
+    setState(() => _creatingPlaylist = true);
+    try {
+      final name = await showDialog<String>(
+        context: context,
+        builder: (_) => PlaylistNameDialog(
+          initialName: _suggestedPlaylistName(),
+          creating: true,
+          description: _withMissing(
+            tr(
+              'stats_playlist_tracks',
+            ).replaceFirst('{count}', '${preview.trackIds.length}'),
+            preview.missing,
+          ),
+        ),
+      );
+      if (!mounted || name == null || request != _request) return;
+      // A catalog refresh may have removed tracks while the name was edited.
+      final selection = resolveStatisticsPlaylist(ranking, _library);
+      if (selection.trackIds.isEmpty) {
+        _playlistNotice(
+          _withMissing(tr('stats_playlist_empty'), selection.missing),
+        );
+        return;
+      }
+      final saved = await widget.onCreatePlaylist!(name, selection.trackIds);
+      if (mounted && saved) {
+        _playlistNotice(
+          _withMissing(tr('stats_playlist_created'), selection.missing),
+        );
+      }
+    } catch (_) {
+      if (mounted) _playlistNotice(tr('playlist_save_failed'));
+    } finally {
+      if (mounted) setState(() => _creatingPlaylist = false);
     }
   }
 
@@ -437,6 +520,23 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
                                           ),
                                         ),
                                       ),
+                                      if (!_showArtists &&
+                                          widget.onCreatePlaylist != null)
+                                        TextButton.icon(
+                                          key: const ValueKey(
+                                            'stats_create_playlist',
+                                          ),
+                                          onPressed: _canCreatePlaylist
+                                              ? _createPlaylistFromRanking
+                                              : null,
+                                          style: TextButton.styleFrom(
+                                            foregroundColor: accent,
+                                          ),
+                                          icon: const Icon(
+                                            Icons.playlist_add_rounded,
+                                          ),
+                                          label: Text(tr('create_playlist')),
+                                        ),
                                     ],
                                   ),
                                   const SizedBox(height: 8),
