@@ -33,7 +33,8 @@ Map<String, dynamic> _track(int id, String title) => {
   'id': id,
   'title': title,
   'duration': 180,
-  'audio_file': 'http://127.0.0.1:65534/media/track_$id.mp3',
+  'audio_file': '/media/track_$id.mp3',
+  'source_id': 'youtube:offline-fixture-$id',
   'album': {
     'id': 1,
     'title': 'Album',
@@ -44,7 +45,7 @@ Map<String, dynamic> _track(int id, String title) => {
 
 void main() {
   testWidgets(
-    'local-only startup, lyrics search, queue and live switch do not contact Django',
+    'local-only startup, track edits, lyrics search and playback do not contact Django',
     (tester) async {
       expect(hasAppDataDirectoryOverride, isFalse);
       final previousMode = downloadedOnly.value;
@@ -72,6 +73,8 @@ void main() {
       File('${profile.path}/app_state.json').writeAsStringSync(
         jsonEncode({'playingQueue': tracks, 'playingIndex': 1}),
       );
+      final favoritesFile = File('${profile.path}/liked_tracks.json')
+        ..writeAsStringSync('[1]');
       File('${profile.path}/my_playlists.json').writeAsStringSync(
         jsonEncode([
           {
@@ -194,6 +197,26 @@ void main() {
         of: find.byKey(ValueKey(id)),
         matching: find.text(title),
       );
+      Future<void> changeTitle(int id, String title) async {
+        final menu = find.descendant(
+          of: find.byKey(ValueKey(id)),
+          matching: find.byTooltip(tr('track_actions')),
+        );
+        await tester.tap(menu);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text(tr('track_details')));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.byKey(const ValueKey('track_details_title')),
+          title,
+        );
+        await tester.pump();
+        final save = find.byKey(const ValueKey('track_details_save'));
+        await tester.runAsync(() async => tester.tap(save));
+        await until(() => rowTitle(id, title).evaluate().isNotEmpty);
+        await tester.pumpAndSettle();
+      }
+
       Future<void> openSettings() async {
         await tester.tap(find.byIcon(Icons.settings));
         await tester.pumpAndSettle();
@@ -244,6 +267,8 @@ void main() {
               isEmpty,
               reason: 'Do not reopen the saved server stream',
             );
+            await changeTitle(own.id, 'My local title');
+            expect(rowTitle(own.id, 'My local title'), findsOneWidget);
 
             await tester.enterText(find.byType(TextField), 'blue skyline');
             await tester.pump(const Duration(milliseconds: 200));
@@ -276,6 +301,36 @@ void main() {
             );
             expect(sources.single['isLocal'], isTrue);
             expect(globalLyrics.single.txt, 'Blue skyline');
+            state.currentPositionNotifier.value = const Duration(seconds: 46);
+            await changeTitle(1, 'My downloaded title');
+            expect(state.playingTrack?['id'], 1);
+            expect(state.playingTrack?['title'], 'First download');
+            expect(find.text('My downloaded title'), findsNWidgets(2));
+            expect(
+              state.currentPositionNotifier.value,
+              const Duration(seconds: 46),
+            );
+            expect(
+              sources,
+              hasLength(1),
+              reason: 'Editing must not reopen audio',
+            );
+            expect(state.myPlaylists.single['tracks'], [1, 2, 3]);
+            expect(favoritesFile.readAsStringSync(), '[1]');
+            expect(
+              File('${profile.path}/offline_tracks.json').readAsStringSync(),
+              catalogJson,
+            );
+            expect(
+              File('${profile.path}/track_1.mp3').readAsBytesSync(),
+              fixtureMp3(),
+            );
+            await tester.enterText(find.byType(TextField), 'my downloaded');
+            await tester.pump(const Duration(milliseconds: 200));
+            expect(rowTitle(1, 'My downloaded title'), findsOneWidget);
+            expect(rowTitle(3, 'Last download'), findsNothing);
+            await tester.enterText(find.byType(TextField), '');
+            await tester.pump(const Duration(milliseconds: 200));
             await audioEvent(eventChannel!, 'audio.onComplete', true);
             await until(
               () => sources.length == 2 && state.playingTrack?['id'] == 3,
@@ -309,6 +364,7 @@ void main() {
             state.downloadQueue.clear();
             await goBack();
             expect(catalogSync, findsOneWidget);
+            expect(rowTitle(1, 'My downloaded title'), findsOneWidget);
 
             await tester.tap(rowTitle(2, 'Server only'));
             await until(

@@ -9,8 +9,8 @@ import '../localization.dart';
 import '../lyric_timing.dart';
 import '../lyric_timing_proposals.dart';
 import '../lyrics_text_size.dart';
-import '../music_import.dart';
 import '../player_shortcuts.dart';
+import '../track_details.dart';
 import '../widgets/lyric_line_edit_dialog.dart';
 import '../widgets/lyric_timing_controls.dart';
 import '../widgets/lyrics_backdrop.dart';
@@ -345,7 +345,7 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  trackData['title'],
+                                  trackDisplayTitle(trackData),
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 24,
@@ -355,7 +355,7 @@ class _PresentationOverlayState extends State<PresentationOverlay> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                                 Text(
-                                  trackArtistLabel(trackData),
+                                  trackDisplayArtist(trackData),
                                   style: const TextStyle(
                                     color: Colors.white70,
                                     fontSize: 16,

@@ -15,6 +15,7 @@ import '../localization.dart';
 import '../music_import.dart';
 import '../platform_capabilities.dart';
 import '../server_config.dart';
+import '../track_details.dart';
 import '../track_selection.dart';
 import '../widgets/track_selection_bar.dart';
 import '../widgets/play_next_panel.dart';
@@ -39,6 +40,7 @@ class ArtistScreen extends StatefulWidget {
   final VoidCallback? onMissingLocalMusic;
   final ValueChanged<Map>? onRemoveLocalMusic;
   final ValueChanged<Map>? onMatchLocalMusic;
+  final VoidCallback? Function(Map)? trackDetailsAction;
   final bool Function(dynamic track) isTrackDownloaded;
   final bool Function(int trackId) isTrackFavorited;
   final bool Function(int trackId) isDownloading;
@@ -67,6 +69,7 @@ class ArtistScreen extends StatefulWidget {
     this.onMissingLocalMusic,
     this.onRemoveLocalMusic,
     this.onMatchLocalMusic,
+    this.trackDetailsAction,
     required this.isTrackDownloaded,
     required this.isTrackFavorited,
     required this.isDownloading,
@@ -835,6 +838,9 @@ class _ArtistScreenState extends State<ArtistScreen> {
                       delegate: SliverChildBuilderDelegate((context, idx) {
                         final track = filteredTracks[idx];
                         final trackId = track['id'];
+                        final editDetails = widget.trackDetailsAction?.call(
+                          track,
+                        );
                         final isPlayingThis =
                             activeTrackId == trackId && isPlaying;
                         final isDownloaded = widget.isTrackDownloaded(track);
@@ -877,7 +883,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
                               ),
                             ),
                             title: Text(
-                              track['title'] ?? '',
+                              trackDisplayTitle(track),
                               style: TextStyle(
                                 color: activeTrackId == trackId
                                     ? accent
@@ -891,7 +897,7 @@ class _ArtistScreenState extends State<ArtistScreen> {
                             subtitle: Text(
                               unavailable
                                   ? tr('downloaded_only_unavailable')
-                                  : track['album']?['title'] ?? '',
+                                  : trackDisplayAlbum(track),
                               style: const TextStyle(
                                 color: Colors.white54,
                                 fontSize: 13,
@@ -971,12 +977,14 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                       setState(() {});
                                     },
                                   ),
-                                if (canPlayNext ||
+                                if (editDetails != null ||
+                                    canPlayNext ||
                                     (!localOnly &&
                                         isLocalMusic(track) &&
                                         widget.onMatchLocalMusic != null))
                                   TrackPlayNextMenu(
                                     key: ValueKey('artist_play_next_$trackId'),
+                                    onEditDetails: editDetails,
                                     onPlayNext: canPlayNext
                                         ? () => widget.onPlayNext!(targets)
                                         : null,

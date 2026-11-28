@@ -64,6 +64,7 @@ import '../platform_capabilities.dart';
 import '../mobile_motion.dart';
 import '../safe_file_migration.dart';
 import '../server_config.dart';
+import '../track_details.dart';
 import '../track_fade.dart';
 import '../track_crossfade.dart';
 import '../track_transition_mode.dart';
@@ -80,6 +81,7 @@ import '../widgets/track_selection_bar.dart';
 import '../widgets/mobile_playback_controls.dart';
 import '../widgets/now_playing_artist.dart';
 import '../widgets/play_next_panel.dart';
+import '../widgets/track_details_dialog.dart';
 import '../widgets/track_metadata_dialog.dart';
 import '../widgets/playlist_crop_dialog.dart';
 import '../widgets/playlist_name_dialog.dart';
@@ -522,6 +524,7 @@ class MainAppScreenState extends State<MainAppScreen>
   List<dynamic> cachedTracks = [];
   List<dynamic>? _serverTrackCache;
   List<dynamic> get _serverTracks => _serverTrackCache ?? cachedTracks;
+  TrackDetailsStore? _trackDetails;
   List<LocalMusicEntry> _ownEntries = const [];
   Map<int, Map<String, Object?>> _ownTracks = const {};
   Set<int> _matchedLocalServerIds = const {};
@@ -2716,6 +2719,17 @@ class MainAppScreenState extends State<MainAppScreen>
       debugPrint('Local music catalog read failed: ${error.runtimeType}');
     }
     if (_stateDisposing) return;
+    final trackDetails = TrackDetailsStore(
+      appDir,
+      server: configuredServerBaseUri,
+    );
+    _trackDetails = trackDetails;
+    try {
+      await trackDetails.load();
+    } catch (error) {
+      debugPrint('Track details read failed: ${error.runtimeType}');
+    }
+    if (_stateDisposing) return;
     await _loadOfflineTrackCache();
     if (_stateDisposing) return;
     await _loadOfflineArtistsCache();
@@ -2803,6 +2817,9 @@ class MainAppScreenState extends State<MainAppScreen>
             final fresh = _ownTracks[track['id']];
             if (fresh != null) _updatePlaybackMetadata(track, fresh);
           }
+        }
+        for (final track in _playbackOrder.retainedTracks) {
+          _trackDetails?.bind(track);
         }
         if (_playbackOrder.current == null) return;
         isShuffledNotifier.value = isShuffled;
@@ -3525,6 +3542,9 @@ class MainAppScreenState extends State<MainAppScreen>
     final tracks = _ownTracks.isEmpty
         ? serverTracks
         : [...serverTracks, ..._ownTracks.values];
+    for (final track in tracks) {
+      _trackDetails?.bind(track);
+    }
     _matchedLocalServerIds = {
       for (final track in _ownTracks.values)
         if (track['local_match_id'] case final int id)
@@ -3574,9 +3594,17 @@ class MainAppScreenState extends State<MainAppScreen>
     }
   }
 
-  static void _updatePlaybackMetadata(Map track, Map fresh) {
+  void _updatePlaybackMetadata(Map track, Map fresh) {
     if (isLocalMusic(track) &&
         localTrackDigest(track) != localTrackDigest(fresh)) {
+      return;
+    }
+    final originalKey = _trackDetails?.bind(track);
+    final incomingKey = _trackDetails?.bind(fresh);
+    if (originalKey != null &&
+        incomingKey != null &&
+        originalKey != incomingKey) {
+      // A reused catalog ID must not replace the queued recording.
       return;
     }
     for (final key in [
@@ -4429,6 +4457,7 @@ class MainAppScreenState extends State<MainAppScreen>
           onRemoveLocalMusic: (track) =>
               unawaited(_confirmRemoveOwnTrack(track)),
           onMatchLocalMusic: (track) => unawaited(_matchOwnTrack(track)),
+          trackDetailsAction: _trackDetailsAction,
           isTrackDownloaded: (t) => isTrackDownloadComplete(t),
           isTrackFavorited: (id) => favs.contains(id),
           isDownloading: (id) => downloadQueue.contains(id),
@@ -4440,6 +4469,54 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void _notifyArtistLibraryChanged() {
     if (!_stateDisposing) _artistLibraryChanges.value++;
+  }
+
+  VoidCallback? _trackDetailsAction(dynamic track) {
+    final store = _trackDetails;
+    if (store == null || track is! Map) return null;
+    final key = store.bind(track);
+    if (key == null) return null;
+    return () => unawaited(_editTrackDetails(track, store, key));
+  }
+
+  Future<void> _editTrackDetails(
+    Map track,
+    TrackDetailsStore store,
+    String key,
+  ) async {
+    if (!mounted || _stateDisposing) return;
+    final shown = displayTrackDetails(track);
+    await showDialog<void>(
+      context: context,
+      builder: (_) => TrackDetailsDialog(
+        initial: shown,
+        hasEdits: trackDetailsPatch(track) != null,
+        onSave: (edited) async {
+          final original =
+              cachedTracks
+                  .whereType<Map>()
+                  .where(
+                    (item) =>
+                        item['id'] == track['id'] && store.bind(item) == key,
+                  )
+                  .firstOrNull ??
+              track;
+          final patch = edited == null
+              ? null
+              : resolveTrackDetailsEdit(
+                  shown: shown,
+                  edited: edited,
+                  original: originalTrackDetails(original),
+                  previous: trackDetailsPatch(original),
+                );
+          await store.save(key, patch);
+          if (!mounted || _stateDisposing) return;
+          setState(() {});
+          _notifyArtistLibraryChanged();
+          _notifyPlayNext();
+        },
+      ),
+    );
   }
 
   Future<void> downloadMediaFile(dynamic mediaObj) async {
@@ -5338,6 +5415,9 @@ class MainAppScreenState extends State<MainAppScreen>
 
   void playTracksNext(List<dynamic> tracks) {
     if (!mounted || _stateDisposing) return;
+    for (final track in tracks) {
+      _trackDetails?.bind(track);
+    }
     final added = _playbackOrder.insertNext(
       tracks,
       alreadyStarting: _startingQueueSlot,
@@ -5583,6 +5663,9 @@ class MainAppScreenState extends State<MainAppScreen>
     }
     if (isPremium) playCount++;
 
+    for (final track in targetQueue) {
+      _trackDetails?.bind(track);
+    }
     setState(() {
       _playbackOrder.reset(targetQueue, index);
       playingPlaylistId = playlistId;
@@ -7622,7 +7705,7 @@ class MainAppScreenState extends State<MainAppScreen>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            playingTrack['title'],
+                            trackDisplayTitle(playingTrack),
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.w600,
@@ -7789,7 +7872,7 @@ class MainAppScreenState extends State<MainAppScreen>
                 _buildDesktopArtwork(),
                 const SizedBox(height: 30),
                 Text(
-                  playingTrack['title'],
+                  trackDisplayTitle(playingTrack),
                   style: const TextStyle(
                     fontSize: 26,
                     fontWeight: FontWeight.bold,
@@ -8059,7 +8142,7 @@ class MainAppScreenState extends State<MainAppScreen>
     List<dynamic> finalList = finalListToRender
         .where(
           (track) =>
-              (matchesTrackSearch(track, searchQuery) ||
+              (matchesTrackDetailsSearch(track, searchQuery) ||
                   lyricsSearchIndex.matches(track['id'] as int, lyricsQuery)) &&
               (!filterToLocal || isTrackDownloadComplete(track)),
         )
@@ -8362,6 +8445,9 @@ class MainAppScreenState extends State<MainAppScreen>
                         final currentObject = finalList[idx];
                         final ownTrack = isLocalMusic(currentObject);
                         final trackId = currentObject['id'];
+                        final editDetails = _trackDetailsAction(currentObject);
+                        final hasArtistOverride =
+                            trackDetailsPatch(currentObject)?.artist != null;
                         final isActiveTrack =
                             (playingQueue.isNotEmpty &&
                                 playingIndex < playingQueue.length)
@@ -8429,7 +8515,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                   )
                                 : cover,
                             title: Text(
-                              currentObject['title'],
+                              trackDisplayTitle(currentObject),
                               style: TextStyle(
                                 color: isActiveTrack
                                     ? Colors.redAccent
@@ -8440,7 +8526,7 @@ class MainAppScreenState extends State<MainAppScreen>
                               overflow: TextOverflow.ellipsis,
                             ),
                             subtitle: MouseRegion(
-                              cursor: unavailable
+                              cursor: unavailable || hasArtistOverride
                                   ? SystemMouseCursors.basic
                                   : SystemMouseCursors.click,
                               child: GestureDetector(
@@ -8465,6 +8551,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                           );
                                           return;
                                         }
+                                        if (hasArtistOverride) return;
                                         final a =
                                             currentObject['album']?['artist'];
                                         final aId = a?['id'] is int
@@ -8479,7 +8566,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                 child: Text(
                                   unavailable
                                       ? tr('downloaded_only_unavailable')
-                                      : trackArtistLabel(currentObject),
+                                      : trackDisplayArtist(currentObject),
                                   style: const TextStyle(color: Colors.white54),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
@@ -8508,7 +8595,8 @@ class MainAppScreenState extends State<MainAppScreen>
                                         ),
                                       ),
                                     ),
-                                  if ((ownTrack && !localOnly) ||
+                                  if (editDetails != null ||
+                                      (ownTrack && !localOnly) ||
                                       playingTrack != null ||
                                       (playlistId == null &&
                                           myPlaylists.isNotEmpty))
@@ -8519,6 +8607,7 @@ class MainAppScreenState extends State<MainAppScreen>
                                             ? 'track_playlist_$trackId'
                                             : 'track_play_next_$trackId',
                                       ),
+                                      onEditDetails: editDetails,
                                       onPlayNext: playingTrack == null
                                           ? null
                                           : () => playTracksNext(actionTracks),

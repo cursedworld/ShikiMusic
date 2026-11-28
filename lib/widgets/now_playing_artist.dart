@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../localization.dart';
 import '../music_import.dart';
+import '../track_details.dart';
 
 class NowPlayingArtist extends StatelessWidget {
   const NowPlayingArtist({
@@ -20,15 +21,17 @@ class NowPlayingArtist extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final artists = <int, String>{};
-    for (final entry in trackArtistEntries(track)) {
-      final id = int.tryParse(entry['id']?.toString() ?? '');
-      final name = entry['name']?.toString().trim() ?? '';
-      if (id != null && id != 0 && name.isNotEmpty) {
-        artists.putIfAbsent(id, () => name);
+    if (trackDetailsPatch(track)?.artist == null) {
+      for (final entry in trackArtistEntries(track)) {
+        final id = int.tryParse(entry['id']?.toString() ?? '');
+        final name = entry['name']?.toString().trim() ?? '';
+        if (id != null && id != 0 && name.isNotEmpty) {
+          artists.putIfAbsent(id, () => name);
+        }
       }
     }
     final text = Text(
-      trackArtistLabel(track),
+      trackDisplayArtist(track),
       style: TextStyle(
         color: artists.isEmpty ? Colors.white54 : Colors.white70,
         fontSize: fontSize,

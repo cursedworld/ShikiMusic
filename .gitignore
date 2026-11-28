@@ -66,6 +66,7 @@ shiki_settings.json
 my_playlists.json
 liked_tracks.json
 offline_tracks.json
+track_details.json
 offline_artists.json
 local_music.json
 lyric_offsets.json

@@ -3,8 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../localization.dart';
-import '../music_import.dart';
 import '../playback_order.dart';
+import '../track_details.dart';
 
 /// The temporary insertions only. Neither removal action edits a playlist or
 /// the original file.
@@ -76,10 +76,9 @@ class PlayNextPanel extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(0, 0, 8, 6),
                   child: Text(
-                    tr('play_next_now_playing').replaceFirst(
-                      '{title}',
-                      playing!['title']?.toString() ?? '',
-                    ),
+                    tr(
+                      'play_next_now_playing',
+                    ).replaceFirst('{title}', trackDisplayTitle(playing)),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: Colors.white70,
                     ),
@@ -121,7 +120,7 @@ class PlayNextPanel extends StatelessWidget {
                               ),
                             ),
                             title: Text(
-                              entry.track['title']?.toString() ?? '',
+                              trackDisplayTitle(entry.track),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -130,7 +129,7 @@ class PlayNextPanel extends StatelessWidget {
                                   ? tr('play_next_starting')
                                   : isUnavailable?.call(entry) == true
                                   ? tr('downloaded_only_unavailable')
-                                  : trackArtistLabel(entry.track),
+                                  : trackDisplayArtist(entry.track),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -177,6 +176,7 @@ class TrackPlayNextMenu extends StatelessWidget {
     this.playlists = const {},
     this.onPlaylistSelected,
     this.onMatchLocal,
+    this.onEditDetails,
   });
 
   final VoidCallback? onPlayNext;
@@ -184,9 +184,11 @@ class TrackPlayNextMenu extends StatelessWidget {
   final Map<int, String> playlists;
   final ValueChanged<int>? onPlaylistSelected;
   final VoidCallback? onMatchLocal;
+  final VoidCallback? onEditDetails;
 
   static const _next = 'play_next';
   static const _match = 'match_local';
+  static const _details = 'track_details';
 
   @override
   Widget build(BuildContext context) {
@@ -197,7 +199,8 @@ class TrackPlayNextMenu extends StatelessWidget {
       _ => false,
     };
 
-    final hasLocalActions = onMatchLocal != null;
+    final hasTrackActions =
+        onPlayNext != null || onMatchLocal != null || onEditDetails != null;
     PopupMenuItem<Object> entry(Object value, String title) =>
         PopupMenuItem<Object>(
           value: value,
@@ -223,14 +226,10 @@ class TrackPlayNextMenu extends StatelessWidget {
           ? const BoxConstraints(minWidth: 112, maxWidth: 224)
           : null,
       tooltip: tr(
-        onPlayNext != null || hasLocalActions
-            ? 'track_actions'
-            : 'add_selected_to_playlist',
+        hasTrackActions ? 'track_actions' : 'add_selected_to_playlist',
       ),
       icon: Icon(
-        onPlayNext != null || hasLocalActions
-            ? Icons.more_horiz_rounded
-            : Icons.add_circle_outline,
+        hasTrackActions ? Icons.more_horiz_rounded : Icons.add_circle_outline,
         color: Colors.white54,
         size: 21,
       ),
@@ -239,6 +238,8 @@ class TrackPlayNextMenu extends StatelessWidget {
           onPlayNext?.call();
         } else if (item == _match) {
           onMatchLocal?.call();
+        } else if (item == _details) {
+          onEditDetails?.call();
         } else if (item is int) {
           onPlaylistSelected?.call(item);
         }
@@ -249,12 +250,11 @@ class TrackPlayNextMenu extends StatelessWidget {
             _next,
             tr(playNextCount > 1 ? 'play_next_selection' : 'play_next_track'),
           ),
-        if (onPlayNext != null && playlists.isNotEmpty) divider,
+        if (onEditDetails != null) entry(_details, tr('track_details')),
+        if (onMatchLocal != null) entry(_match, tr('local_match_on_server')),
+        if (hasTrackActions && playlists.isNotEmpty) divider,
         for (final playlist in playlists.entries)
           entry(playlist.key, playlist.value),
-        if (hasLocalActions && (onPlayNext != null || playlists.isNotEmpty))
-          divider,
-        if (onMatchLocal != null) entry(_match, tr('local_match_on_server')),
       ],
     );
   }

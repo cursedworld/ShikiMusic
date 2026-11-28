@@ -1148,6 +1148,23 @@ const Map<String, Map<String, String>> _translations = {
   'track_title': {'ru': 'Название трека', 'en': 'Track title', 'ja': '曲名'},
   'track_artist': {'ru': 'Исполнитель', 'en': 'Artist', 'ja': 'アーティスト'},
   'track_album': {'ru': 'Альбом', 'en': 'Album', 'ja': 'アルバム'},
+  'track_details': {
+    'ru': 'Сведения о треке',
+    'en': 'Track details',
+    'ja': '曲の情報',
+  },
+  'track_details_local_hint': {
+    'ru': 'Правки видны только на этом устройстве. Аудиофайл не изменится.',
+    'en': 'Edits only appear on this device. The audio file stays unchanged.',
+    'ja': '変更はこの端末でのみ表示されます。音声ファイルは変更されません。',
+  },
+  'track_details_save': {'ru': 'Сохранить', 'en': 'Save', 'ja': '保存'},
+  'track_details_reset': {'ru': 'Сбросить', 'en': 'Reset', 'ja': '元に戻す'},
+  'track_details_save_failed': {
+    'ru': 'Не удалось сохранить правки. Попробуй ещё раз.',
+    'en': 'Could not save the edits. Try again.',
+    'ja': '変更を保存できませんでした。もう一度お試しください。',
+  },
   'confirm_import': {
     'ru': 'Подтвердить и скачать',
     'en': 'Confirm and download',

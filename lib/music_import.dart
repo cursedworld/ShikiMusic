@@ -93,7 +93,13 @@ String validatedLyricsText(
   return plain is String ? plain : '';
 }
 
-bool matchesTrackSearch(dynamic track, String query) {
+bool matchesTrackSearch(
+  dynamic track,
+  String query, {
+  String? displayTitle,
+  String? displayArtist,
+  String? displayAlbum,
+}) {
   final normalizedQuery = _normalizeSearch(query);
   if (normalizedQuery.isEmpty) return true;
   if (track is! Map) return false;
@@ -101,11 +107,17 @@ bool matchesTrackSearch(dynamic track, String query) {
   final artist = album is Map ? album['artist'] : null;
   final artists = track['artists'];
   final values = <String>[
-    track['title']?.toString() ?? '',
-    if (album is Map) album['title']?.toString() ?? '',
-    if (artist is Map) artist['name']?.toString() ?? '',
-    if (artists is List)
-      ...artists.whereType<Map>().map((item) => item['name']?.toString() ?? ''),
+    displayTitle ?? track['title']?.toString() ?? '',
+    displayAlbum ?? (album is Map ? album['title']?.toString() ?? '' : ''),
+    if (displayArtist != null)
+      displayArtist
+    else ...[
+      if (artist is Map) artist['name']?.toString() ?? '',
+      if (artists is List)
+        ...artists.whereType<Map>().map(
+          (item) => item['name']?.toString() ?? '',
+        ),
+    ],
   ];
   final text = _normalizeSearch(values.join(' '));
   return normalizedQuery.split(' ').every(text.contains);
